@@ -19,6 +19,7 @@ namespace RWXLoader
         private RWXParser parser;
         private RWXMeshBuilder meshBuilder;
         private RWXMaterialManager materialManager;
+        private bool componentsInitialized;
         private RWXAssetManager assetManager;
 
         private void Awake()
@@ -29,15 +30,7 @@ namespace RWXLoader
 
         private void Start()
         {
-            // Initialize components
-            materialManager = GetComponent<RWXMaterialManager>();
-            if (materialManager == null)
-            {
-                materialManager = gameObject.AddComponent<RWXMaterialManager>();
-            }
-
-            meshBuilder = new RWXMeshBuilder(materialManager);
-            parser = new RWXParser(meshBuilder);
+            EnsureInitialized();
         }
 
         private void InitializeAssetManager()
@@ -49,6 +42,24 @@ namespace RWXLoader
                 GameObject assetManagerGO = new GameObject("RWXAssetManager");
                 assetManager = assetManagerGO.AddComponent<RWXAssetManager>();
             }
+        }
+
+        public void EnsureInitialized()
+        {
+            if (componentsInitialized)
+            {
+                return;
+            }
+
+            materialManager = GetComponent<RWXMaterialManager>();
+            if (materialManager == null)
+            {
+                materialManager = gameObject.AddComponent<RWXMaterialManager>();
+            }
+
+            meshBuilder = new RWXMeshBuilder(materialManager);
+            parser = new RWXParser(meshBuilder);
+            componentsInitialized = true;
         }
 
         /// <summary>
@@ -85,6 +96,8 @@ namespace RWXLoader
                 onComplete?.Invoke(null, error);
                 yield break;
             }
+
+            EnsureInitialized();
 
             // Step 1: Download model if not cached
             bool downloadSuccess = false;
@@ -183,6 +196,7 @@ namespace RWXLoader
             context.currentObject = rootObject;
 
             // Ensure components are initialized
+            EnsureInitialized();
             if (materialManager == null || meshBuilder == null || parser == null)
             {
                 Debug.LogError("Components not properly initialized");

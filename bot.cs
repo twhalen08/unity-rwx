@@ -28,8 +28,14 @@ public class VPWorldAreaLoader : MonoBehaviour
     [Tooltip("Base URL of the VP build object server")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
 
+    [Header("Performance")]
+    [Tooltip("How many RWX downloads to run simultaneously")]
+    [Min(1)]
+    public int maxConcurrentLoads = 2;
+
     private VirtualParadiseClient vpClient;
     private GameObject areaRoot;
+    private string normalizedObjectPath;
 
     private struct PendingModelLoad
     {
@@ -45,6 +51,10 @@ public class VPWorldAreaLoader : MonoBehaviour
     private readonly HashSet<string> modelsBeingLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<PendingModelLoad>> pendingSpawnsByModel = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<Vector2Int, Transform> cellRoots = new Dictionary<Vector2Int, Transform>();
+    private readonly List<RWXLoaderAdvanced> loaderPool = new List<RWXLoaderAdvanced>();
+    private readonly Queue<RWXLoaderAdvanced> availableLoaders = new Queue<RWXLoaderAdvanced>();
+    private readonly HashSet<RWXLoaderAdvanced> busyLoaders = new HashSet<RWXLoaderAdvanced>();
+    private readonly HashSet<RWXLoaderAdvanced> availableLoaderSet = new HashSet<RWXLoaderAdvanced>();
 
     private void Start()
     {
@@ -101,10 +111,13 @@ public class VPWorldAreaLoader : MonoBehaviour
             modelLoader = loaderGO.AddComponent<RWXLoaderAdvanced>();
         }
 
-        // Point it at our VP object server, enable debug, and parent under areaRoot
-        modelLoader.defaultObjectPath = objectPath.TrimEnd('/') + "/";
-        modelLoader.enableDebugLogs = true;
-        modelLoader.parentTransform = areaRoot.transform;
+        normalizedObjectPath = string.IsNullOrWhiteSpace(objectPath)
+            ? string.Empty
+            : objectPath.TrimEnd('/') + "/";
+
+        ConfigureLoader(modelLoader);
+        RegisterLoader(modelLoader);
+        EnsureLoaderPool();
 
         // Also ensure the asset-manager singleton exists
         if (RWXAssetManager.Instance == null)
@@ -272,64 +285,111 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private IEnumerator ProcessLoadQueue()
     {
-        while (pendingModelLoads.Count > 0)
+        var deferredLoads = new List<PendingModelLoad>();
+        const int maxProcessesPerFrame = 16;
+
+        while (pendingModelLoads.Count > 0 || deferredLoads.Count > 0 || busyLoaders.Count > 0)
         {
-            var request = pendingModelLoads.Dequeue();
+            int processedThisFrame = 0;
 
-            if (modelCache.TryGetValue(request.modelName, out var cachedPrefab))
+            while (pendingModelLoads.Count > 0)
             {
-                SpawnAdditionalInstance(cachedPrefab, request);
-                yield return null;
-                continue;
-            }
+                var request = pendingModelLoads.Dequeue();
+                processedThisFrame++;
 
-            if (modelsBeingLoaded.Contains(request.modelName))
-            {
-                QueuePendingSpawn(request);
-                yield return null;
-                continue;
-            }
-
-            modelsBeingLoaded.Add(request.modelName);
-
-            bool completed = false;
-            GameObject loadedObject = null;
-            string errorMessage = null;
-
-            modelLoader.LoadModelFromRemote(
-                request.modelName,
-                modelLoader.defaultObjectPath,
-                (go, errMsg) =>
+                if (modelCache.TryGetValue(request.modelName, out var cachedPrefab))
                 {
-                    loadedObject = go;
-                    errorMessage = errMsg;
-                    completed = true;
-                });
+                    SpawnAdditionalInstance(cachedPrefab, request);
+                    if (processedThisFrame >= maxProcessesPerFrame)
+                    {
+                        break;
+                    }
+                    continue;
+                }
 
-            while (!completed)
-            {
-                yield return null;
+                if (modelsBeingLoaded.Contains(request.modelName))
+                {
+                    QueuePendingSpawn(request);
+                    if (processedThisFrame >= maxProcessesPerFrame)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                if (!TryBorrowLoader(out var loader))
+                {
+                    deferredLoads.Add(request);
+                    continue;
+                }
+
+                modelsBeingLoaded.Add(request.modelName);
+                StartCoroutine(RunRemoteLoad(loader, request));
+
+                if (processedThisFrame >= maxProcessesPerFrame)
+                {
+                    break;
+                }
             }
 
-            modelsBeingLoaded.Remove(request.modelName);
+            if (deferredLoads.Count > 0)
+            {
+                foreach (var deferred in deferredLoads)
+                {
+                    pendingModelLoads.Enqueue(deferred);
+                }
 
-            if (loadedObject != null)
-            {
-                modelCache[request.modelName] = loadedObject;
-                PositionAndParentInstance(loadedObject, request);
-                SpawnQueuedInstances(request.modelName, loadedObject);
-            }
-            else
-            {
-                Debug.LogError($"RWX load failed: {request.modelName} → {errorMessage}");
-                ClearFailedQueuedInstances(request.modelName);
+                deferredLoads.Clear();
             }
 
-            // Allow other systems to breathe before the next heavy load
+            if (pendingModelLoads.Count == 0 && deferredLoads.Count == 0 && busyLoaders.Count == 0)
+            {
+                break;
+            }
+
+            // Allow other systems to breathe before the next batch or while remote loads are running
             yield return null;
         }
 
         loadQueueCoroutine = null;
+    }
+
+    private IEnumerator RunRemoteLoad(RWXLoaderAdvanced loader, PendingModelLoad initialRequest)
+    {
+        bool completed = false;
+        GameObject loadedObject = null;
+        string errorMessage = null;
+
+        loader.LoadModelFromRemote(
+            initialRequest.modelName,
+            string.IsNullOrEmpty(normalizedObjectPath) ? null : normalizedObjectPath,
+            (go, errMsg) =>
+            {
+                loadedObject = go;
+                errorMessage = errMsg;
+                completed = true;
+            });
+
+        while (!completed)
+        {
+            yield return null;
+        }
+
+        modelsBeingLoaded.Remove(initialRequest.modelName);
+
+        if (loadedObject != null)
+        {
+            modelCache[initialRequest.modelName] = loadedObject;
+            PositionAndParentInstance(loadedObject, initialRequest);
+            SpawnQueuedInstances(initialRequest.modelName, loadedObject);
+        }
+        else
+        {
+            Debug.LogError($"RWX load failed: {initialRequest.modelName} → {errorMessage}");
+            ClearFailedQueuedInstances(initialRequest.modelName);
+        }
+
+        ReturnLoader(loader);
     }
 
     private Transform GetSpawnParent()
@@ -429,5 +489,126 @@ public class VPWorldAreaLoader : MonoBehaviour
             (float)vpPos.Y,   // VP ground Y to Unity ground Y (normal)
             (float)vpPos.Z    // VP height Z to Unity height Z
         );
+    }
+
+    private void ConfigureLoader(RWXLoaderAdvanced loader)
+    {
+        if (loader == null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(normalizedObjectPath))
+        {
+            loader.defaultObjectPath = normalizedObjectPath;
+        }
+        loader.enableDebugLogs = true;
+        loader.parentTransform = null;
+        loader.EnsureInitialized();
+    }
+
+    private void RegisterLoader(RWXLoaderAdvanced loader)
+    {
+        if (loader == null)
+        {
+            return;
+        }
+
+        if (!loaderPool.Contains(loader))
+        {
+            loaderPool.Add(loader);
+        }
+    }
+
+    private void EnsureLoaderPool()
+    {
+        int desired = Mathf.Max(1, maxConcurrentLoads);
+
+        if (!loaderPool.Contains(modelLoader))
+        {
+            loaderPool.Add(modelLoader);
+        }
+
+        for (int i = loaderPool.Count; i < desired; i++)
+        {
+            var worker = CreateLoaderWorker(i);
+            loaderPool.Add(worker);
+        }
+
+        for (int i = 0; i < loaderPool.Count; i++)
+        {
+            ConfigureLoader(loaderPool[i]);
+        }
+
+        RebuildAvailableLoaderQueue();
+    }
+
+    private RWXLoaderAdvanced CreateLoaderWorker(int index)
+    {
+        var loaderGO = new GameObject($"RWX Remote Loader Worker {index}");
+        loaderGO.transform.SetParent(transform, false);
+        var loader = loaderGO.AddComponent<RWXLoaderAdvanced>();
+        ConfigureLoader(loader);
+        return loader;
+    }
+
+    private void RebuildAvailableLoaderQueue()
+    {
+        availableLoaders.Clear();
+        availableLoaderSet.Clear();
+
+        foreach (var loader in loaderPool)
+        {
+            if (loader == null)
+            {
+                continue;
+            }
+
+            if (busyLoaders.Contains(loader))
+            {
+                continue;
+            }
+
+            if (availableLoaderSet.Add(loader))
+            {
+                availableLoaders.Enqueue(loader);
+            }
+        }
+    }
+
+    private bool TryBorrowLoader(out RWXLoaderAdvanced loader)
+    {
+        while (availableLoaders.Count > 0)
+        {
+            var candidate = availableLoaders.Dequeue();
+            availableLoaderSet.Remove(candidate);
+
+            if (candidate == null)
+            {
+                continue;
+            }
+
+            ConfigureLoader(candidate);
+            busyLoaders.Add(candidate);
+            loader = candidate;
+            return true;
+        }
+
+        loader = null;
+        return false;
+    }
+
+    private void ReturnLoader(RWXLoaderAdvanced loader)
+    {
+        if (loader == null)
+        {
+            return;
+        }
+
+        busyLoaders.Remove(loader);
+        if (availableLoaderSet.Add(loader))
+        {
+            availableLoaders.Enqueue(loader);
+        }
     }
 }
