@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -30,19 +31,47 @@ public class VPWorldAreaLoader : MonoBehaviour
     private VirtualParadiseClient vpClient;
     private GameObject areaRoot;
 
-    private async void Start()
+    private struct PendingModelLoad
+    {
+        public string modelName;
+        public UnityEngine.Vector3 position;
+        public Quaternion rotation;
+    }
+
+    private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
+    private Coroutine loadQueueCoroutine;
+    private readonly Dictionary<string, GameObject> modelCache = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> modelsBeingLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<PendingModelLoad>> pendingSpawnsByModel = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
+
+    private void Start()
     {
         // 1) Create a root for this chunk of world
         areaRoot = new GameObject($"VP_Area_{centerX}_{centerY}");
 
+        // Kick off the progressive initialization routine
+        StartCoroutine(InitializeAndLoad());
+    }
+
+    private IEnumerator InitializeAndLoad()
+    {
         // 2) Connect & enter the world
-        await ConnectAndLogin();
+        var loginTask = ConnectAndLogin();
+        yield return WaitForTask(loginTask);
+        if (loginTask.IsFaulted || loginTask.IsCanceled)
+        {
+            string message = loginTask.IsFaulted
+                ? loginTask.Exception?.GetBaseException().Message
+                : "Login task was cancelled";
+            Debug.LogError($"[VP] Failed to connect: {message}");
+            yield break;
+        }
 
         // 3) Ensure our loader and cache manager are set up
         SetupModelLoader();
 
-        // 4) Query the cells & spawn all models
-        await QueryAndBuildArea();
+        // 4) Query the cells & spawn all models progressively
+        yield return QueryAndBuildAreaProgressively();
     }
 
     private async Task ConnectAndLogin()
@@ -83,16 +112,43 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
-    private async Task QueryAndBuildArea()
+    private IEnumerator QueryAndBuildAreaProgressively()
     {
-        var cellTasks = new List<Task<QueryCellResult>>();
         for (int dx = -radius; dx <= radius; dx++)
+        {
             for (int dy = -radius; dy <= radius; dy++)
-                cellTasks.Add(vpClient.QueryCellAsync(centerX + dx, centerY + dy));
+            {
+                var cellTask = vpClient.QueryCellAsync(centerX + dx, centerY + dy);
+                yield return WaitForTask(cellTask);
 
-        var results = await Task.WhenAll(cellTasks);
-        foreach (var cell in results)
-            ProcessCell(cell);
+                if (cellTask.IsFaulted || cellTask.IsCanceled)
+                {
+                    string message = cellTask.IsFaulted
+                        ? cellTask.Exception?.GetBaseException().Message
+                        : "Query was cancelled";
+                    Debug.LogWarning($"[VP] Failed to query cell ({centerX + dx}, {centerY + dy}): {message}");
+                    continue;
+                }
+
+                ProcessCell(cellTask.Result);
+                // Give the queue processor a frame to start loading
+                yield return null;
+            }
+        }
+
+        // Wait for any outstanding model loads to complete before finishing
+        while (pendingModelLoads.Count > 0 || loadQueueCoroutine != null)
+        {
+            yield return null;
+        }
+    }
+
+    private IEnumerator WaitForTask(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            yield return null;
+        }
     }
 
     private void ProcessCell(QueryCellResult cell)
@@ -163,23 +219,153 @@ public class VPWorldAreaLoader : MonoBehaviour
                 }
             }
 
+            EnqueueModelLoad(modelName, pos, unityRot);
+        }
+    }
+
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation)
+    {
+        pendingModelLoads.Enqueue(new PendingModelLoad
+        {
+            modelName = modelName,
+            position = position,
+            rotation = rotation
+        });
+
+        if (loadQueueCoroutine == null)
+        {
+            loadQueueCoroutine = StartCoroutine(ProcessLoadQueue());
+        }
+    }
+
+    private IEnumerator ProcessLoadQueue()
+    {
+        while (pendingModelLoads.Count > 0)
+        {
+            var request = pendingModelLoads.Dequeue();
+
+            if (modelCache.TryGetValue(request.modelName, out var cachedPrefab))
+            {
+                SpawnAdditionalInstance(cachedPrefab, request);
+                yield return null;
+                continue;
+            }
+
+            if (modelsBeingLoaded.Contains(request.modelName))
+            {
+                QueuePendingSpawn(request);
+                yield return null;
+                continue;
+            }
+
+            modelsBeingLoaded.Add(request.modelName);
+
+            bool completed = false;
+            GameObject loadedObject = null;
+            string errorMessage = null;
+
             modelLoader.LoadModelFromRemote(
-                modelName,
+                request.modelName,
                 modelLoader.defaultObjectPath,
                 (go, errMsg) =>
                 {
-                    if (go != null)
-                    {
-                        go.transform.localPosition = pos;
-                        go.transform.localRotation = unityRot;
-                        go.transform.localScale = UnityEngine.Vector3.one;
-                    }
-                    else
-                    {
-                        Debug.LogError($"RWX load failed: {modelName} → {errMsg}");
-                    }
-                }
-            );
+                    loadedObject = go;
+                    errorMessage = errMsg;
+                    completed = true;
+                });
+
+            while (!completed)
+            {
+                yield return null;
+            }
+
+            modelsBeingLoaded.Remove(request.modelName);
+
+            if (loadedObject != null)
+            {
+                modelCache[request.modelName] = loadedObject;
+                PositionAndParentInstance(loadedObject, request);
+                SpawnQueuedInstances(request.modelName, loadedObject);
+            }
+            else
+            {
+                Debug.LogError($"RWX load failed: {request.modelName} → {errorMessage}");
+                ClearFailedQueuedInstances(request.modelName);
+            }
+
+            // Allow other systems to breathe before the next heavy load
+            yield return null;
+        }
+
+        loadQueueCoroutine = null;
+    }
+
+    private Transform GetSpawnParent()
+    {
+        if (modelLoader != null && modelLoader.parentTransform != null)
+        {
+            return modelLoader.parentTransform;
+        }
+
+        return areaRoot != null ? areaRoot.transform : transform;
+    }
+
+    private void PositionAndParentInstance(GameObject instance, PendingModelLoad request)
+    {
+        var parent = GetSpawnParent();
+        instance.transform.SetParent(parent, false);
+        instance.transform.localPosition = request.position;
+        instance.transform.localRotation = request.rotation;
+        instance.transform.localScale = UnityEngine.Vector3.one;
+    }
+
+    private void SpawnAdditionalInstance(GameObject cachedPrefab, PendingModelLoad request)
+    {
+        var clone = UnityEngine.Object.Instantiate(cachedPrefab, GetSpawnParent(), false);
+        clone.name = cachedPrefab.name;
+        clone.transform.localPosition = request.position;
+        clone.transform.localRotation = request.rotation;
+        clone.transform.localScale = UnityEngine.Vector3.one;
+    }
+
+    private void QueuePendingSpawn(PendingModelLoad request)
+    {
+        if (!pendingSpawnsByModel.TryGetValue(request.modelName, out var list))
+        {
+            list = new List<PendingModelLoad>();
+            pendingSpawnsByModel[request.modelName] = list;
+        }
+
+        list.Add(request);
+    }
+
+    private void SpawnQueuedInstances(string modelName, GameObject cachedPrefab)
+    {
+        if (!pendingSpawnsByModel.TryGetValue(modelName, out var queuedRequests))
+        {
+            return;
+        }
+
+        foreach (var pending in queuedRequests)
+        {
+            SpawnAdditionalInstance(cachedPrefab, pending);
+        }
+
+        pendingSpawnsByModel.Remove(modelName);
+    }
+
+    private void ClearFailedQueuedInstances(string modelName)
+    {
+        if (!pendingSpawnsByModel.TryGetValue(modelName, out var queuedRequests))
+        {
+            return;
+        }
+
+        pendingSpawnsByModel.Remove(modelName);
+
+        foreach (var pending in queuedRequests)
+        {
+            Debug.LogError($"Skipping queued spawn for {modelName} at {pending.position} due to load failure.");
         }
     }
 
