@@ -163,7 +163,7 @@ namespace RWXLoader
             meshObject.transform.localScale = Vector3.one;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
-            meshFilter.mesh = mesh;
+            meshFilter.sharedMesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
             
@@ -171,11 +171,11 @@ namespace RWXLoader
             if (context.currentMeshMaterial != null)
             {
                 Material unityMaterial = materialManager.GetUnityMaterial(context.currentMeshMaterial);
-                meshRenderer.material = unityMaterial;
+                meshRenderer.sharedMaterial = unityMaterial;
             }
             else
             {
-                meshRenderer.material = materialManager.GetDefaultMaterial();
+                meshRenderer.sharedMaterial = materialManager.GetDefaultMaterial();
             }
 
             // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
@@ -235,7 +235,7 @@ namespace RWXLoader
             meshObject.transform.localScale = Vector3.one;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
-            meshFilter.mesh = mesh;
+            meshFilter.sharedMesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
             
@@ -243,11 +243,11 @@ namespace RWXLoader
             if (context.currentMeshMaterial != null)
             {
                 Material unityMaterial = materialManager.GetUnityMaterial(context.currentMeshMaterial);
-                meshRenderer.material = unityMaterial;
+                meshRenderer.sharedMaterial = unityMaterial;
             }
             else
             {
-                meshRenderer.material = materialManager.GetDefaultMaterial();
+                meshRenderer.sharedMaterial = materialManager.GetDefaultMaterial();
             }
 
             Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
