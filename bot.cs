@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -30,19 +31,44 @@ public class VPWorldAreaLoader : MonoBehaviour
     private VirtualParadiseClient vpClient;
     private GameObject areaRoot;
 
-    private async void Start()
+    private struct PendingModelLoad
+    {
+        public string modelName;
+        public UnityEngine.Vector3 position;
+        public Quaternion rotation;
+    }
+
+    private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
+    private Coroutine loadQueueCoroutine;
+
+    private void Start()
     {
         // 1) Create a root for this chunk of world
         areaRoot = new GameObject($"VP_Area_{centerX}_{centerY}");
 
+        // Kick off the progressive initialization routine
+        StartCoroutine(InitializeAndLoad());
+    }
+
+    private IEnumerator InitializeAndLoad()
+    {
         // 2) Connect & enter the world
-        await ConnectAndLogin();
+        var loginTask = ConnectAndLogin();
+        yield return WaitForTask(loginTask);
+        if (loginTask.IsFaulted || loginTask.IsCanceled)
+        {
+            string message = loginTask.IsFaulted
+                ? loginTask.Exception?.GetBaseException().Message
+                : "Login task was cancelled";
+            Debug.LogError($"[VP] Failed to connect: {message}");
+            yield break;
+        }
 
         // 3) Ensure our loader and cache manager are set up
         SetupModelLoader();
 
-        // 4) Query the cells & spawn all models
-        await QueryAndBuildArea();
+        // 4) Query the cells & spawn all models progressively
+        yield return QueryAndBuildAreaProgressively();
     }
 
     private async Task ConnectAndLogin()
@@ -83,16 +109,43 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
-    private async Task QueryAndBuildArea()
+    private IEnumerator QueryAndBuildAreaProgressively()
     {
-        var cellTasks = new List<Task<QueryCellResult>>();
         for (int dx = -radius; dx <= radius; dx++)
+        {
             for (int dy = -radius; dy <= radius; dy++)
-                cellTasks.Add(vpClient.QueryCellAsync(centerX + dx, centerY + dy));
+            {
+                var cellTask = vpClient.QueryCellAsync(centerX + dx, centerY + dy);
+                yield return WaitForTask(cellTask);
 
-        var results = await Task.WhenAll(cellTasks);
-        foreach (var cell in results)
-            ProcessCell(cell);
+                if (cellTask.IsFaulted || cellTask.IsCanceled)
+                {
+                    string message = cellTask.IsFaulted
+                        ? cellTask.Exception?.GetBaseException().Message
+                        : "Query was cancelled";
+                    Debug.LogWarning($"[VP] Failed to query cell ({centerX + dx}, {centerY + dy}): {message}");
+                    continue;
+                }
+
+                ProcessCell(cellTask.Result);
+                // Give the queue processor a frame to start loading
+                yield return null;
+            }
+        }
+
+        // Wait for any outstanding model loads to complete before finishing
+        while (pendingModelLoads.Count > 0 || loadQueueCoroutine != null)
+        {
+            yield return null;
+        }
+    }
+
+    private IEnumerator WaitForTask(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            yield return null;
+        }
     }
 
     private void ProcessCell(QueryCellResult cell)
@@ -163,24 +216,66 @@ public class VPWorldAreaLoader : MonoBehaviour
                 }
             }
 
+            EnqueueModelLoad(modelName, pos, unityRot);
+        }
+    }
+
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation)
+    {
+        pendingModelLoads.Enqueue(new PendingModelLoad
+        {
+            modelName = modelName,
+            position = position,
+            rotation = rotation
+        });
+
+        if (loadQueueCoroutine == null)
+        {
+            loadQueueCoroutine = StartCoroutine(ProcessLoadQueue());
+        }
+    }
+
+    private IEnumerator ProcessLoadQueue()
+    {
+        while (pendingModelLoads.Count > 0)
+        {
+            var request = pendingModelLoads.Dequeue();
+
+            bool completed = false;
+            GameObject loadedObject = null;
+            string errorMessage = null;
+
             modelLoader.LoadModelFromRemote(
-                modelName,
+                request.modelName,
                 modelLoader.defaultObjectPath,
                 (go, errMsg) =>
                 {
-                    if (go != null)
-                    {
-                        go.transform.localPosition = pos;
-                        go.transform.localRotation = unityRot;
-                        go.transform.localScale = UnityEngine.Vector3.one;
-                    }
-                    else
-                    {
-                        Debug.LogError($"RWX load failed: {modelName} → {errMsg}");
-                    }
-                }
-            );
+                    loadedObject = go;
+                    errorMessage = errMsg;
+                    completed = true;
+                });
+
+            while (!completed)
+            {
+                yield return null;
+            }
+
+            if (loadedObject != null)
+            {
+                loadedObject.transform.localPosition = request.position;
+                loadedObject.transform.localRotation = request.rotation;
+                loadedObject.transform.localScale = UnityEngine.Vector3.one;
+            }
+            else
+            {
+                Debug.LogError($"RWX load failed: {request.modelName} → {errorMessage}");
+            }
+
+            // Allow other systems to breathe before the next heavy load
+            yield return null;
         }
+
+        loadQueueCoroutine = null;
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
