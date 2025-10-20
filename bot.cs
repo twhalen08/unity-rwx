@@ -1,0 +1,199 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+using UnityEngine;
+using VpNet;
+using RWXLoader;
+
+public class VPWorldAreaLoader : MonoBehaviour
+{
+    [Header("VP Login")]
+    public string userName = "Tom";
+    public string botName = "Unity";
+    public string applicationName = "Unity";
+    public string worldName = "VP-Build";
+
+    [Header("Area Settings")]
+    public int centerX = 0;
+    public int centerY = 0;
+    public int radius = 1;
+
+    [Header("Model Loader")]
+    [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
+    public RWXLoaderAdvanced modelLoader;
+
+    [Header("VP Object Server")]
+    [Tooltip("Base URL of the VP build object server")]
+    public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
+
+    private VirtualParadiseClient vpClient;
+    private GameObject areaRoot;
+
+    private async void Start()
+    {
+        // 1) Create a root for this chunk of world
+        areaRoot = new GameObject($"VP_Area_{centerX}_{centerY}");
+
+        // 2) Connect & enter the world
+        await ConnectAndLogin();
+
+        // 3) Ensure our loader and cache manager are set up
+        SetupModelLoader();
+
+        // 4) Query the cells & spawn all models
+        await QueryAndBuildArea();
+    }
+
+    private async Task ConnectAndLogin()
+    {
+        vpClient = new VirtualParadiseClient
+        {
+            Configuration = new VirtualParadiseClientConfiguration
+            {
+                UserName = userName,
+                BotName = botName,
+                ApplicationName = applicationName,
+                World = new World { Name = worldName }
+            }
+        };
+        await vpClient.LoginAndEnterAsync("xxxxxxxx", true);
+        Debug.Log($"[VP] Connected & entered '{worldName}' as {userName}");
+    }
+
+    private void SetupModelLoader()
+    {
+        // Guarantee we have an RWXLoaderAdvanced in the scene
+        if (modelLoader == null)
+        {
+            var loaderGO = new GameObject("RWX Remote Loader");
+            modelLoader = loaderGO.AddComponent<RWXLoaderAdvanced>();
+        }
+
+        // Point it at our VP object server, enable debug, and parent under areaRoot
+        modelLoader.defaultObjectPath = objectPath.TrimEnd('/') + "/";
+        modelLoader.enableDebugLogs = true;
+        modelLoader.parentTransform = areaRoot.transform;
+
+        // Also ensure the asset-manager singleton exists
+        if (RWXAssetManager.Instance == null)
+        {
+            var mgrGO = new GameObject("RWX Asset Manager");
+            mgrGO.AddComponent<RWXAssetManager>();
+        }
+    }
+
+    private async Task QueryAndBuildArea()
+    {
+        var cellTasks = new List<Task<QueryCellResult>>();
+        for (int dx = -radius; dx <= radius; dx++)
+            for (int dy = -radius; dy <= radius; dy++)
+                cellTasks.Add(vpClient.QueryCellAsync(centerX + dx, centerY + dy));
+
+        var results = await Task.WhenAll(cellTasks);
+        foreach (var cell in results)
+            ProcessCell(cell);
+    }
+
+    private void ProcessCell(QueryCellResult cell)
+    {
+        foreach (var obj in cell.Objects)
+        {
+            if (string.IsNullOrEmpty(obj.Model))
+                continue;
+
+            // Strip trailing ".rwx" if present
+            string modelName = obj.Model.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFileNameWithoutExtension(obj.Model)
+                : obj.Model;
+
+            // Convert VP coords → Unity coords (swap X and Z)
+            UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
+
+            // Convert VP axis-angle rotation to Unity Quaternion
+            var vpR = obj.Rotation;
+            var vpAngle = obj.Angle;
+            Quaternion unityRot = Quaternion.identity; // Default to no rotation
+            
+            // Handle VP rotation - special case for infinity angle (treat as Euler angles)
+            if (double.IsInfinity(vpAngle) && !double.IsNaN(vpR.X) && !double.IsNaN(vpR.Y) && !double.IsNaN(vpR.Z))
+            {
+                // When angle is infinity, VP seems to use the rotation vector as Euler angles
+                // Invert both Y and Z rotations to fix all orientation issues
+                unityRot = Quaternion.Euler((float)vpR.X, -(float)vpR.Y, -(float)vpR.Z);
+            }
+            else if (Math.Abs(vpAngle) > 0.001 && !double.IsNaN(vpAngle) && !double.IsInfinity(vpAngle)) // Normal axis-angle rotation
+            {
+                // Convert rotation axis to match our coordinate system (X-Y ground, Z height)
+                UnityEngine.Vector3 rotationAxis = new UnityEngine.Vector3((float)vpR.X, (float)vpR.Y, (float)vpR.Z);
+                
+                // Check for NaN or infinite values in the rotation axis
+                if (float.IsNaN(rotationAxis.x) || float.IsNaN(rotationAxis.y) || float.IsNaN(rotationAxis.z) ||
+                    float.IsInfinity(rotationAxis.x) || float.IsInfinity(rotationAxis.y) || float.IsInfinity(rotationAxis.z))
+                {
+                    Debug.LogWarning($"Invalid rotation axis for {modelName}: {rotationAxis}, using identity");
+                }
+                // Validate the rotation axis - must not be zero vector
+                else if (rotationAxis.magnitude > 0.001f)
+                {
+                    rotationAxis = rotationAxis.normalized; // Normalize the axis
+                    // Convert VP angle from radians to degrees for Unity
+                    float angleInDegrees = (float)vpAngle * Mathf.Rad2Deg;
+                    
+                    // Check for valid angle
+                    if (!float.IsNaN(angleInDegrees) && !float.IsInfinity(angleInDegrees))
+                    {
+                        unityRot = Quaternion.AngleAxis(angleInDegrees, rotationAxis);
+                        
+                        // Final validation of the quaternion
+                        if (float.IsNaN(unityRot.x) || float.IsNaN(unityRot.y) || float.IsNaN(unityRot.z) || float.IsNaN(unityRot.w))
+                        {
+                            Debug.LogWarning($"Generated NaN quaternion for {modelName}, using identity");
+                            unityRot = Quaternion.identity;
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"Invalid angle for {modelName}: {vpAngle} radians, using identity");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"Zero rotation axis for {modelName}, using identity");
+                }
+            }
+
+            modelLoader.LoadModelFromRemote(
+                modelName,
+                modelLoader.defaultObjectPath,
+                (go, errMsg) =>
+                {
+                    if (go != null)
+                    {
+                        go.transform.localPosition = pos;
+                        go.transform.localRotation = unityRot;
+                        go.transform.localScale = UnityEngine.Vector3.one;
+                    }
+                    else
+                    {
+                        Debug.LogError($"RWX load failed: {modelName} → {errMsg}");
+                    }
+                }
+            );
+        }
+    }
+
+    private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
+    {
+        // Convert VP coordinates to Unity with X-Y as ground plane and Z as height:
+        // Flip only X axis to fix mirroring, keep Y and Z normal
+        // VP.X (east/west on ground) → Unity.-X (flip east/west)
+        // VP.Y (north/south on ground) → Unity.Y (normal north/south)
+        // VP.Z (up/down height) → Unity.Z (up/down height)
+        return new UnityEngine.Vector3(
+            -(float)vpPos.X,  // VP ground X to Unity ground -X (flipped)
+            (float)vpPos.Y,   // VP ground Y to Unity ground Y (normal)
+            (float)vpPos.Z    // VP height Z to Unity height Z
+        );
+    }
+}

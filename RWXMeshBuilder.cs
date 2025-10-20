@@ -1,0 +1,273 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace RWXLoader
+{
+    public class RWXMeshBuilder
+    {
+        private RWXMaterialManager materialManager;
+
+        public RWXMeshBuilder(RWXMaterialManager materialManager)
+        {
+            this.materialManager = materialManager;
+        }
+
+        public void CreateTriangle(RWXParseContext context, int a, int b, int c)
+        {
+            if (a < 0 || a >= context.vertices.Count ||
+                b < 0 || b >= context.vertices.Count ||
+                c < 0 || c >= context.vertices.Count)
+            {
+                Debug.LogWarning($"Triangle indices out of range: {a}, {b}, {c} (vertex count: {context.vertices.Count})");
+                return;
+            }
+
+            // FIXED: Always set mesh material to current material state when adding geometry
+            // This ensures the first triangle gets the correct material with texture
+            if (context.currentTriangles.Count == 0)
+            {
+                // For the first triangle, always use the current material state
+                context.currentMeshMaterial = context.currentMaterial?.Clone();
+            }
+            else
+            {
+                // For subsequent triangles, check if material changed
+                CheckMaterialChange(context);
+            }
+
+            // FIXED: Add triangle indices in the order passed from parser
+            // The parser already handles coordinate system conversion by reversing winding
+            context.currentTriangles.Add(a);
+            context.currentTriangles.Add(b);
+            context.currentTriangles.Add(c);
+        }
+
+        public void CreateQuad(RWXParseContext context, int a, int b, int c, int d)
+        {
+            if (a < 0 || a >= context.vertices.Count ||
+                b < 0 || b >= context.vertices.Count ||
+                c < 0 || c >= context.vertices.Count ||
+                d < 0 || d >= context.vertices.Count)
+            {
+                Debug.LogWarning($"Quad indices out of range: {a}, {b}, {c}, {d} (vertex count: {context.vertices.Count})");
+                return;
+            }
+
+            // Split quad into two triangles
+            CreateTriangle(context, a, b, c);
+            CreateTriangle(context, a, c, d);
+        }
+
+        public void CreatePolygon(RWXParseContext context, List<int> indices)
+        {
+            if (indices.Count < 3) return;
+
+            // Validate all indices
+            foreach (int index in indices)
+            {
+                if (index < 0 || index >= context.vertices.Count)
+                {
+                    Debug.LogWarning($"Polygon index out of range: {index} (vertex count: {context.vertices.Count})");
+                    return;
+                }
+            }
+
+            // Triangulate polygon using fan triangulation
+            for (int i = 1; i < indices.Count - 1; i++)
+            {
+                CreateTriangle(context, indices[0], indices[i], indices[i + 1]);
+            }
+        }
+
+        public void CheckMaterialChange(RWXParseContext context)
+        {
+            // Only commit if we actually have triangles AND the material has changed
+            if (context.currentTriangles.Count > 0 && context.currentMeshMaterial != null)
+            {
+                string currentSig = context.currentMaterial.GetMaterialSignature();
+                string meshSig = context.currentMeshMaterial.GetMaterialSignature();
+
+                if (currentSig != meshSig)
+                {
+                    CommitCurrentMesh(context);
+                }
+            }
+        }
+
+        public void CommitCurrentMesh(RWXParseContext context)
+        {
+            if (context.vertices.Count == 0 || context.currentTriangles.Count == 0)
+            {
+                // Reset material for next mesh
+                context.currentMeshMaterial = context.currentMaterial?.Clone();
+                return;
+            }
+
+            // FIXED: Create mesh immediately for the current clump instead of deferring
+            // This ensures meshes are created as children of their respective clumps
+            CreateMeshForCurrentClump(context);
+
+            // FIXED: Don't clear vertices - they may be referenced by geometry in other clumps
+            // Only clear triangles for next mesh
+            context.currentTriangles.Clear();
+            context.currentMeshMaterial = context.currentMaterial?.Clone();
+        }
+
+        // FIXED: Create mesh immediately for the current clump
+        private void CreateMeshForCurrentClump(RWXParseContext context)
+        {
+            if (context.vertices.Count == 0 || context.currentTriangles.Count == 0)
+            {
+                return;
+            }
+
+            // Create mesh immediately for this clump
+            var mesh = new Mesh();
+            
+            // Convert vertices to arrays with coordinate system conversion
+            var positions = new Vector3[context.vertices.Count];
+            var uvs = new Vector2[context.vertices.Count];
+            
+            for (int i = 0; i < context.vertices.Count; i++)
+            {
+                // Apply RWX to Unity coordinate system conversion: flip X axis
+                Vector3 rwxPos = context.vertices[i].position;
+                positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
+                uvs[i] = context.vertices[i].uv;
+            }
+            
+            // Fix triangle winding order for coordinate system conversion
+            var triangles = new int[context.currentTriangles.Count];
+            for (int i = 0; i < context.currentTriangles.Count; i += 3)
+            {
+                // Reverse triangle winding order to account for flipped X coordinate
+                triangles[i] = context.currentTriangles[i];
+                triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
+                triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
+            }
+            
+            mesh.vertices = positions;
+            mesh.uv = uvs;
+            mesh.triangles = triangles;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+
+            // Create mesh object as child of current clump
+            string materialName = context.currentMeshMaterial?.texture ?? "Material";
+            if (materialName == "default") materialName = "Default";
+            
+            var meshObject = new GameObject(materialName);
+            meshObject.transform.SetParent(context.currentObject.transform);
+            meshObject.transform.localPosition = Vector3.zero;
+            meshObject.transform.localRotation = Quaternion.identity;
+            meshObject.transform.localScale = Vector3.one;
+
+            var meshFilter = meshObject.AddComponent<MeshFilter>();
+            meshFilter.mesh = mesh;
+
+            var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            
+            // Apply material
+            if (context.currentMeshMaterial != null)
+            {
+                Material unityMaterial = materialManager.GetUnityMaterial(context.currentMeshMaterial);
+                meshRenderer.material = unityMaterial;
+            }
+            else
+            {
+                meshRenderer.material = materialManager.GetDefaultMaterial();
+            }
+
+            // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
+            int triangleCount = context.currentTriangles.Count / 3;
+            if (triangleCount > 10)
+            {
+                Debug.Log($"🎯 BODY PART MESH: '{materialName}' | {positions.Length} vertices, {triangleCount} triangles | Clump: '{context.currentObject.name}'");
+            }
+        }
+
+        // New method to immediately create a mesh for prototype instances
+        public void CommitPrototypeMesh(RWXParseContext context)
+        {
+            if (context.vertices.Count == 0 || context.currentTriangles.Count == 0)
+            {
+                return;
+            }
+
+            // Create mesh immediately for this prototype instance
+            var mesh = new Mesh();
+            
+            // Convert vertices to arrays with coordinate system conversion
+            var positions = new Vector3[context.vertices.Count];
+            var uvs = new Vector2[context.vertices.Count];
+            
+            for (int i = 0; i < context.vertices.Count; i++)
+            {
+                // Apply RWX to Unity coordinate system conversion: flip X axis
+                Vector3 rwxPos = context.vertices[i].position;
+                positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
+                uvs[i] = context.vertices[i].uv;
+            }
+            
+            // Fix triangle winding order for coordinate system conversion
+            var triangles = new int[context.currentTriangles.Count];
+            for (int i = 0; i < context.currentTriangles.Count; i += 3)
+            {
+                // Reverse triangle winding order to account for flipped X coordinate
+                triangles[i] = context.currentTriangles[i];
+                triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
+                triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
+            }
+            
+            mesh.vertices = positions;
+            mesh.uv = uvs;
+            mesh.triangles = triangles;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+
+            // Create mesh object as child of current object (the prototype instance)
+            string materialName = context.currentMeshMaterial?.texture ?? "PrototypeMesh";
+            var meshObject = new GameObject(materialName);
+            meshObject.transform.SetParent(context.currentObject.transform);
+            // FIXED: Explicitly set local position to zero to ensure mesh appears at origin relative to positioned GameObject
+            meshObject.transform.localPosition = Vector3.zero;
+            meshObject.transform.localRotation = Quaternion.identity;
+            meshObject.transform.localScale = Vector3.one;
+
+            var meshFilter = meshObject.AddComponent<MeshFilter>();
+            meshFilter.mesh = mesh;
+
+            var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            
+            // Apply material
+            if (context.currentMeshMaterial != null)
+            {
+                Material unityMaterial = materialManager.GetUnityMaterial(context.currentMeshMaterial);
+                meshRenderer.material = unityMaterial;
+            }
+            else
+            {
+                meshRenderer.material = materialManager.GetDefaultMaterial();
+            }
+
+            Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
+            Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
+            Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+
+            // Clear for next mesh
+            context.currentTriangles.Clear();
+            context.currentMeshMaterial = context.currentMaterial?.Clone();
+        }
+
+        // FIXED: Simplified final commit - just commit any remaining geometry
+        public void FinalCommit(RWXParseContext context)
+        {
+            // Commit any remaining geometry
+            if (context.currentTriangles.Count > 0)
+            {
+                CommitCurrentMesh(context);
+            }
+        }
+
+    }
+}
