@@ -36,6 +36,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         public string modelName;
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
+        public Transform parent;
     }
 
     private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
@@ -43,6 +44,7 @@ public class VPWorldAreaLoader : MonoBehaviour
     private readonly Dictionary<string, GameObject> modelCache = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> modelsBeingLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<PendingModelLoad>> pendingSpawnsByModel = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Vector2Int, Transform> cellRoots = new Dictionary<Vector2Int, Transform>();
 
     private void Start()
     {
@@ -114,32 +116,61 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private IEnumerator QueryAndBuildAreaProgressively()
     {
-        for (int dx = -radius; dx <= radius; dx++)
+        foreach (var offset in EnumerateCellOffsets())
         {
-            for (int dy = -radius; dy <= radius; dy++)
+            int cellX = centerX + offset.x;
+            int cellY = centerY + offset.y;
+
+            var cellTask = vpClient.QueryCellAsync(cellX, cellY);
+            yield return WaitForTask(cellTask);
+
+            if (cellTask.IsFaulted || cellTask.IsCanceled)
             {
-                var cellTask = vpClient.QueryCellAsync(centerX + dx, centerY + dy);
-                yield return WaitForTask(cellTask);
-
-                if (cellTask.IsFaulted || cellTask.IsCanceled)
-                {
-                    string message = cellTask.IsFaulted
-                        ? cellTask.Exception?.GetBaseException().Message
-                        : "Query was cancelled";
-                    Debug.LogWarning($"[VP] Failed to query cell ({centerX + dx}, {centerY + dy}): {message}");
-                    continue;
-                }
-
-                ProcessCell(cellTask.Result);
-                // Give the queue processor a frame to start loading
-                yield return null;
+                string message = cellTask.IsFaulted
+                    ? cellTask.Exception?.GetBaseException().Message
+                    : "Query was cancelled";
+                Debug.LogWarning($"[VP] Failed to query cell ({cellX}, {cellY}): {message}");
+                continue;
             }
+
+            var cellParent = GetOrCreateCellRoot(cellX, cellY);
+            ProcessCell(cellTask.Result, cellParent);
+            // Give the queue processor a frame to start loading
+            yield return null;
         }
 
         // Wait for any outstanding model loads to complete before finishing
         while (pendingModelLoads.Count > 0 || loadQueueCoroutine != null)
         {
             yield return null;
+        }
+    }
+
+    private IEnumerable<Vector2Int> EnumerateCellOffsets()
+    {
+        int effectiveRadius = Mathf.Max(0, radius);
+        if (effectiveRadius == 0)
+        {
+            yield return Vector2Int.zero;
+            yield break;
+        }
+
+        yield return Vector2Int.zero;
+
+        for (int ring = 1; ring <= effectiveRadius; ring++)
+        {
+            for (int dx = -ring; dx <= ring; dx++)
+            {
+                for (int dy = -ring; dy <= ring; dy++)
+                {
+                    if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy)) != ring)
+                    {
+                        continue;
+                    }
+
+                    yield return new Vector2Int(dx, dy);
+                }
+            }
         }
     }
 
@@ -151,7 +182,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
-    private void ProcessCell(QueryCellResult cell)
+    private void ProcessCell(QueryCellResult cell, Transform cellParent)
     {
         foreach (var obj in cell.Objects)
         {
@@ -219,17 +250,18 @@ public class VPWorldAreaLoader : MonoBehaviour
                 }
             }
 
-            EnqueueModelLoad(modelName, pos, unityRot);
+            EnqueueModelLoad(modelName, pos, unityRot, cellParent);
         }
     }
 
-    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation)
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, Transform parent)
     {
         pendingModelLoads.Enqueue(new PendingModelLoad
         {
             modelName = modelName,
             position = position,
-            rotation = rotation
+            rotation = rotation,
+            parent = parent
         });
 
         if (loadQueueCoroutine == null)
@@ -312,7 +344,7 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private void PositionAndParentInstance(GameObject instance, PendingModelLoad request)
     {
-        var parent = GetSpawnParent();
+        var parent = request.parent != null ? request.parent : GetSpawnParent();
         instance.transform.SetParent(parent, false);
         instance.transform.localPosition = request.position;
         instance.transform.localRotation = request.rotation;
@@ -321,7 +353,8 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private void SpawnAdditionalInstance(GameObject cachedPrefab, PendingModelLoad request)
     {
-        var clone = UnityEngine.Object.Instantiate(cachedPrefab, GetSpawnParent(), false);
+        var parent = request.parent != null ? request.parent : GetSpawnParent();
+        var clone = UnityEngine.Object.Instantiate(cachedPrefab, parent, false);
         clone.name = cachedPrefab.name;
         clone.transform.localPosition = request.position;
         clone.transform.localRotation = request.rotation;
@@ -367,6 +400,21 @@ public class VPWorldAreaLoader : MonoBehaviour
         {
             Debug.LogError($"Skipping queued spawn for {modelName} at {pending.position} due to load failure.");
         }
+    }
+
+    private Transform GetOrCreateCellRoot(int cellX, int cellY)
+    {
+        var key = new Vector2Int(cellX, cellY);
+        if (cellRoots.TryGetValue(key, out var cached) && cached != null)
+        {
+            return cached;
+        }
+
+        var parent = areaRoot != null ? areaRoot.transform : GetSpawnParent();
+        var cellGO = new GameObject($"Cell_{cellX}_{cellY}");
+        cellGO.transform.SetParent(parent, false);
+        cellRoots[key] = cellGO.transform;
+        return cellGO.transform;
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
