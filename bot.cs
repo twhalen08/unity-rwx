@@ -49,6 +49,7 @@ public class VPWorldAreaLoader : MonoBehaviour
     private Coroutine loadQueueCoroutine;
     private readonly Dictionary<string, GameObject> modelCache = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> modelsBeingLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> modelsQueuedForLoad = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<PendingModelLoad>> pendingSpawnsByModel = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<Vector2Int, Transform> cellRoots = new Dictionary<Vector2Int, Transform>();
     private readonly List<RWXLoaderAdvanced> loaderPool = new List<RWXLoaderAdvanced>();
@@ -269,13 +270,28 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, Transform parent)
     {
-        pendingModelLoads.Enqueue(new PendingModelLoad
+        var request = new PendingModelLoad
         {
             modelName = modelName,
             position = position,
             rotation = rotation,
             parent = parent
-        });
+        };
+
+        if (modelCache.TryGetValue(modelName, out var cachedPrefab))
+        {
+            SpawnAdditionalInstance(cachedPrefab, request);
+            return;
+        }
+
+        if (modelsBeingLoaded.Contains(modelName) || modelsQueuedForLoad.Contains(modelName))
+        {
+            QueuePendingSpawn(request);
+            return;
+        }
+
+        pendingModelLoads.Enqueue(request);
+        modelsQueuedForLoad.Add(modelName);
 
         if (loadQueueCoroutine == null)
         {
@@ -286,10 +302,10 @@ public class VPWorldAreaLoader : MonoBehaviour
     private IEnumerator ProcessLoadQueue()
     {
         var deferredLoads = new List<PendingModelLoad>();
-        const int maxProcessesPerFrame = 16;
 
         while (pendingModelLoads.Count > 0 || deferredLoads.Count > 0 || busyLoaders.Count > 0)
         {
+            int maxProcessesPerFrame = Mathf.Max(16, maxConcurrentLoads * 8);
             int processedThisFrame = 0;
 
             while (pendingModelLoads.Count > 0)
@@ -300,6 +316,7 @@ public class VPWorldAreaLoader : MonoBehaviour
                 if (modelCache.TryGetValue(request.modelName, out var cachedPrefab))
                 {
                     SpawnAdditionalInstance(cachedPrefab, request);
+                    modelsQueuedForLoad.Remove(request.modelName);
                     if (processedThisFrame >= maxProcessesPerFrame)
                     {
                         break;
@@ -376,6 +393,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
 
         modelsBeingLoaded.Remove(initialRequest.modelName);
+        modelsQueuedForLoad.Remove(initialRequest.modelName);
 
         if (loadedObject != null)
         {
