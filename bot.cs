@@ -424,19 +424,15 @@ public class VPWorldAreaLoader : MonoBehaviour
     {
         var parent = request.parent != null ? request.parent : GetSpawnParent();
         instance.transform.SetParent(parent, false);
-        instance.transform.localPosition = request.position;
-        instance.transform.localRotation = request.rotation;
+        instance.transform.SetLocalPositionAndRotation(request.position, request.rotation);
         instance.transform.localScale = UnityEngine.Vector3.one;
     }
 
     private void SpawnAdditionalInstance(GameObject cachedPrefab, PendingModelLoad request)
     {
-        var parent = request.parent != null ? request.parent : GetSpawnParent();
-        var clone = UnityEngine.Object.Instantiate(cachedPrefab, parent, false);
+        var clone = UnityEngine.Object.Instantiate(cachedPrefab);
         clone.name = cachedPrefab.name;
-        clone.transform.localPosition = request.position;
-        clone.transform.localRotation = request.rotation;
-        clone.transform.localScale = UnityEngine.Vector3.one;
+        PositionAndParentInstance(clone, request);
     }
 
     private void QueuePendingSpawn(PendingModelLoad request)
