@@ -106,8 +106,10 @@ namespace RWXLoader
             var instanceObject = new GameObject($"Proto_{prototypeName}");
             instanceObject.transform.SetParent(context.currentObject.transform);
 
-            // Apply the full accumulated transform (including rotation/scale) so leaves align with trunks, etc.
-            mainParser.ApplyTransformToObject(context.currentTransform, instanceObject, context);
+            // Do **not** bake the current transform directly onto the instance here. The clump that owns this
+            // instance will receive the accumulated transform at ClumpEnd, and applying it twice caused
+            // double translations (e.g., palm leaves floating above trunks). Keep the instance at identity and
+            // let the parent clump carry the transform once.
 
             // Save current state
             var savedObject = context.currentObject;
