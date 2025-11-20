@@ -145,11 +145,11 @@ namespace RWXLoader
                 triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
-            
+
             mesh.vertices = positions;
             mesh.uv = uvs;
             mesh.triangles = triangles;
-            mesh.RecalculateNormals();
+            mesh.RecalculateNormals(180f);
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current clump
@@ -218,11 +218,11 @@ namespace RWXLoader
                 triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
-            
+
             mesh.vertices = positions;
             mesh.uv = uvs;
             mesh.triangles = triangles;
-            mesh.RecalculateNormals();
+            mesh.RecalculateNormals(180f);
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current object (the prototype instance)
