@@ -41,6 +41,8 @@ namespace RWXLoader
         private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", RegexOptions.IgnoreCase);
         private readonly Regex nonCommentRegex = new Regex(@"^(.*)#(?!\!)", RegexOptions.IgnoreCase);
 
+        internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
+
         private RWXMeshBuilder meshBuilder;
         private RWXPrototypeParser prototypeParser;
 
@@ -478,20 +480,51 @@ namespace RWXLoader
             return true;
         }
 
-        private Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix, RWXParseContext context)
+        internal Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix, RWXParseContext context)
         {
-            // Apply coordinate system conversion to ALL transforms
-            // Flip X translation for RWX right-handed to Unity left-handed conversion
-            Matrix4x4 unityMatrix = rwxMatrix;
-            unityMatrix.m03 = -rwxMatrix.m03;
-            
+            // Reflect across X on both sides to convert the right-handed RWX matrix to Unity's left-handed space.
+            Matrix4x4 unityMatrix = RwxToUnityReflection * rwxMatrix * RwxToUnityReflection;
+
             string hierarchyPath = GetHierarchyPath(context);
             Debug.Log($"🔄 MATRIX CONVERSION | {hierarchyPath}");
             Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
             Debug.Log($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
             Debug.Log($"   Stack Depth: {context.objectStack.Count}");
-            
+
             return unityMatrix;
+        }
+
+        internal void ApplyTransformToObject(Matrix4x4 rwxMatrix, GameObject target, RWXParseContext context)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(rwxMatrix, context);
+
+            Vector3 position, scale;
+            Quaternion rotation;
+
+            if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
+            {
+                target.transform.localPosition = position;
+                target.transform.localRotation = rotation;
+                target.transform.localScale = scale;
+
+                Debug.Log($"   🔄 Applied accumulated transform:");
+                Debug.Log($"   📍 Local Position: {position:F6}");
+                Debug.Log($"   🔄 Local Rotation: {rotation}");
+                Debug.Log($"   📏 Local Scale: {scale:F6}");
+            }
+            else
+            {
+                Vector3 rwxPosition = new Vector3(rwxMatrix.m03, rwxMatrix.m13, rwxMatrix.m23);
+                Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
+
+                target.transform.localPosition = fallbackPosition;
+                Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
+            }
         }
 
         private bool IsValidFloat(float value)
@@ -675,34 +708,7 @@ namespace RWXLoader
             // Apply the accumulated transform to the current clump before ending it
             if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
             {
-                // Convert RWX transform matrix to Unity coordinate system
-                Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(context.currentTransform, context);
-                
-                // Try to decompose the matrix into TRS components
-                Vector3 position, scale;
-                Quaternion rotation;
-                
-                if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
-                {
-                    // Apply the decomposed transform
-                    context.currentObject.transform.localPosition = position;
-                    context.currentObject.transform.localRotation = rotation;
-                    context.currentObject.transform.localScale = scale;
-                    
-                    Debug.Log($"   🔄 Applied accumulated transform:");
-                    Debug.Log($"   📍 Local Position: {position:F6}");
-                    Debug.Log($"   🔄 Local Rotation: {rotation}");
-                    Debug.Log($"   📏 Local Scale: {scale:F6}");
-                }
-                else
-                {
-                    // Fallback: only extract translation if matrix decomposition fails
-                    Vector3 rwxPosition = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-                    Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
-                    
-                    context.currentObject.transform.localPosition = fallbackPosition;
-                    Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
-                }
+                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
             }
             else if (context.currentObject != null)
             {
@@ -946,26 +952,15 @@ namespace RWXLoader
                 values[i] = float.Parse(floatMatches[i].Value, CultureInfo.InvariantCulture);
             }
 
-            // FIXED: RWX matrices are ROW-MAJOR with translation in the FINAL ROW
-            // According to RenderWare docs: "translation in the final row"
-            // RWX format: [m00,m01,m02,m03, m10,m11,m12,m13, m20,m21,m22,m23, m30,m31,m32,m33]
-            // Translation is in the final row: values[12], values[13], values[14]
-            // But Unity uses COLUMN-MAJOR with translation in the final column
-            
-            // Create RWX matrix in row-major format first
-            Matrix4x4 rwxMatrix = new Matrix4x4();
-            
-            // Row 0: X axis
-            rwxMatrix.m00 = values[0];  rwxMatrix.m01 = values[1];  rwxMatrix.m02 = values[2];  rwxMatrix.m03 = values[3];
-            // Row 1: Y axis
-            rwxMatrix.m10 = values[4];  rwxMatrix.m11 = values[5];  rwxMatrix.m12 = values[6];  rwxMatrix.m13 = values[7];
-            // Row 2: Z axis
-            rwxMatrix.m20 = values[8];  rwxMatrix.m21 = values[9];  rwxMatrix.m22 = values[10]; rwxMatrix.m23 = values[11];
-            // Row 3: Translation and homogeneous coordinate
-            rwxMatrix.m30 = values[12]; rwxMatrix.m31 = values[13]; rwxMatrix.m32 = values[14]; rwxMatrix.m33 = values[15];
+            // RWX matrices are stored in row-major order with translation in the LAST COLUMN
+            // RenderWare docs describe the matrix as: [m00 m01 m02 tx; m10 m11 m12 ty; m20 m21 m22 tz; 0 0 0 1]
+            // Unity's Matrix4x4 fields are addressed by row/column, so we can assign them directly without transposing.
+            Matrix4x4 matrix = new Matrix4x4();
 
-            // Now transpose to convert from RWX row-major to Unity column-major
-            Matrix4x4 matrix = rwxMatrix.transpose;
+            matrix.m00 = values[0];  matrix.m01 = values[1];  matrix.m02 = values[2];  matrix.m03 = values[3];
+            matrix.m10 = values[4];  matrix.m11 = values[5];  matrix.m12 = values[6];  matrix.m13 = values[7];
+            matrix.m20 = values[8];  matrix.m21 = values[9];  matrix.m22 = values[10]; matrix.m23 = values[11];
+            matrix.m30 = values[12]; matrix.m31 = values[13]; matrix.m32 = values[14]; matrix.m33 = values[15];
             
             // HACK: Some RWX files have m33=0 in their matrices, which is invalid for TRS.
             // Force it to 1 to treat it as an affine transformation.
