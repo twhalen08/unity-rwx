@@ -105,20 +105,10 @@ namespace RWXLoader
             // Create a new GameObject for this prototype instance
             var instanceObject = new GameObject($"Proto_{prototypeName}");
             instanceObject.transform.SetParent(context.currentObject.transform);
-            
-            // For tree01.rwx, the issue is that the context transform contains the cumulative
-            // transforms but we need to extract just the translation component for positioning
-            Vector3 contextPosition = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-            
-            // Convert RWX coordinates to Unity coordinates (flip X)
-            Vector3 unityPosition = new Vector3(-contextPosition.x, contextPosition.y, contextPosition.z);
-            
-            instanceObject.transform.localPosition = unityPosition;
-            instanceObject.transform.localRotation = Quaternion.identity;
-            instanceObject.transform.localScale = Vector3.one;
-            
-            Debug.Log($"🌲 Instance positioned at: RWX({contextPosition.x:F6}, {contextPosition.y:F6}, {contextPosition.z:F6}) → Unity({unityPosition.x:F6}, {unityPosition.y:F6}, {unityPosition.z:F6})");
-            
+
+            // Apply the full accumulated transform (including rotation/scale) so leaves align with trunks, etc.
+            mainParser.ApplyTransformToObject(context.currentTransform, instanceObject, context);
+
             // Save current state
             var savedObject = context.currentObject;
             var savedMaterial = context.currentMaterial.Clone();

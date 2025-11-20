@@ -478,7 +478,7 @@ namespace RWXLoader
             return true;
         }
 
-        private Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix, RWXParseContext context)
+        internal Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix, RWXParseContext context)
         {
             // Apply coordinate system conversion to ALL transforms
             // Flip X translation for RWX right-handed to Unity left-handed conversion
@@ -490,8 +490,41 @@ namespace RWXLoader
             Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
             Debug.Log($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
             Debug.Log($"   Stack Depth: {context.objectStack.Count}");
-            
+
             return unityMatrix;
+        }
+
+        internal void ApplyTransformToObject(Matrix4x4 rwxMatrix, GameObject target, RWXParseContext context)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(rwxMatrix, context);
+
+            Vector3 position, scale;
+            Quaternion rotation;
+
+            if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
+            {
+                target.transform.localPosition = position;
+                target.transform.localRotation = rotation;
+                target.transform.localScale = scale;
+
+                Debug.Log($"   🔄 Applied accumulated transform:");
+                Debug.Log($"   📍 Local Position: {position:F6}");
+                Debug.Log($"   🔄 Local Rotation: {rotation}");
+                Debug.Log($"   📏 Local Scale: {scale:F6}");
+            }
+            else
+            {
+                Vector3 rwxPosition = new Vector3(rwxMatrix.m03, rwxMatrix.m13, rwxMatrix.m23);
+                Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
+
+                target.transform.localPosition = fallbackPosition;
+                Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
+            }
         }
 
         private bool IsValidFloat(float value)
@@ -675,34 +708,7 @@ namespace RWXLoader
             // Apply the accumulated transform to the current clump before ending it
             if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
             {
-                // Convert RWX transform matrix to Unity coordinate system
-                Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(context.currentTransform, context);
-                
-                // Try to decompose the matrix into TRS components
-                Vector3 position, scale;
-                Quaternion rotation;
-                
-                if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
-                {
-                    // Apply the decomposed transform
-                    context.currentObject.transform.localPosition = position;
-                    context.currentObject.transform.localRotation = rotation;
-                    context.currentObject.transform.localScale = scale;
-                    
-                    Debug.Log($"   🔄 Applied accumulated transform:");
-                    Debug.Log($"   📍 Local Position: {position:F6}");
-                    Debug.Log($"   🔄 Local Rotation: {rotation}");
-                    Debug.Log($"   📏 Local Scale: {scale:F6}");
-                }
-                else
-                {
-                    // Fallback: only extract translation if matrix decomposition fails
-                    Vector3 rwxPosition = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-                    Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
-                    
-                    context.currentObject.transform.localPosition = fallbackPosition;
-                    Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
-                }
+                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
             }
             else if (context.currentObject != null)
             {
