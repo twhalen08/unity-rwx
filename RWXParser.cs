@@ -952,26 +952,15 @@ namespace RWXLoader
                 values[i] = float.Parse(floatMatches[i].Value, CultureInfo.InvariantCulture);
             }
 
-            // FIXED: RWX matrices are ROW-MAJOR with translation in the FINAL ROW
-            // According to RenderWare docs: "translation in the final row"
-            // RWX format: [m00,m01,m02,m03, m10,m11,m12,m13, m20,m21,m22,m23, m30,m31,m32,m33]
-            // Translation is in the final row: values[12], values[13], values[14]
-            // But Unity uses COLUMN-MAJOR with translation in the final column
-            
-            // Create RWX matrix in row-major format first
-            Matrix4x4 rwxMatrix = new Matrix4x4();
-            
-            // Row 0: X axis
-            rwxMatrix.m00 = values[0];  rwxMatrix.m01 = values[1];  rwxMatrix.m02 = values[2];  rwxMatrix.m03 = values[3];
-            // Row 1: Y axis
-            rwxMatrix.m10 = values[4];  rwxMatrix.m11 = values[5];  rwxMatrix.m12 = values[6];  rwxMatrix.m13 = values[7];
-            // Row 2: Z axis
-            rwxMatrix.m20 = values[8];  rwxMatrix.m21 = values[9];  rwxMatrix.m22 = values[10]; rwxMatrix.m23 = values[11];
-            // Row 3: Translation and homogeneous coordinate
-            rwxMatrix.m30 = values[12]; rwxMatrix.m31 = values[13]; rwxMatrix.m32 = values[14]; rwxMatrix.m33 = values[15];
+            // RWX matrices are stored in row-major order with translation in the LAST COLUMN
+            // RenderWare docs describe the matrix as: [m00 m01 m02 tx; m10 m11 m12 ty; m20 m21 m22 tz; 0 0 0 1]
+            // Unity's Matrix4x4 fields are addressed by row/column, so we can assign them directly without transposing.
+            Matrix4x4 matrix = new Matrix4x4();
 
-            // Now transpose to convert from RWX row-major to Unity column-major
-            Matrix4x4 matrix = rwxMatrix.transpose;
+            matrix.m00 = values[0];  matrix.m01 = values[1];  matrix.m02 = values[2];  matrix.m03 = values[3];
+            matrix.m10 = values[4];  matrix.m11 = values[5];  matrix.m12 = values[6];  matrix.m13 = values[7];
+            matrix.m20 = values[8];  matrix.m21 = values[9];  matrix.m22 = values[10]; matrix.m23 = values[11];
+            matrix.m30 = values[12]; matrix.m31 = values[13]; matrix.m32 = values[14]; matrix.m33 = values[15];
             
             // HACK: Some RWX files have m33=0 in their matrices, which is invalid for TRS.
             // Force it to 1 to treat it as an affine transformation.
