@@ -9,6 +9,7 @@ using RWXLoader;
 
 public class VPWorldAreaLoader : MonoBehaviour
 {
+
     [Header("VP Login")]
     public string userName = "Tom";
     public string botName = "Unity";
@@ -163,58 +164,7 @@ public class VPWorldAreaLoader : MonoBehaviour
             // Convert VP coords → Unity coords (swap X and Z)
             UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
 
-            // Convert VP axis-angle rotation to Unity Quaternion
-            var vpR = obj.Rotation;
-            var vpAngle = obj.Angle;
-            Quaternion unityRot = Quaternion.identity; // Default to no rotation
-            
-            // Handle VP rotation - special case for infinity angle (treat as Euler angles)
-            if (double.IsInfinity(vpAngle) && !double.IsNaN(vpR.X) && !double.IsNaN(vpR.Y) && !double.IsNaN(vpR.Z))
-            {
-                // When angle is infinity, VP seems to use the rotation vector as Euler angles
-                // Invert both Y and Z rotations to fix all orientation issues
-                unityRot = Quaternion.Euler((float)vpR.X, -(float)vpR.Y, -(float)vpR.Z);
-            }
-            else if (Math.Abs(vpAngle) > 0.001 && !double.IsNaN(vpAngle) && !double.IsInfinity(vpAngle)) // Normal axis-angle rotation
-            {
-                // Convert rotation axis to match our coordinate system (X-Y ground, Z height)
-                UnityEngine.Vector3 rotationAxis = new UnityEngine.Vector3((float)vpR.X, (float)vpR.Y, (float)vpR.Z);
-                
-                // Check for NaN or infinite values in the rotation axis
-                if (float.IsNaN(rotationAxis.x) || float.IsNaN(rotationAxis.y) || float.IsNaN(rotationAxis.z) ||
-                    float.IsInfinity(rotationAxis.x) || float.IsInfinity(rotationAxis.y) || float.IsInfinity(rotationAxis.z))
-                {
-                    Debug.LogWarning($"Invalid rotation axis for {modelName}: {rotationAxis}, using identity");
-                }
-                // Validate the rotation axis - must not be zero vector
-                else if (rotationAxis.magnitude > 0.001f)
-                {
-                    rotationAxis = rotationAxis.normalized; // Normalize the axis
-                    // Convert VP angle from radians to degrees for Unity
-                    float angleInDegrees = (float)vpAngle * Mathf.Rad2Deg;
-                    
-                    // Check for valid angle
-                    if (!float.IsNaN(angleInDegrees) && !float.IsInfinity(angleInDegrees))
-                    {
-                        unityRot = Quaternion.AngleAxis(angleInDegrees, rotationAxis);
-                        
-                        // Final validation of the quaternion
-                        if (float.IsNaN(unityRot.x) || float.IsNaN(unityRot.y) || float.IsNaN(unityRot.z) || float.IsNaN(unityRot.w))
-                        {
-                            Debug.LogWarning($"Generated NaN quaternion for {modelName}, using identity");
-                            unityRot = Quaternion.identity;
-                        }
-                    }
-                    else
-                    {
-                        Debug.LogWarning($"Invalid angle for {modelName}: {vpAngle} radians, using identity");
-                    }
-                }
-                else
-                {
-                    Debug.LogWarning($"Zero rotation axis for {modelName}, using identity");
-                }
-            }
+            Quaternion unityRot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
 
             EnqueueModelLoad(modelName, pos, unityRot);
         }
@@ -276,6 +226,80 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
 
         loadQueueCoroutine = null;
+    }
+
+    private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 vpRotation, double vpAngle, string modelName)
+    {
+        Quaternion unityRot = Quaternion.identity;
+        UnityEngine.Vector3 rotationVector = new UnityEngine.Vector3((float)vpRotation.X, (float)vpRotation.Y, (float)vpRotation.Z);
+
+        if (double.IsInfinity(vpAngle))
+        {
+            if (IsVectorValid(rotationVector))
+            {
+                // VP uses the rotation vector as Euler angles when the angle value is infinite
+                // Flip Y/Z so the handedness matches Unity just like the previous implementation
+                UnityEngine.Vector3 unityEuler = new UnityEngine.Vector3(rotationVector.x, -rotationVector.y, -rotationVector.z);
+                unityRot = Quaternion.Euler(unityEuler);
+            }
+            else
+            {
+                Debug.LogWarning($"Invalid Euler rotation for {modelName}: {rotationVector}, using identity");
+            }
+        }
+        else if (Math.Abs(vpAngle) > 0.001 && !double.IsNaN(vpAngle) && !double.IsInfinity(vpAngle))
+        {
+            if (!IsVectorValid(rotationVector))
+            {
+                Debug.LogWarning($"Invalid rotation axis for {modelName}: {rotationVector}, using identity");
+            }
+            else if (rotationVector.magnitude > 0.001f)
+            {
+                rotationVector = rotationVector.normalized;
+                float angleInDegrees = (float)vpAngle * Mathf.Rad2Deg;
+
+                if (!float.IsNaN(angleInDegrees) && !float.IsInfinity(angleInDegrees))
+                {
+                    Quaternion vpQuaternion = Quaternion.AngleAxis(angleInDegrees, rotationVector);
+                    unityRot = ConvertVpQuaternionToUnity(vpQuaternion);
+                }
+                else
+                {
+                    Debug.LogWarning($"Invalid angle for {modelName}: {vpAngle} radians, using identity");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"Zero rotation axis for {modelName}, using identity");
+            }
+        }
+
+        if (!IsQuaternionValid(unityRot))
+        {
+            Debug.LogWarning($"Generated invalid quaternion for {modelName}, using identity");
+            unityRot = Quaternion.identity;
+        }
+
+        return unityRot;
+    }
+
+    private Quaternion ConvertVpQuaternionToUnity(Quaternion vpQuaternion)
+    {
+        // Mirror the Virtual Paradise quaternion into Unity space by flipping Y/Z components
+        Quaternion unityQuat = new Quaternion(vpQuaternion.x, -vpQuaternion.y, -vpQuaternion.z, vpQuaternion.w);
+        return Quaternion.Normalize(unityQuat);
+    }
+
+    private static bool IsVectorValid(UnityEngine.Vector3 value)
+    {
+        return !(float.IsNaN(value.x) || float.IsNaN(value.y) || float.IsNaN(value.z) ||
+                 float.IsInfinity(value.x) || float.IsInfinity(value.y) || float.IsInfinity(value.z));
+    }
+
+    private static bool IsQuaternionValid(Quaternion value)
+    {
+        return !(float.IsNaN(value.x) || float.IsNaN(value.y) || float.IsNaN(value.z) || float.IsNaN(value.w) ||
+                 float.IsInfinity(value.x) || float.IsInfinity(value.y) || float.IsInfinity(value.z) || float.IsInfinity(value.w));
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
