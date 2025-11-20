@@ -282,7 +282,6 @@ namespace RWXLoader
         private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
         {
             var normals = new Vector3[positions.Length];
-            bool hasOpposingNormals = false;
 
             for (int i = 0; i < triangles.Length; i += 3)
             {
@@ -311,71 +310,9 @@ namespace RWXLoader
 
                 faceNormal.Normalize();
 
-                // Track if this vertex already has a normal pointing in the opposite hemisphere
-                hasOpposingNormals |= CheckOpposing(ref normals[i0], faceNormal);
-                hasOpposingNormals |= CheckOpposing(ref normals[i1], faceNormal);
-                hasOpposingNormals |= CheckOpposing(ref normals[i2], faceNormal);
-
-                normals[i0] += faceNormal;
-                normals[i1] += faceNormal;
-                normals[i2] += faceNormal;
-            }
-
-            if (hasOpposingNormals)
-            {
-                // Flat-shade by duplicating vertices per triangle to keep each face's normal intact
-                int triCount = triangles.Length / 3;
-                var flatPositions = new Vector3[triangles.Length];
-                var flatUvs = new Vector2[triangles.Length];
-                var flatNormals = new Vector3[triangles.Length];
-                var flatTris = new int[triangles.Length];
-
-                for (int i = 0; i < triCount; i++)
-                {
-                    int baseTri = i * 3;
-                    int i0 = triangles[baseTri];
-                    int i1 = triangles[baseTri + 1];
-                    int i2 = triangles[baseTri + 2];
-
-                    Vector3 p0 = positions[i0];
-                    Vector3 p1 = positions[i1];
-                    Vector3 p2 = positions[i2];
-
-                    Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
-                    if (faceNormal.sqrMagnitude < 1e-12f)
-                    {
-                        faceNormal = Vector3.up;
-                    }
-                    faceNormal.Normalize();
-
-                    int v0 = baseTri;
-                    int v1 = baseTri + 1;
-                    int v2 = baseTri + 2;
-
-                    flatPositions[v0] = p0;
-                    flatPositions[v1] = p1;
-                    flatPositions[v2] = p2;
-
-                    flatUvs[v0] = uvs.Length > i0 ? uvs[i0] : Vector2.zero;
-                    flatUvs[v1] = uvs.Length > i1 ? uvs[i1] : Vector2.zero;
-                    flatUvs[v2] = uvs.Length > i2 ? uvs[i2] : Vector2.zero;
-
-                    flatNormals[v0] = faceNormal;
-                    flatNormals[v1] = faceNormal;
-                    flatNormals[v2] = faceNormal;
-
-                    flatTris[v0] = v0;
-                    flatTris[v1] = v1;
-                    flatTris[v2] = v2;
-                }
-
-                return new MeshData
-                {
-                    positions = flatPositions,
-                    uvs = flatUvs,
-                    triangles = flatTris,
-                    normals = flatNormals
-                };
+                normals[i0] = AccumulateNormal(normals[i0], faceNormal);
+                normals[i1] = AccumulateNormal(normals[i1], faceNormal);
+                normals[i2] = AccumulateNormal(normals[i2], faceNormal);
             }
 
             for (int i = 0; i < normals.Length; i++)
@@ -399,18 +336,19 @@ namespace RWXLoader
             };
         }
 
-        private static bool CheckOpposing(ref Vector3 accumulator, Vector3 faceNormal)
+        private static Vector3 AccumulateNormal(Vector3 accumulator, Vector3 faceNormal)
         {
             if (accumulator.sqrMagnitude > 1e-12f)
             {
-                float dot = Vector3.Dot(accumulator.normalized, faceNormal);
-                if (dot < -0.01f)
+                // If the face normal points into the opposite hemisphere, flip it so vertex
+                // normals don't cancel out when double-sided geometry reuses the same vertices.
+                if (Vector3.Dot(accumulator, faceNormal) < 0f)
                 {
-                    return true;
+                    faceNormal = -faceNormal;
                 }
             }
 
-            return false;
+            return accumulator + faceNormal;
         }
 
     }
