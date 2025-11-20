@@ -123,11 +123,11 @@ namespace RWXLoader
 
             // Create mesh immediately for this clump
             var mesh = new Mesh();
-            
+
             // Convert vertices to arrays with coordinate system conversion
             var positions = new Vector3[context.vertices.Count];
             var uvs = new Vector2[context.vertices.Count];
-            
+
             for (int i = 0; i < context.vertices.Count; i++)
             {
                 // Apply RWX to Unity coordinate system conversion: flip X axis
@@ -135,7 +135,7 @@ namespace RWXLoader
                 positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
                 uvs[i] = context.vertices[i].uv;
             }
-            
+
             // Fix triangle winding order for coordinate system conversion
             var triangles = new int[context.currentTriangles.Count];
             for (int i = 0; i < context.currentTriangles.Count; i += 3)
@@ -146,10 +146,11 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            mesh.vertices = positions;
-            mesh.uv = uvs;
-            mesh.triangles = triangles;
-            mesh.normals = CalculateConsistentNormals(positions, triangles);
+            var meshData = BuildMeshData(positions, uvs, triangles);
+            mesh.vertices = meshData.positions;
+            mesh.uv = meshData.uvs;
+            mesh.triangles = meshData.triangles;
+            mesh.normals = meshData.normals;
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current clump
@@ -196,11 +197,11 @@ namespace RWXLoader
 
             // Create mesh immediately for this prototype instance
             var mesh = new Mesh();
-            
+
             // Convert vertices to arrays with coordinate system conversion
             var positions = new Vector3[context.vertices.Count];
             var uvs = new Vector2[context.vertices.Count];
-            
+
             for (int i = 0; i < context.vertices.Count; i++)
             {
                 // Apply RWX to Unity coordinate system conversion: flip X axis
@@ -208,7 +209,7 @@ namespace RWXLoader
                 positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
                 uvs[i] = context.vertices[i].uv;
             }
-            
+
             // Fix triangle winding order for coordinate system conversion
             var triangles = new int[context.currentTriangles.Count];
             for (int i = 0; i < context.currentTriangles.Count; i += 3)
@@ -219,10 +220,11 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            mesh.vertices = positions;
-            mesh.uv = uvs;
-            mesh.triangles = triangles;
-            mesh.normals = CalculateConsistentNormals(positions, triangles);
+            var meshData = BuildMeshData(positions, uvs, triangles);
+            mesh.vertices = meshData.positions;
+            mesh.uv = meshData.uvs;
+            mesh.triangles = meshData.triangles;
+            mesh.normals = meshData.normals;
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current object (the prototype instance)
@@ -269,9 +271,18 @@ namespace RWXLoader
             }
         }
 
-        private static Vector3[] CalculateConsistentNormals(Vector3[] positions, int[] triangles)
+        private struct MeshData
+        {
+            public Vector3[] positions;
+            public Vector2[] uvs;
+            public int[] triangles;
+            public Vector3[] normals;
+        }
+
+        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
         {
             var normals = new Vector3[positions.Length];
+            bool hasOpposingNormals = false;
 
             for (int i = 0; i < triangles.Length; i += 3)
             {
@@ -300,9 +311,71 @@ namespace RWXLoader
 
                 faceNormal.Normalize();
 
-                AccumulateAlignedNormal(ref normals[i0], faceNormal);
-                AccumulateAlignedNormal(ref normals[i1], faceNormal);
-                AccumulateAlignedNormal(ref normals[i2], faceNormal);
+                // Track if this vertex already has a normal pointing in the opposite hemisphere
+                hasOpposingNormals |= CheckOpposing(ref normals[i0], faceNormal);
+                hasOpposingNormals |= CheckOpposing(ref normals[i1], faceNormal);
+                hasOpposingNormals |= CheckOpposing(ref normals[i2], faceNormal);
+
+                normals[i0] += faceNormal;
+                normals[i1] += faceNormal;
+                normals[i2] += faceNormal;
+            }
+
+            if (hasOpposingNormals)
+            {
+                // Flat-shade by duplicating vertices per triangle to keep each face's normal intact
+                int triCount = triangles.Length / 3;
+                var flatPositions = new Vector3[triangles.Length];
+                var flatUvs = new Vector2[triangles.Length];
+                var flatNormals = new Vector3[triangles.Length];
+                var flatTris = new int[triangles.Length];
+
+                for (int i = 0; i < triCount; i++)
+                {
+                    int baseTri = i * 3;
+                    int i0 = triangles[baseTri];
+                    int i1 = triangles[baseTri + 1];
+                    int i2 = triangles[baseTri + 2];
+
+                    Vector3 p0 = positions[i0];
+                    Vector3 p1 = positions[i1];
+                    Vector3 p2 = positions[i2];
+
+                    Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
+                    if (faceNormal.sqrMagnitude < 1e-12f)
+                    {
+                        faceNormal = Vector3.up;
+                    }
+                    faceNormal.Normalize();
+
+                    int v0 = baseTri;
+                    int v1 = baseTri + 1;
+                    int v2 = baseTri + 2;
+
+                    flatPositions[v0] = p0;
+                    flatPositions[v1] = p1;
+                    flatPositions[v2] = p2;
+
+                    flatUvs[v0] = uvs.Length > i0 ? uvs[i0] : Vector2.zero;
+                    flatUvs[v1] = uvs.Length > i1 ? uvs[i1] : Vector2.zero;
+                    flatUvs[v2] = uvs.Length > i2 ? uvs[i2] : Vector2.zero;
+
+                    flatNormals[v0] = faceNormal;
+                    flatNormals[v1] = faceNormal;
+                    flatNormals[v2] = faceNormal;
+
+                    flatTris[v0] = v0;
+                    flatTris[v1] = v1;
+                    flatTris[v2] = v2;
+                }
+
+                return new MeshData
+                {
+                    positions = flatPositions,
+                    uvs = flatUvs,
+                    triangles = flatTris,
+                    normals = flatNormals
+                };
             }
 
             for (int i = 0; i < normals.Length; i++)
@@ -317,19 +390,27 @@ namespace RWXLoader
                 }
             }
 
-            return normals;
+            return new MeshData
+            {
+                positions = positions,
+                uvs = uvs,
+                triangles = triangles,
+                normals = normals
+            };
         }
 
-        private static void AccumulateAlignedNormal(ref Vector3 accumulator, Vector3 faceNormal)
+        private static bool CheckOpposing(ref Vector3 accumulator, Vector3 faceNormal)
         {
-            if (accumulator.sqrMagnitude > 1e-12f && Vector3.Dot(accumulator, faceNormal) < 0f)
+            if (accumulator.sqrMagnitude > 1e-12f)
             {
-                accumulator -= faceNormal;
+                float dot = Vector3.Dot(accumulator.normalized, faceNormal);
+                if (dot < -0.01f)
+                {
+                    return true;
+                }
             }
-            else
-            {
-                accumulator += faceNormal;
-            }
+
+            return false;
         }
 
     }
