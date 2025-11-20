@@ -281,7 +281,9 @@ namespace RWXLoader
 
         private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
         {
-            var normals = new Vector3[positions.Length];
+            // First pass: gather face normals per vertex to detect opposing directions
+            var perVertexNormals = new List<Vector3>[positions.Length];
+            var faceNormals = new Vector3[triangles.Length / 3];
 
             for (int i = 0; i < triangles.Length; i += 3)
             {
@@ -309,6 +311,109 @@ namespace RWXLoader
                 }
 
                 faceNormal.Normalize();
+                faceNormals[i / 3] = faceNormal;
+
+                AddNormal(perVertexNormals, i0, faceNormal);
+                AddNormal(perVertexNormals, i1, faceNormal);
+                AddNormal(perVertexNormals, i2, faceNormal);
+            }
+
+            bool hasOpposingNormals = false;
+            for (int i = 0; i < perVertexNormals.Length; i++)
+            {
+                var list = perVertexNormals[i];
+                if (list == null || list.Count < 2)
+                    continue;
+
+                for (int a = 0; a < list.Count - 1 && !hasOpposingNormals; a++)
+                {
+                    for (int b = a + 1; b < list.Count; b++)
+                    {
+                        if (Vector3.Dot(list[a], list[b]) < -0.001f)
+                        {
+                            hasOpposingNormals = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If opposing normals share vertices (double-sided plane), duplicate vertices per face
+            if (hasOpposingNormals)
+            {
+                var newPositions = new List<Vector3>(triangles.Length);
+                var newUvs = new List<Vector2>(triangles.Length);
+                var newNormals = new List<Vector3>(triangles.Length);
+                var newTriangles = new int[triangles.Length];
+
+                for (int i = 0; i < triangles.Length; i += 3)
+                {
+                    int i0 = triangles[i];
+                    int i1 = triangles[i + 1];
+                    int i2 = triangles[i + 2];
+
+                    if (i0 < 0 || i0 >= positions.Length ||
+                        i1 < 0 || i1 >= positions.Length ||
+                        i2 < 0 || i2 >= positions.Length)
+                    {
+                        continue;
+                    }
+
+                    Vector3 faceNormal = faceNormals[i / 3];
+                    if (faceNormal.sqrMagnitude < 1e-12f)
+                    {
+                        faceNormal = Vector3.up;
+                    }
+
+                    int newBase = newPositions.Count;
+                    newPositions.Add(positions[i0]);
+                    newPositions.Add(positions[i1]);
+                    newPositions.Add(positions[i2]);
+
+                    newUvs.Add(uvs[i0]);
+                    newUvs.Add(uvs[i1]);
+                    newUvs.Add(uvs[i2]);
+
+                    newNormals.Add(faceNormal);
+                    newNormals.Add(faceNormal);
+                    newNormals.Add(faceNormal);
+
+                    newTriangles[i] = newBase;
+                    newTriangles[i + 1] = newBase + 1;
+                    newTriangles[i + 2] = newBase + 2;
+                }
+
+                return new MeshData
+                {
+                    positions = newPositions.ToArray(),
+                    uvs = newUvs.ToArray(),
+                    triangles = newTriangles,
+                    normals = newNormals.ToArray()
+                };
+            }
+
+            // Otherwise keep smooth shading with hemisphere-aligned accumulation
+            var normals = new Vector3[positions.Length];
+
+            for (int i = 0; i < triangles.Length; i += 3)
+            {
+                int i0 = triangles[i];
+                int i1 = triangles[i + 1];
+                int i2 = triangles[i + 2];
+
+                if (i0 < 0 || i0 >= positions.Length ||
+                    i1 < 0 || i1 >= positions.Length ||
+                    i2 < 0 || i2 >= positions.Length)
+                {
+                    continue;
+                }
+
+                Vector3 faceNormal = faceNormals[i / 3];
+
+                if (faceNormal.sqrMagnitude < 1e-12f)
+                {
+                    continue;
+                }
 
                 normals[i0] = AccumulateNormal(normals[i0], faceNormal);
                 normals[i1] = AccumulateNormal(normals[i1], faceNormal);
@@ -349,6 +454,18 @@ namespace RWXLoader
             }
 
             return accumulator + faceNormal;
+        }
+
+        private static void AddNormal(List<Vector3>[] buckets, int index, Vector3 normal)
+        {
+            var list = buckets[index];
+            if (list == null)
+            {
+                list = new List<Vector3>(2);
+                buckets[index] = list;
+            }
+
+            list.Add(normal);
         }
 
     }
