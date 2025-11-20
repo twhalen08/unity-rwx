@@ -41,6 +41,8 @@ namespace RWXLoader
         private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", RegexOptions.IgnoreCase);
         private readonly Regex nonCommentRegex = new Regex(@"^(.*)#(?!\!)", RegexOptions.IgnoreCase);
 
+        internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
+
         private RWXMeshBuilder meshBuilder;
         private RWXPrototypeParser prototypeParser;
 
@@ -480,11 +482,9 @@ namespace RWXLoader
 
         internal Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix, RWXParseContext context)
         {
-            // Apply coordinate system conversion to ALL transforms
-            // Flip X translation for RWX right-handed to Unity left-handed conversion
-            Matrix4x4 unityMatrix = rwxMatrix;
-            unityMatrix.m03 = -rwxMatrix.m03;
-            
+            // Reflect across X on both sides to convert the right-handed RWX matrix to Unity's left-handed space.
+            Matrix4x4 unityMatrix = RwxToUnityReflection * rwxMatrix * RwxToUnityReflection;
+
             string hierarchyPath = GetHierarchyPath(context);
             Debug.Log($"🔄 MATRIX CONVERSION | {hierarchyPath}");
             Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");

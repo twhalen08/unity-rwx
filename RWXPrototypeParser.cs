@@ -509,15 +509,13 @@ namespace RWXLoader
         /// </summary>
         private Matrix4x4 ConvertRWXMatrixToUnity(Matrix4x4 rwxMatrix)
         {
-            // Apply coordinate system conversion to ALL transforms
-            // Flip X translation for RWX right-handed to Unity left-handed conversion
-            Matrix4x4 unityMatrix = rwxMatrix;
-            unityMatrix.m03 = -rwxMatrix.m03;
-            
+            // Reflect across X on both sides to convert the right-handed RWX matrix to Unity's left-handed space.
+            Matrix4x4 unityMatrix = RWXParser.RwxToUnityReflection * rwxMatrix * RWXParser.RwxToUnityReflection;
+
             Debug.Log($"🔄 PROTOTYPE MATRIX CONVERSION");
             Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
             Debug.Log($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
-            
+
             return unityMatrix;
         }
         
