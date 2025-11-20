@@ -145,11 +145,11 @@ namespace RWXLoader
                 triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
-            
+
             mesh.vertices = positions;
             mesh.uv = uvs;
             mesh.triangles = triangles;
-            mesh.RecalculateNormals();
+            mesh.normals = CalculateConsistentNormals(positions, triangles);
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current clump
@@ -218,11 +218,11 @@ namespace RWXLoader
                 triangles[i + 1] = context.currentTriangles[i + 2]; // Swap these two
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
-            
+
             mesh.vertices = positions;
             mesh.uv = uvs;
             mesh.triangles = triangles;
-            mesh.RecalculateNormals();
+            mesh.normals = CalculateConsistentNormals(positions, triangles);
             mesh.RecalculateBounds();
 
             // Create mesh object as child of current object (the prototype instance)
@@ -266,6 +266,69 @@ namespace RWXLoader
             if (context.currentTriangles.Count > 0)
             {
                 CommitCurrentMesh(context);
+            }
+        }
+
+        private static Vector3[] CalculateConsistentNormals(Vector3[] positions, int[] triangles)
+        {
+            var normals = new Vector3[positions.Length];
+
+            for (int i = 0; i < triangles.Length; i += 3)
+            {
+                int i0 = triangles[i];
+                int i1 = triangles[i + 1];
+                int i2 = triangles[i + 2];
+
+                if (i0 < 0 || i0 >= positions.Length ||
+                    i1 < 0 || i1 >= positions.Length ||
+                    i2 < 0 || i2 >= positions.Length)
+                {
+                    continue;
+                }
+
+                Vector3 p0 = positions[i0];
+                Vector3 p1 = positions[i1];
+                Vector3 p2 = positions[i2];
+
+                Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
+
+                // Skip degenerate triangles
+                if (faceNormal.sqrMagnitude < 1e-12f)
+                {
+                    continue;
+                }
+
+                faceNormal.Normalize();
+
+                AccumulateAlignedNormal(ref normals[i0], faceNormal);
+                AccumulateAlignedNormal(ref normals[i1], faceNormal);
+                AccumulateAlignedNormal(ref normals[i2], faceNormal);
+            }
+
+            for (int i = 0; i < normals.Length; i++)
+            {
+                if (normals[i].sqrMagnitude > 1e-12f)
+                {
+                    normals[i].Normalize();
+                }
+                else
+                {
+                    normals[i] = Vector3.up; // sensible fallback
+                }
+            }
+
+            return normals;
+        }
+
+        private static void AccumulateAlignedNormal(ref Vector3 accumulator, Vector3 faceNormal)
+        {
+            if (accumulator.sqrMagnitude > 1e-12f && Vector3.Dot(accumulator, faceNormal) < 0f)
+            {
+                accumulator -= faceNormal;
+            }
+            else
+            {
+                accumulator += faceNormal;
             }
         }
 
