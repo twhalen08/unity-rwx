@@ -1,3 +1,4 @@
+
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -156,7 +157,7 @@ namespace RWXLoader
             // Create mesh object as child of current clump
             string materialName = context.currentMeshMaterial?.texture ?? "Material";
             if (materialName == "default") materialName = "Default";
-
+            
             var meshObject = new GameObject(materialName);
             meshObject.transform.SetParent(context.currentObject.transform);
             meshObject.transform.localPosition = Vector3.zero;
@@ -167,7 +168,7 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
-
+            
             // Apply material
             if (context.currentMeshMaterial != null)
             {
@@ -240,7 +241,7 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
-
+            
             // Apply material
             if (context.currentMeshMaterial != null)
             {

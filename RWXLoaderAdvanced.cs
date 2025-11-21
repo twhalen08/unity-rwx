@@ -21,6 +21,9 @@ namespace RWXLoader
         private RWXMaterialManager materialManager;
         private RWXAssetManager assetManager;
 
+        private static readonly Dictionary<string, GameObject> modelPrefabCache = new();
+        private static Transform cacheContainer;
+
         private void Awake()
         {
             // Initialize asset manager first
@@ -64,7 +67,47 @@ namespace RWXLoader
                 objectPath = defaultObjectPath;
             }
 
+            // Fast path: reuse a cached prefab instead of reparsing/downloading
+            if (TryInstantiateFromCache(objectPath, modelName, out GameObject cachedInstance))
+            {
+                onComplete?.Invoke(cachedInstance, "Success (cached)");
+                return;
+            }
+
             StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, onComplete));
+        }
+
+        private bool TryInstantiateFromCache(string objectPath, string modelName, out GameObject instance)
+        {
+            instance = null;
+            string cacheKey = GetCacheKey(objectPath, modelName);
+
+            if (modelPrefabCache.TryGetValue(cacheKey, out GameObject prefab) && prefab != null)
+            {
+                instance = Instantiate(prefab, parentTransform);
+                instance.name = prefab.name;
+                instance.SetActive(true);
+                return true;
+            }
+
+            return false;
+        }
+
+        private string GetCacheKey(string objectPath, string modelName)
+        {
+            return $"{objectPath.TrimEnd('/')}/{modelName}".ToLowerInvariant();
+        }
+
+        private Transform GetOrCreateCacheContainer()
+        {
+            if (cacheContainer == null)
+            {
+                var containerGO = new GameObject("RWX Model Cache");
+                DontDestroyOnLoad(containerGO);
+                cacheContainer = containerGO.transform;
+            }
+
+            return cacheContainer;
         }
 
         private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, System.Action<GameObject, string> onComplete)
@@ -157,10 +200,15 @@ namespace RWXLoader
                 yield break;
             }
 
-            // Set parent transform
-            if (modelObject != null && parentTransform != null)
+            // Cache the parsed prefab so future loads are instant
+            if (modelObject != null)
             {
-                modelObject.transform.SetParent(parentTransform);
+                CachePrefab(objectPath, modelName, modelObject);
+
+                // Instantiate a live copy for the caller
+                modelObject = Instantiate(modelObject, parentTransform);
+                modelObject.name = modelName;
+                modelObject.SetActive(true);
             }
 
             if (enableDebugLogs)
@@ -215,6 +263,23 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        private void CachePrefab(string objectPath, string modelName, GameObject modelObject)
+        {
+            string cacheKey = GetCacheKey(objectPath, modelName);
+
+            // Avoid caching duplicates if already present
+            if (modelPrefabCache.ContainsKey(cacheKey))
+            {
+                return;
+            }
+
+            // Keep a hidden prefab to instantiate from
+            Transform container = GetOrCreateCacheContainer();
+            modelObject.transform.SetParent(container, false);
+            modelObject.SetActive(false);
+            modelPrefabCache[cacheKey] = modelObject;
         }
 
         /// <summary>
