@@ -126,8 +126,11 @@ namespace RWXLoader
             context.currentTriangles.Clear();
             context.currentMeshMaterial = null;
             
-            // Track the transform that should be applied to this instance
+            // Track the transform that should be applied to this instance. If we bake a prototype
+            // Transform directly into the vertices (common for tree cones, beds, etc.), we skip
+            // reapplying it to the instantiated GameObject to avoid double transforms.
             Matrix4x4 instanceTransform = Matrix4x4.identity;
+            bool bakedPrototypeTransformIntoGeometry = false;
             
             // Process all lines from the prototype
             var prototypeLines = prototypes[prototypeName];
@@ -139,16 +142,19 @@ namespace RWXLoader
             if (prototypeLine.Trim().ToLower().StartsWith("transform"))
             {
                 instanceTransform = ExtractTransformFromLine(prototypeLine);
-                
-                // For bed-style prototypes with Transform matrices, apply the transform directly to vertices
-                // This preserves the precise orientations defined in the prototype
+
+                // Apply the prototype's Transform directly to the geometry so the mesh vertices match the
+                // intended placement (tree cones, bed panels, etc.). We'll only reapply the parent/clump
+                // transform later, not this prototype transform again.
+                bakedPrototypeTransformIntoGeometry = true;
+                context.currentTransform = instanceTransform;
+
+                // For bed-style prototypes, keep the detailed logging so we can diagnose matrix issues.
                 if (IsBedStylePrototype(prototypeName, instanceTransform))
                 {
-                    context.currentTransform = instanceTransform;
                     Debug.Log($"🛏️ BED PROTOTYPE: {prototypeName} - Applied Transform matrix directly to context for vertex processing");
                     Debug.Log($"🛏️ Transform: Translation=({instanceTransform.m03:F6}, {instanceTransform.m13:F6}, {instanceTransform.m23:F6})");
-                    
-                    // Add detailed matrix logging for bed prototypes
+
                     if (IsBedHeadFootboardPrototype(prototypeName, instanceTransform))
                     {
                         Debug.Log($"🛏️ BED MATRIX | {prototypeName}");
@@ -160,8 +166,7 @@ namespace RWXLoader
                 }
                 else
                 {
-                    // For tree-style prototypes, capture for instance positioning
-                    Debug.Log($"🌲 TREE PROTOTYPE: {prototypeName} - Captured instance transform: Translation=({instanceTransform.m03:F6}, {instanceTransform.m13:F6}, {instanceTransform.m23:F6})");
+                    Debug.Log($"🌲 TREE PROTOTYPE: {prototypeName} - Applied transform to geometry: Translation=({instanceTransform.m03:F6}, {instanceTransform.m13:F6}, {instanceTransform.m23:F6})");
                 }
             }
             else
@@ -174,9 +179,12 @@ namespace RWXLoader
             
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
             
-            // Combine any active clump transform with the captured prototype transform so this instance
-            // is positioned where the RWX file expects (e.g., repeated Translate calls for dashed lines).
-            Matrix4x4 combinedTransform = savedTransform * instanceTransform;
+            // If the prototype Transform was baked into the geometry, only apply the active clump transform.
+            // Otherwise, combine the current transform (e.g., repeated translates) with the prototype transform
+            // to position the instance correctly in the scene.
+            Matrix4x4 combinedTransform = bakedPrototypeTransformIntoGeometry
+                ? savedTransform
+                : savedTransform * instanceTransform;
             ApplyTransformToInstance(instanceObject, combinedTransform);
             
             // Commit the prototype instance mesh immediately
