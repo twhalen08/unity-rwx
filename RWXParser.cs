@@ -801,16 +801,11 @@ namespace RWXLoader
             Vector3 unityAxis = rwxAxis;
             float unityAngle = angleDegrees;
 
-            // Convert RWX right-handed rotations into Unity's left-handed space by flipping the
-            // rotation sense on all principal axes. Mirroring across X for handedness inversion
-            // inverts rotations around every axis; applying the sign flip here keeps the matrix
-            // math consistent for both root-level and nested rotations.
-            if (Mathf.Abs(axisX) > 0.9f)
-            {
-                unityAngle = -angleDegrees;
-                Debug.Log($"🔄 X-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-            }
-            else if (Mathf.Abs(axisY) > 0.9f)
+            // Convert RWX right-handed rotations into Unity's left-handed space. After mirroring
+            // across X for handedness, rotations around Y/Z need their sign flipped, while X
+            // rotations stay as-is. This keeps vertical orientation intact (e.g., tree01) while
+            // still correcting sideways models like stlamp1.
+            if (Mathf.Abs(axisY) > 0.9f)
             {
                 unityAngle = -angleDegrees;
                 Debug.Log($"🔄 Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
