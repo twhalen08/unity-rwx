@@ -797,36 +797,18 @@ namespace RWXLoader
             float axisZ = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
             float angleDegrees = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
 
-            Vector3 rwxAxis = new Vector3(axisX, axisY, axisZ);
-            Vector3 unityAxis = rwxAxis;
-            float unityAngle = angleDegrees;
+            // Build the RWX rotation matrix first, then mirror it into Unity space just like
+            // full Transform matrices so we preserve handedness without guessing axis/angle
+            // sign flips. This keeps models upright (tree01) while preventing sideways parts
+            // such as stlamp bases.
+            Vector3 rwxAxis = new Vector3(axisX, axisY, axisZ).normalized;
+            Matrix4x4 rwxRotation = Matrix4x4.Rotate(Quaternion.AngleAxis(angleDegrees, rwxAxis));
+            Matrix4x4 unityRotation = RwxToUnityReflection * rwxRotation * RwxToUnityReflection;
 
-            // Convert RWX right-handed rotations into Unity's left-handed space. After mirroring
-            // across X for handedness, rotations around Y/Z need their sign flipped, while X
-            // rotations stay as-is. This keeps vertical orientation intact (e.g., tree01) while
-            // still correcting sideways models like stlamp1.
-            if (Mathf.Abs(axisY) > 0.9f)
-            {
-                unityAngle = -angleDegrees;
-                Debug.Log($"🔄 Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-            }
-            else if (Mathf.Abs(axisZ) > 0.9f)
-            {
-                unityAngle = -angleDegrees;
-                Debug.Log($"🔄 Z-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-            }
-            
-            // Create rotation axis vector (normalized)
-            Vector3 axis = unityAxis.normalized;
-            
-            // Create rotation quaternion from axis and angle
-            Quaternion rotation = Quaternion.AngleAxis(unityAngle, axis);
-            Matrix4x4 rotationMatrix = Matrix4x4.Rotate(rotation);
-            
             // Apply rotation to current transform
-            context.currentTransform = context.currentTransform * rotationMatrix;
-            
-            Debug.Log($"🔄 ROTATE RESULT: Axis({unityAxis.x:F1}, {unityAxis.y:F1}, {unityAxis.z:F1}) Angle({unityAngle:F1}°)");
+            context.currentTransform = context.currentTransform * unityRotation;
+
+            Debug.Log($"🔄 ROTATE RESULT: RWX Axis({rwxAxis.x:F1}, {rwxAxis.y:F1}, {rwxAxis.z:F1}) Angle({angleDegrees:F1}°)");
 
             return true;
         }
