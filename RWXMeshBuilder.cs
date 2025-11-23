@@ -159,12 +159,20 @@ namespace RWXLoader
             
             var meshObject = new GameObject(materialName);
             meshObject.transform.SetParent(context.currentObject.transform);
-            // Apply any accumulated RWX transform as a local offset. This keeps per-primitive translates
-            // (like positioning dashed lines) without relying on a clump-level transform at the end.
-            Vector3 rwxTranslation = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-            meshObject.transform.localPosition = new Vector3(-rwxTranslation.x, rwxTranslation.y, rwxTranslation.z);
-            meshObject.transform.localRotation = Quaternion.identity;
-            meshObject.transform.localScale = Vector3.one;
+
+            // Apply the full RWX transform (translation + rotation + scale) converted into Unity space
+            // so rotated parts (e.g., stlamp bases) keep their intended orientation instead of only
+            // inheriting translation.
+            if (!TryGetUnityTRS(context.currentTransform, out var localPos, out var localRot, out var localScale))
+            {
+                localPos = Vector3.zero;
+                localRot = Quaternion.identity;
+                localScale = Vector3.one;
+            }
+
+            meshObject.transform.localPosition = localPos;
+            meshObject.transform.localRotation = localRot;
+            meshObject.transform.localScale = localScale;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
             meshFilter.mesh = mesh;
@@ -234,10 +242,17 @@ namespace RWXLoader
             string materialName = context.currentMeshMaterial?.texture ?? "PrototypeMesh";
             var meshObject = new GameObject(materialName);
             meshObject.transform.SetParent(context.currentObject.transform);
-            // FIXED: Explicitly set local position to zero to ensure mesh appears at origin relative to positioned GameObject
-            meshObject.transform.localPosition = Vector3.zero;
-            meshObject.transform.localRotation = Quaternion.identity;
-            meshObject.transform.localScale = Vector3.one;
+
+            if (!TryGetUnityTRS(context.currentTransform, out var localPos, out var localRot, out var localScale))
+            {
+                localPos = Vector3.zero;
+                localRot = Quaternion.identity;
+                localScale = Vector3.one;
+            }
+
+            meshObject.transform.localPosition = localPos;
+            meshObject.transform.localRotation = localRot;
+            meshObject.transform.localScale = localScale;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
             meshFilter.mesh = mesh;
@@ -280,6 +295,45 @@ namespace RWXLoader
             public Vector2[] uvs;
             public int[] triangles;
             public Vector3[] normals;
+        }
+
+        private static bool TryGetUnityTRS(Matrix4x4 rwxMatrix, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+        {
+            position = Vector3.zero;
+            rotation = Quaternion.identity;
+            scale = Vector3.one;
+
+            // Mirror the RWX matrix across X to convert right-handed RWX into Unity's left-handed space
+            Matrix4x4 unityMatrix = RWXParser.RwxToUnityReflection * rwxMatrix * RWXParser.RwxToUnityReflection;
+
+            // Extract basis vectors
+            Vector3 right = new Vector3(unityMatrix.m00, unityMatrix.m10, unityMatrix.m20);
+            Vector3 up = new Vector3(unityMatrix.m01, unityMatrix.m11, unityMatrix.m21);
+            Vector3 forward = new Vector3(unityMatrix.m02, unityMatrix.m12, unityMatrix.m22);
+
+            float sx = right.magnitude;
+            float sy = up.magnitude;
+            float sz = forward.magnitude;
+
+            if (sx < 1e-6f || sy < 1e-6f || sz < 1e-6f)
+            {
+                return false;
+            }
+
+            position = new Vector3(unityMatrix.m03, unityMatrix.m13, unityMatrix.m23);
+            scale = new Vector3(sx, sy, sz);
+
+            Vector3 rNorm = right / sx;
+            Vector3 uNorm = up / sy;
+            Vector3 fNorm = forward / sz;
+
+            if (fNorm.sqrMagnitude < 1e-6f || uNorm.sqrMagnitude < 1e-6f)
+            {
+                return false;
+            }
+
+            rotation = Quaternion.LookRotation(fNorm, uNorm);
+            return true;
         }
 
         private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
