@@ -797,18 +797,17 @@ namespace RWXLoader
             float axisZ = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
             float angleDegrees = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
 
-            // Build the RWX rotation matrix first, then mirror it into Unity space just like
-            // full Transform matrices so we preserve handedness without guessing axis/angle
-            // sign flips. This keeps models upright (tree01) while preventing sideways parts
-            // such as stlamp bases.
+            // Keep rotations in RWX space while accumulating the transform. We'll convert the
+            // full matrix into Unity space once, when we decompose it for mesh/object placement.
+            // Reflecting here as well as during decomposition double-flips the handedness and
+            // produces sideways/offset geometry (e.g., stlamp bases).
             Vector3 rwxAxis = new Vector3(axisX, axisY, axisZ).normalized;
             Matrix4x4 rwxRotation = Matrix4x4.Rotate(Quaternion.AngleAxis(angleDegrees, rwxAxis));
-            Matrix4x4 unityRotation = RwxToUnityReflection * rwxRotation * RwxToUnityReflection;
 
-            // Apply rotation to current transform
-            context.currentTransform = context.currentTransform * unityRotation;
+            // Apply rotation to current transform (still in RWX space)
+            context.currentTransform = context.currentTransform * rwxRotation;
 
-            Debug.Log($"🔄 ROTATE RESULT: RWX Axis({rwxAxis.x:F1}, {rwxAxis.y:F1}, {rwxAxis.z:F1}) Angle({angleDegrees:F1}°)");
+            Debug.Log($"🔄 ROTATE RESULT (RWX space): Axis({rwxAxis.x:F1}, {rwxAxis.y:F1}, {rwxAxis.z:F1}) Angle({angleDegrees:F1}°)");
 
             return true;
         }
