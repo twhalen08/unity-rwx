@@ -148,8 +148,9 @@ namespace RWXLoader
                 }
             }
 
-            // Apply prototype transform if we're inside a prototype definition
-            if (prototypeParser.IsInPrototype && context.currentTransform != Matrix4x4.identity)
+            // Apply transform to baked prototype geometry when requested (used for Transform matrices
+            // that should directly affect vertex positions).
+            if (context.applyTransformToVertices && context.currentTransform != Matrix4x4.identity)
             {
                 Vector4 homogeneousPos = new Vector4(position.x, position.y, position.z, 1.0f);
                 Vector4 transformedPos = context.currentTransform * homogeneousPos;

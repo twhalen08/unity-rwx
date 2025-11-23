@@ -118,6 +118,7 @@ namespace RWXLoader
             var savedVertices = new List<RWXVertex>(context.vertices);
             var savedTriangles = new List<int>(context.currentTriangles);
             var savedMeshMaterial = context.currentMeshMaterial?.Clone();
+            bool savedApplyTransformFlag = context.applyTransformToVertices;
             
             // Set up context for prototype instance
             context.currentObject = instanceObject;
@@ -148,6 +149,7 @@ namespace RWXLoader
                 // transform later, not this prototype transform again.
                 bakedPrototypeTransformIntoGeometry = true;
                 context.currentTransform = instanceTransform;
+                context.applyTransformToVertices = true;
 
                 // For bed-style prototypes, keep the detailed logging so we can diagnose matrix issues.
                 if (IsBedStylePrototype(prototypeName, instanceTransform))
@@ -197,6 +199,7 @@ namespace RWXLoader
             context.vertices = savedVertices;
             context.currentTriangles = savedTriangles;
             context.currentMeshMaterial = savedMeshMaterial;
+            context.applyTransformToVertices = savedApplyTransformFlag;
             
             return true;
         }

@@ -18,6 +18,7 @@ namespace RWXLoader
         public Stack<GameObject> objectStack;
         public RWXMaterial currentMeshMaterial;
         public int meshCount = 0;
+        public bool applyTransformToVertices = false;
 
         public RWXParseContext()
         {
