@@ -797,38 +797,28 @@ namespace RWXLoader
             float axisZ = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
             float angleDegrees = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
 
-            // Determine if this is a root-level model orientation rotation
-            bool isRootLevelRotation = IsRootLevelModelOrientation(context, axisX, axisY, axisZ, angleDegrees);
-            
             Vector3 rwxAxis = new Vector3(axisX, axisY, axisZ);
             Vector3 unityAxis = rwxAxis;
             float unityAngle = angleDegrees;
-            
-            if (isRootLevelRotation)
+
+            // Convert RWX right-handed rotations into Unity's left-handed space by flipping the
+            // rotation sense on all principal axes. Mirroring across X for handedness inversion
+            // inverts rotations around every axis; applying the sign flip here keeps the matrix
+            // math consistent for both root-level and nested rotations.
+            if (Mathf.Abs(axisX) > 0.9f)
             {
-                // Root-level orientation rotations: these are meant to orient the model correctly
-                // The common pattern "Rotate 0 1 0 180" + "Rotate 1 0 0 -90" should work as-is
-                unityAngle = angleDegrees; // Keep original angles for model orientation
-                Debug.Log($"🎯 ROOT-LEVEL ORIENTATION: Axis({axisX:F1}, {axisY:F1}, {axisZ:F1}) Angle({angleDegrees:F1}°) - keeping original");
+                unityAngle = -angleDegrees;
+                Debug.Log($"🔄 X-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
             }
-            else
+            else if (Mathf.Abs(axisY) > 0.9f)
             {
-                // Internal/prototype rotations: apply coordinate system conversion
-                if (Mathf.Abs(axisX) > 0.9f) // Rotation around X axis
-                {
-                    unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal X-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-                }
-                else if (Mathf.Abs(axisY) > 0.9f) // Rotation around Y axis
-                {
-                    unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-                }
-                else if (Mathf.Abs(axisZ) > 0.9f) // Rotation around Z axis
-                {
-                    unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal Z-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
-                }
+                unityAngle = -angleDegrees;
+                Debug.Log($"🔄 Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
+            }
+            else if (Mathf.Abs(axisZ) > 0.9f)
+            {
+                unityAngle = -angleDegrees;
+                Debug.Log($"🔄 Z-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
             }
             
             // Create rotation axis vector (normalized)
