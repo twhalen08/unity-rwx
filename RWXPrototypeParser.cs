@@ -419,7 +419,12 @@ namespace RWXLoader
             matrix.m00 = values[0];  matrix.m01 = values[1];  matrix.m02 = values[2];  matrix.m03 = values[12];
             matrix.m10 = values[4];  matrix.m11 = values[5];  matrix.m12 = values[6];  matrix.m13 = values[13];
             matrix.m20 = values[8];  matrix.m21 = values[9];  matrix.m22 = values[10]; matrix.m23 = values[14];
-            matrix.m30 = values[3];  matrix.m31 = values[7];  matrix.m32 = values[11]; matrix.m33 = values[15];
+            matrix.m30 = 0f;         matrix.m31 = 0f;         matrix.m32 = 0f;         matrix.m33 = values[15];
+
+            if (Mathf.Abs(values[3]) > 1e-4f || Mathf.Abs(values[7]) > 1e-4f || Mathf.Abs(values[11]) > 1e-4f)
+            {
+                Debug.LogWarning($"⚠️ Proto Transform column terms ignored: [{values[3]:F6}, {values[7]:F6}, {values[11]:F6}] → set to 0 for TRS");
+            }
             
             // Force m33 to 1 if it's 0 (invalid for TRS)
             if (matrix.m33 == 0) matrix.m33 = 1.0f;
