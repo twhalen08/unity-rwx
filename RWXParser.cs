@@ -447,6 +447,9 @@ namespace RWXLoader
 
             meshBuilder.CommitCurrentMesh(context);
 
+            // Preserve the incoming transform so it doesn't leak to sibling clumps
+            context.clumpTransformStack.Push(context.currentTransform);
+
             // Generate a more descriptive name based on hierarchy depth
             int depth = context.objectStack.Count;
             string clumpName = $"Clump_Depth{depth}";
@@ -715,11 +718,21 @@ namespace RWXLoader
                 Debug.Log($"   ⚪ No transform to apply (identity matrix)");
             }
 
+            // Restore the transform that was active before this clump began
+            if (context.clumpTransformStack.Count > 0)
+            {
+                context.currentTransform = context.clumpTransformStack.Pop();
+            }
+            else
+            {
+                context.currentTransform = Matrix4x4.identity;
+                Debug.LogWarning("Clump transform stack underflow - resetting to identity");
+            }
+
             if (context.objectStack.Count > 0)
             {
                 context.currentObject = context.objectStack.Pop();
                 string parentName = context.currentObject != null ? context.currentObject.name : "NULL";
-                Debug.Log($"   ⬆️ Returning to parent: '{parentName}'");
                 Debug.Log($"   ⬆️ Returning to parent: '{parentName}'");
             }
 

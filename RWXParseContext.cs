@@ -14,6 +14,7 @@ namespace RWXLoader
         public Matrix4x4 currentJointTransform;
         public Stack<RWXMaterial> materialStack;
         public Stack<Matrix4x4> transformStack;
+        public Stack<Matrix4x4> clumpTransformStack;
         public Stack<Matrix4x4> jointTransformStack;
         public Stack<GameObject> objectStack;
         public RWXMaterial currentMeshMaterial;
@@ -27,6 +28,7 @@ namespace RWXLoader
             currentJointTransform = Matrix4x4.identity;
             materialStack = new Stack<RWXMaterial>();
             transformStack = new Stack<Matrix4x4>();
+            clumpTransformStack = new Stack<Matrix4x4>();
             jointTransformStack = new Stack<Matrix4x4>();
             objectStack = new Stack<GameObject>();
             
