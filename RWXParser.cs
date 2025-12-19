@@ -450,6 +450,11 @@ namespace RWXLoader
             // Preserve the incoming transform so it doesn't leak to sibling clumps
             context.clumpTransformStack.Push(context.currentTransform);
 
+            // Start a fresh transform scope for this clump so child operations
+            // are relative to the parent rather than compounding the parent's
+            // accumulated matrix again. The saved value is restored on ClumpEnd.
+            context.currentTransform = Matrix4x4.identity;
+
             // Generate a more descriptive name based on hierarchy depth
             int depth = context.objectStack.Count;
             string clumpName = $"Clump_Depth{depth}";
@@ -463,21 +468,10 @@ namespace RWXLoader
             // FIXED: Clear vertices when starting a new clump since each clump has its own vertex space
             // In RWX, each clump starts vertex numbering from 1 again
             context.vertices.Clear();
-            
-            // DON'T reset the current transform to identity - preserve accumulated transforms!
-            // The transforms that follow will be applied to position this clump correctly
-            
+
             Debug.Log($"🎯 CLUMP BEGIN - Depth: {depth}");
-            Debug.Log($"   📦 Created: '{clumpName}' - will apply accumulated transforms on clumpend");
-            if (context.currentTransform != Matrix4x4.identity)
-            {
-                Vector3 translation = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-                Debug.Log($"   🔄 Preserving accumulated transform with translation: ({translation.x:F6}, {translation.y:F6}, {translation.z:F6})");
-            }
-            else
-            {
-                Debug.Log($"   ⚪ No accumulated transform to preserve");
-            }
+            Debug.Log($"   📦 Created: '{clumpName}' - will apply clump-local transforms on clumpend");
+            Debug.Log($"   🔄 Resetting clump-local transform to identity (parent preserved on stack)");
             Debug.Log($"   ═══════════════════════════════════════");
 
             return true;
