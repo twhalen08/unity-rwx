@@ -447,9 +447,6 @@ namespace RWXLoader
 
             meshBuilder.CommitCurrentMesh(context);
 
-            // Preserve the incoming transform so it doesn't leak to sibling clumps
-            context.clumpTransformStack.Push(context.currentTransform);
-
             // Generate a more descriptive name based on hierarchy depth
             int depth = context.objectStack.Count;
             string clumpName = $"Clump_Depth{depth}";
@@ -708,51 +705,14 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
-            // Determine the local-only transform for this clump by removing any parent influence
-            Matrix4x4 parentTransform = context.clumpTransformStack.Count > 0
-                ? context.clumpTransformStack.Peek()
-                : Matrix4x4.identity;
-
-            Matrix4x4 localTransform;
-            if (context.currentTransform == Matrix4x4.identity)
+            // Apply the accumulated transform to the current clump before ending it
+            if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
             {
-                localTransform = Matrix4x4.identity;
+                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
+            }
+            else if (context.currentObject != null)
+            {
                 Debug.Log($"   ⚪ No transform to apply (identity matrix)");
-            }
-            else
-            {
-                Matrix4x4 inverseParent = Matrix4x4.identity;
-                bool hasValidInverse = true;
-
-                try
-                {
-                    inverseParent = parentTransform.inverse;
-                }
-                catch (Exception ex)
-                {
-                    hasValidInverse = false;
-                    Debug.LogWarning($"Failed to invert parent transform, applying accumulated matrix directly. Error: {ex.Message}");
-                }
-
-                localTransform = hasValidInverse
-                    ? inverseParent * context.currentTransform
-                    : context.currentTransform;
-
-                if (context.currentObject != null)
-                {
-                    ApplyTransformToObject(localTransform, context.currentObject, context);
-                }
-            }
-
-            // Restore the transform that was active before this clump began
-            if (context.clumpTransformStack.Count > 0)
-            {
-                context.currentTransform = context.clumpTransformStack.Pop();
-            }
-            else
-            {
-                context.currentTransform = Matrix4x4.identity;
-                Debug.LogWarning("Clump transform stack underflow - resetting to identity");
             }
 
             if (context.objectStack.Count > 0)

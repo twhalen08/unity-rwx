@@ -14,7 +14,6 @@ namespace RWXLoader
         public Matrix4x4 currentJointTransform;
         public Stack<RWXMaterial> materialStack;
         public Stack<Matrix4x4> transformStack;
-        public Stack<Matrix4x4> clumpTransformStack;
         public Stack<Matrix4x4> jointTransformStack;
         public Stack<GameObject> objectStack;
         public RWXMaterial currentMeshMaterial;
@@ -36,8 +35,6 @@ namespace RWXLoader
             // Set default material to white instead of black
             currentMaterial.color = Color.white;
             currentMaterial.opacity = 1.0f;
-
-            clumpTransformStack = new Stack<Matrix4x4>();
         }
     }
 }
