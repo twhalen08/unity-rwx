@@ -708,14 +708,40 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
-            // Apply the accumulated transform to the current clump before ending it
-            if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
+            // Determine the local-only transform for this clump by removing any parent influence
+            Matrix4x4 parentTransform = context.clumpTransformStack.Count > 0
+                ? context.clumpTransformStack.Peek()
+                : Matrix4x4.identity;
+
+            Matrix4x4 localTransform;
+            if (context.currentTransform == Matrix4x4.identity)
             {
-                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
-            }
-            else if (context.currentObject != null)
-            {
+                localTransform = Matrix4x4.identity;
                 Debug.Log($"   ⚪ No transform to apply (identity matrix)");
+            }
+            else
+            {
+                Matrix4x4 inverseParent = Matrix4x4.identity;
+                bool hasValidInverse = true;
+
+                try
+                {
+                    inverseParent = parentTransform.inverse;
+                }
+                catch (Exception ex)
+                {
+                    hasValidInverse = false;
+                    Debug.LogWarning($"Failed to invert parent transform, applying accumulated matrix directly. Error: {ex.Message}");
+                }
+
+                localTransform = hasValidInverse
+                    ? inverseParent * context.currentTransform
+                    : context.currentTransform;
+
+                if (context.currentObject != null)
+                {
+                    ApplyTransformToObject(localTransform, context.currentObject, context);
+                }
             }
 
             // Restore the transform that was active before this clump began
