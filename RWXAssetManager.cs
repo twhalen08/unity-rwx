@@ -240,6 +240,16 @@ namespace RWXLoader
         {
             try
             {
+                // If we have a password, prefer a password-aware reader first so encrypted archives are handled reliably.
+                if (!string.IsNullOrEmpty(password))
+                {
+                    string passwordResult = TryReadTextWithPassword(zipPath, fileName, password);
+                    if (!string.IsNullOrEmpty(passwordResult))
+                    {
+                        return passwordResult;
+                    }
+                }
+
                 var entry = FindZipEntry(archive, fileName);
 
                 if (entry != null)
@@ -248,19 +258,6 @@ namespace RWXLoader
                     using (var reader = new StreamReader(stream))
                     {
                         return reader.ReadToEnd();
-                    }
-                }
-
-                // Password-protected ZIPs are not handled by ZipArchive. If a password is supplied, try an alternative reader.
-                if (!string.IsNullOrEmpty(password))
-                {
-                    byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
-                    if (protectedBytes != null && protectedBytes.Length > 0)
-                    {
-                        using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
-                        {
-                            return reader.ReadToEnd();
-                        }
                     }
                 }
 
@@ -273,14 +270,7 @@ namespace RWXLoader
                 {
                     try
                     {
-                        byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
-                        if (protectedBytes != null && protectedBytes.Length > 0)
-                        {
-                            using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
-                            {
-                                return reader.ReadToEnd();
-                            }
-                        }
+                        return TryReadTextWithPassword(zipPath, fileName, password);
                     }
                     catch (Exception)
                     {
@@ -299,6 +289,16 @@ namespace RWXLoader
         {
             try
             {
+                // Password-protected archives should be read with a password-aware helper first.
+                if (!string.IsNullOrEmpty(password))
+                {
+                    byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
+                    if (protectedBytes != null && protectedBytes.Length > 0)
+                    {
+                        return protectedBytes;
+                    }
+                }
+
                 var entry = FindZipEntry(archive, fileName);
 
                 if (entry != null)
@@ -309,11 +309,6 @@ namespace RWXLoader
                         stream.CopyTo(memoryStream);
                         return memoryStream.ToArray();
                     }
-                }
-
-                if (!string.IsNullOrEmpty(password))
-                {
-                    return TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
                 }
 
                 return null;
@@ -334,6 +329,20 @@ namespace RWXLoader
 
                 return null;
             }
+        }
+
+        private string TryReadTextWithPassword(string zipPath, string fileName, string password)
+        {
+            byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
+            if (protectedBytes != null && protectedBytes.Length > 0)
+            {
+                using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
