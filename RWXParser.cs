@@ -697,30 +697,19 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
+            // Apply the accumulated transform directly to this clump's GameObject.
+            // The parent transform will be restored afterwards for siblings, so we
+            // don't need to strip it out here.
+            if (context.currentObject != null)
+            {
+                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
+            }
+
+            // Restore the parent transform for subsequent siblings
             Matrix4x4 parentTransform = context.clumpTransformStack.Count > 0
                 ? context.clumpTransformStack.Pop()
                 : Matrix4x4.identity;
 
-            // Compute a clump-local matrix so the parent transform isn't double-applied
-            Matrix4x4 parentInverse = Matrix4x4.identity;
-            if (Matrix4x4.Inverse3DAffine(parentTransform, ref parentInverse))
-            {
-                Matrix4x4 clumpLocal = parentInverse * context.currentTransform;
-                if (context.currentObject != null)
-                {
-                    ApplyTransformToObject(clumpLocal, context.currentObject, context);
-                }
-            }
-            else
-            {
-                Debug.LogWarning("Unable to invert parent transform; applying accumulated matrix directly");
-                if (context.currentObject != null)
-                {
-                    ApplyTransformToObject(context.currentTransform, context.currentObject, context);
-                }
-            }
-
-            // Restore the parent transform for subsequent siblings
             context.currentTransform = parentTransform;
 
             if (context.objectStack.Count > 0)

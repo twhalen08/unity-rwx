@@ -139,14 +139,9 @@ namespace RWXLoader
 
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
 
-            // Apply only the instance-local transform relative to the parent we started with
-            Matrix4x4 parentInverse = Matrix4x4.identity;
-            Matrix4x4 localTransform = context.currentTransform;
-            if (Matrix4x4.Inverse3DAffine(savedTransform, ref parentInverse))
-            {
-                localTransform = parentInverse * context.currentTransform;
-            }
-            ApplyTransformToInstance(instanceObject, localTransform);
+            // Apply the accumulated transform at this point in the stream so the
+            // instance inherits any parent translations/rotations already in effect.
+            ApplyTransformToInstance(instanceObject, context.currentTransform);
 
             // Commit the prototype instance mesh immediately
             meshBuilder.CommitPrototypeMesh(context);
