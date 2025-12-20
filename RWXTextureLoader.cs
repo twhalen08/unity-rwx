@@ -325,7 +325,7 @@ namespace RWXLoader
                 // Try each possible file name
                 foreach (string fileName in possibleNames)
                 {
-                    textureData = assetManager.ReadBytesFromZip(archive, fileName);
+                    textureData = assetManager.ReadBytesFromZip(archive, fileName, localZipPath, objectPathPassword);
                     if (textureData != null && textureData.Length > 0)
                     {
                         foundFileName = fileName;

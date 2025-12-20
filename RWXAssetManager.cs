@@ -234,9 +234,9 @@ namespace RWXLoader
         }
 
         /// <summary>
-        /// Reads a file from a ZIP archive
+        /// Reads a file from a ZIP archive, falling back to password-protected readers when needed.
         /// </summary>
-        public string ReadTextFromZip(ZipArchive archive, string fileName)
+        public string ReadTextFromZip(ZipArchive archive, string fileName, string zipPath = null, string password = null)
         {
             try
             {
@@ -250,21 +250,52 @@ namespace RWXLoader
                         return reader.ReadToEnd();
                     }
                 }
-                else
+
+                // Password-protected ZIPs are not handled by ZipArchive. If a password is supplied, try an alternative reader.
+                if (!string.IsNullOrEmpty(password))
                 {
-                    return null;
+                    byte[] protectedBytes = TryReadEntryWithPassword(zipPath, fileName, password);
+                    if (protectedBytes != null && protectedBytes.Length > 0)
+                    {
+                        using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
+                        {
+                            return reader.ReadToEnd();
+                        }
+                    }
                 }
+
+                return null;
             }
-            catch (Exception e)
+            catch (Exception)
             {
+                // If the regular reader fails and a password is available, try a password-aware path as a fallback
+                if (!string.IsNullOrEmpty(password))
+                {
+                    try
+                    {
+                        byte[] protectedBytes = TryReadEntryWithPassword(zipPath, fileName, password);
+                        if (protectedBytes != null && protectedBytes.Length > 0)
+                        {
+                            using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
+                            {
+                                return reader.ReadToEnd();
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // Ignore and fall through
+                    }
+                }
+
                 return null;
             }
         }
 
         /// <summary>
-        /// Reads binary data from a ZIP archive
+        /// Reads binary data from a ZIP archive, with optional password support for encrypted archives.
         /// </summary>
-        public byte[] ReadBytesFromZip(ZipArchive archive, string fileName)
+        public byte[] ReadBytesFromZip(ZipArchive archive, string fileName, string zipPath = null, string password = null)
         {
             try
             {
@@ -279,13 +310,28 @@ namespace RWXLoader
                         return memoryStream.ToArray();
                     }
                 }
-                else
+
+                if (!string.IsNullOrEmpty(password))
                 {
-                    return null;
+                    return TryReadEntryWithPassword(zipPath, fileName, password);
                 }
+
+                return null;
             }
-            catch (Exception e)
+            catch (Exception)
             {
+                if (!string.IsNullOrEmpty(password))
+                {
+                    try
+                    {
+                        return TryReadEntryWithPassword(zipPath, fileName, password);
+                    }
+                    catch (Exception)
+                    {
+                        return null;
+                    }
+                }
+
                 return null;
             }
         }
@@ -352,6 +398,166 @@ namespace RWXLoader
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Fallback for reading password-protected ZIP files using reflection so we don't hard-require an extra dependency.
+        /// Supports Ionic.Zip (DotNetZip) and SharpZipLib when present in the project.
+        /// </summary>
+        private byte[] TryReadEntryWithPassword(string zipPath, string fileName, string password)
+        {
+            if (string.IsNullOrEmpty(zipPath) || string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(password))
+            {
+                return null;
+            }
+
+            byte[] data = TryReadEntryWithDotNetZip(zipPath, fileName, password);
+            if (data != null && data.Length > 0)
+            {
+                return data;
+            }
+
+            return TryReadEntryWithSharpZipLib(zipPath, fileName, password);
+        }
+
+        private byte[] TryReadEntryWithDotNetZip(string zipPath, string fileName, string password)
+        {
+            try
+            {
+                var zipType = Type.GetType("Ionic.Zip.ZipFile, Ionic.Zip");
+                if (zipType == null)
+                {
+                    return null;
+                }
+
+                var readMethod = zipType.GetMethod("Read", new[] { typeof(string) });
+                if (readMethod == null)
+                {
+                    return null;
+                }
+
+                object zipInstance = readMethod.Invoke(null, new object[] { zipPath });
+                using (zipInstance as IDisposable)
+                {
+                    var passwordProp = zipType.GetProperty("Password");
+                    passwordProp?.SetValue(zipInstance, password);
+
+                    var entriesProp = zipType.GetProperty("Entries");
+                    var entries = entriesProp?.GetValue(zipInstance) as System.Collections.IEnumerable;
+                    if (entries == null)
+                    {
+                        return null;
+                    }
+
+                    foreach (var entry in entries)
+                    {
+                        var entryType = entry.GetType();
+                        string entryName = entryType.GetProperty("FileName")?.GetValue(entry) as string;
+                        if (!IsZipNameMatch(entryName, fileName))
+                        {
+                            continue;
+                        }
+
+                        var openReader = entryType.GetMethod("OpenReader", Type.EmptyTypes);
+                        if (openReader == null)
+                        {
+                            continue;
+                        }
+
+                        using (var stream = openReader.Invoke(entry, null) as Stream)
+                        using (var memoryStream = new MemoryStream())
+                        {
+                            stream?.CopyTo(memoryStream);
+                            return memoryStream.ToArray();
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore and fall back to other strategies
+            }
+
+            return null;
+        }
+
+        private byte[] TryReadEntryWithSharpZipLib(string zipPath, string fileName, string password)
+        {
+            try
+            {
+                var zipType = Type.GetType("ICSharpCode.SharpZipLib.Zip.ZipFile, ICSharpCode.SharpZipLib");
+                if (zipType == null)
+                {
+                    return null;
+                }
+
+                object zipInstance = Activator.CreateInstance(zipType, zipPath);
+                using (zipInstance as IDisposable)
+                {
+                    var passwordProp = zipType.GetProperty("Password");
+                    passwordProp?.SetValue(zipInstance, password);
+
+                    var getEnumerator = zipType.GetMethod("GetEnumerator");
+                    var enumerator = getEnumerator?.Invoke(zipInstance, null) as System.Collections.IEnumerator;
+                    if (enumerator == null)
+                    {
+                        return null;
+                    }
+
+                    while (enumerator.MoveNext())
+                    {
+                        var entry = enumerator.Current;
+                        var entryType = entry.GetType();
+                        string entryName = entryType.GetProperty("Name")?.GetValue(entry) as string;
+                        if (!IsZipNameMatch(entryName, fileName))
+                        {
+                            continue;
+                        }
+
+                        var getInputStream = zipType.GetMethod("GetInputStream", new[] { entryType });
+                        using (var stream = getInputStream?.Invoke(zipInstance, new object[] { entry }) as Stream)
+                        using (var memoryStream = new MemoryStream())
+                        {
+                            stream?.CopyTo(memoryStream);
+                            return memoryStream.ToArray();
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore and let callers know we couldn't decrypt
+            }
+
+            return null;
+        }
+
+        private bool IsZipNameMatch(string entryName, string requestedName)
+        {
+            if (string.IsNullOrEmpty(entryName) || string.IsNullOrEmpty(requestedName))
+            {
+                return false;
+            }
+
+            string decodedEntryFileName = UnityWebRequest.UnEscapeURL(entryName.Trim());
+            string decodedRequested = UnityWebRequest.UnEscapeURL(requestedName.Trim());
+
+            string entryFileName = Path.GetFileName(decodedEntryFileName);
+            string entryNameWithoutExt = Path.GetFileNameWithoutExtension(decodedEntryFileName);
+            string requestedFileName = Path.GetFileName(decodedRequested);
+            string requestedWithoutExt = Path.GetFileNameWithoutExtension(decodedRequested);
+
+            bool namesMatch = string.Equals(entryFileName, requestedFileName, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(entryFileName, decodedRequested, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(decodedEntryFileName, requestedFileName, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(decodedEntryFileName, decodedRequested, StringComparison.OrdinalIgnoreCase);
+
+            bool namesWithoutExtMatch = string.Equals(entryNameWithoutExt, requestedWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(entryNameWithoutExt, Path.GetFileNameWithoutExtension(decodedRequested), StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(Path.GetFileNameWithoutExtension(decodedEntryFileName), requestedWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(Path.GetFileNameWithoutExtension(decodedEntryFileName), Path.GetFileNameWithoutExtension(decodedRequested), StringComparison.OrdinalIgnoreCase);
+
+            return namesMatch || namesWithoutExtMatch;
         }
 
         /// <summary>

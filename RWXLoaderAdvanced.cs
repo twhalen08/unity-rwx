@@ -172,13 +172,13 @@ namespace RWXLoader
 
             // Step 3: Find and load RWX file from ZIP
             string rwxFileName = $"{modelName}.rwx";
-            string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName);
-            
+            string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+
             if (string.IsNullOrEmpty(rwxContent))
             {
                 // Try alternative naming conventions
                 rwxFileName = $"{modelName}.RWX";
-                rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName);
+                rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
             }
 
             if (string.IsNullOrEmpty(rwxContent))
@@ -306,12 +306,12 @@ namespace RWXLoader
             }
 
             string rwxFileName = $"{modelName}.rwx";
-            string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName);
-            
+            string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, zipPath, objectPathPassword);
+
             if (string.IsNullOrEmpty(rwxContent))
             {
                 rwxFileName = $"{modelName}.RWX";
-                rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName);
+                rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, zipPath, objectPathPassword);
             }
 
             if (string.IsNullOrEmpty(rwxContent))
