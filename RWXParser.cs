@@ -948,15 +948,16 @@ namespace RWXLoader
                 values[i] = float.Parse(floatMatches[i].Value, CultureInfo.InvariantCulture);
             }
 
-            // RWX matrices are stored in row-major order with translation in the LAST COLUMN
-            // RenderWare docs describe the matrix as: [m00 m01 m02 tx; m10 m11 m12 ty; m20 m21 m22 tz; 0 0 0 1]
-            // Unity's Matrix4x4 fields are addressed by row/column, so we can assign them directly without transposing.
+            // RWX matrices are written in column-major order (RenderWare style):
+            //   m00 m10 m20 m30 m01 m11 m21 m31 m02 m12 m22 m32 m03 m13 m23 m33
+            // with translation in the final column (indices 12–14). Map them into Unity's
+            // row/column fields explicitly so translation is preserved.
             Matrix4x4 matrix = new Matrix4x4();
 
-            matrix.m00 = values[0];  matrix.m01 = values[1];  matrix.m02 = values[2];  matrix.m03 = values[3];
-            matrix.m10 = values[4];  matrix.m11 = values[5];  matrix.m12 = values[6];  matrix.m13 = values[7];
-            matrix.m20 = values[8];  matrix.m21 = values[9];  matrix.m22 = values[10]; matrix.m23 = values[11];
-            matrix.m30 = values[12]; matrix.m31 = values[13]; matrix.m32 = values[14]; matrix.m33 = values[15];
+            matrix.m00 = values[0];  matrix.m10 = values[1];  matrix.m20 = values[2];  matrix.m30 = values[3];
+            matrix.m01 = values[4];  matrix.m11 = values[5];  matrix.m21 = values[6];  matrix.m31 = values[7];
+            matrix.m02 = values[8];  matrix.m12 = values[9];  matrix.m22 = values[10]; matrix.m32 = values[11];
+            matrix.m03 = values[12]; matrix.m13 = values[13]; matrix.m23 = values[14]; matrix.m33 = values[15];
             
             // HACK: Some RWX files have m33=0 in their matrices, which is invalid for TRS.
             // Force it to 1 to treat it as an affine transformation.
