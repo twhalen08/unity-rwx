@@ -20,6 +20,10 @@ namespace RWXLoader
         public RWXMaterial currentMeshMaterial;
         public int meshCount = 0;
 
+        // Set when prototype instances have their parent transform baked directly onto
+        // the instance objects. Used to avoid reapplying the clump transform at clump end.
+        public bool hasBakedPrototypeInstances = false;
+
         public RWXParseContext()
         {
             vertices = new List<RWXVertex>();

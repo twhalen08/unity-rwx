@@ -140,10 +140,21 @@ namespace RWXLoader
 
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
 
-            // Apply only the prototype's own transform here; the parent/clump transform
-            // will be applied later to the clump GameObject, avoiding double application
-            // of parent translations/rotations on prototype instances.
+            // Decide how to position the prototype instance:
+            // - If the prototype defines its own Transform matrix, use it directly.
+            // - If it has no internal Transform, bake the parent stream transform so
+            //   placement commands (Translate/Rotate/Scale) in the RWX stream position
+            //   each instance once. Mark the clump so we don't reapply the same matrix
+            //   at ClumpEnd (prevents double transforms like street1 dashes snapping to origin).
+            bool prototypeHasTransform = PrototypeHasTransform(prototypeName);
             Matrix4x4 instanceTransform = context.currentTransform;
+
+            if (!prototypeHasTransform)
+            {
+                instanceTransform = parentTransform * instanceTransform;
+                context.hasBakedPrototypeInstances = true;
+            }
+
             ApplyTransformToInstance(instanceObject, instanceTransform);
 
             // Commit the prototype instance mesh immediately
