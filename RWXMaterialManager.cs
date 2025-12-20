@@ -42,11 +42,11 @@ namespace RWXLoader
         /// <summary>
         /// Sets the texture source for remote loading
         /// </summary>
-        public void SetTextureSource(string objectPath)
+        public void SetTextureSource(string objectPath, string password)
         {
             if (textureLoader != null)
             {
-                textureLoader.SetTextureSource(objectPath);
+                textureLoader.SetTextureSource(objectPath, password);
             }
         }
 

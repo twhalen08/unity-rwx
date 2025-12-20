@@ -11,6 +11,7 @@ namespace RWXLoader
     {
         [Header("RWX Loading")]
         public string defaultObjectPath = "http://objects.virtualparadise.org/vpbuild/";
+        public string objectPathPassword = "";
         public Transform parentTransform;
         
         [Header("Debug")]
@@ -60,11 +61,16 @@ namespace RWXLoader
         /// <param name="modelName">Name of the model (without .rwx extension)</param>
         /// <param name="objectPath">Remote object server URL (optional, uses default if null)</param>
         /// <param name="onComplete">Callback when loading is complete</param>
-        public void LoadModelFromRemote(string modelName, string objectPath = null, System.Action<GameObject, string> onComplete = null)
+        public void LoadModelFromRemote(string modelName, string objectPath = null, System.Action<GameObject, string> onComplete = null, string password = null)
         {
             if (string.IsNullOrEmpty(objectPath))
             {
                 objectPath = defaultObjectPath;
+            }
+
+            if (string.IsNullOrEmpty(password))
+            {
+                password = objectPathPassword;
             }
 
             // Fast path: reuse a cached prefab instead of reparsing/downloading
@@ -74,7 +80,7 @@ namespace RWXLoader
                 return;
             }
 
-            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, onComplete));
+            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, onComplete));
         }
 
         private bool TryInstantiateFromCache(string objectPath, string modelName, out GameObject instance)
@@ -110,7 +116,7 @@ namespace RWXLoader
             return cacheContainer;
         }
 
-        private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, System.Action<GameObject, string> onComplete)
+        private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, string password, System.Action<GameObject, string> onComplete)
         {
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
@@ -145,7 +151,7 @@ namespace RWXLoader
                 {
                     downloadError = result;
                 }
-            });
+            }, password);
 
             if (!downloadSuccess)
             {
@@ -190,7 +196,7 @@ namespace RWXLoader
             GameObject modelObject = null;
             try
             {
-                modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath);
+                modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
             }
             catch (Exception e)
             {
@@ -220,7 +226,7 @@ namespace RWXLoader
         /// <summary>
         /// Parses RWX content from memory and creates a GameObject
         /// </summary>
-        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath)
+        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
         {
             // Create root object
             GameObject rootObject = new GameObject(modelName);
@@ -238,7 +244,7 @@ namespace RWXLoader
             }
 
             // Set up material manager to load textures from remote
-            materialManager.SetTextureSource(objectPath);
+            materialManager.SetTextureSource(objectPath, password);
 
             // Reset parser state for new model
             parser?.Reset();
@@ -314,7 +320,7 @@ namespace RWXLoader
                 return null;
             }
 
-            return ParseRWXFromMemory(rwxContent, modelName, archive, null);
+            return ParseRWXFromMemory(rwxContent, modelName, archive, null, objectPathPassword);
         }
 
         /// <summary>
@@ -358,6 +364,8 @@ namespace RWXLoader
                 objectPath = defaultObjectPath;
             }
 
+            string password = objectPathPassword;
+
             if (assetManager == null)
             {
                 InitializeAssetManager();
@@ -376,7 +384,7 @@ namespace RWXLoader
                     {
                         Debug.LogWarning($"Failed to preload model {modelNames[i]}: {result}");
                     }
-                });
+                }, password);
 
                 onProgress?.Invoke(i + 1, modelNames.Length);
                 yield return null; // Allow other operations

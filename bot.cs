@@ -28,6 +28,8 @@ public class VPWorldAreaLoader : MonoBehaviour
     [Header("VP Object Server")]
     [Tooltip("Base URL of the VP build object server")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
+    [Tooltip("Password used for password-protected object paths")]
+    public string objectPathPassword = "";
 
     private VirtualParadiseClient vpClient;
     private GameObject areaRoot;
@@ -99,6 +101,7 @@ public class VPWorldAreaLoader : MonoBehaviour
 
         // Point it at our VP object server, enable debug, and parent under areaRoot
         modelLoader.defaultObjectPath = objectPath.TrimEnd('/') + "/";
+        modelLoader.objectPathPassword = objectPathPassword;
         modelLoader.enableDebugLogs = true;
         modelLoader.parentTransform = areaRoot.transform;
 
@@ -203,7 +206,8 @@ public class VPWorldAreaLoader : MonoBehaviour
                     loadedObject = go;
                     errorMessage = errMsg;
                     completed = true;
-                });
+                },
+                objectPathPassword);
 
             while (!completed)
             {

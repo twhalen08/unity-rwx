@@ -79,6 +79,21 @@ namespace RWXLoader
         }
 
         /// <summary>
+        /// Optionally appends a password query parameter to a download URL.
+        /// Keeps the base URL untouched when no password is provided.
+        /// </summary>
+        private string AppendPasswordQuery(string baseUrl, string password)
+        {
+            if (string.IsNullOrEmpty(password))
+            {
+                return baseUrl;
+            }
+
+            string separator = baseUrl.Contains("?") ? "&" : "?";
+            return $"{baseUrl}{separator}password={UnityWebRequest.EscapeURL(password)}";
+        }
+
+        /// <summary>
         /// Gets or creates the local cache directory for an object path
         /// </summary>
         private string GetCacheDirectory(string objectPath)
@@ -106,7 +121,7 @@ namespace RWXLoader
         /// <summary>
         /// Downloads and caches a model from the remote server
         /// </summary>
-        public IEnumerator DownloadModel(string objectPath, string modelName, System.Action<bool, string> onComplete)
+        public IEnumerator DownloadModel(string objectPath, string modelName, System.Action<bool, string> onComplete, string password = null)
         {
             string cacheDir = GetCacheDirectory(objectPath);
             string sanitizedModelName = SanitizeFileName(modelName);
@@ -121,7 +136,7 @@ namespace RWXLoader
 
             // Construct download URL with models subdirectory
             string encodedFileName = UnityWebRequest.EscapeURL(modelName + ".zip");
-            string downloadUrl = objectPath.TrimEnd('/') + "/models/" + encodedFileName;
+            string downloadUrl = AppendPasswordQuery(objectPath.TrimEnd('/') + "/models/" + encodedFileName, password);
 
             using (UnityWebRequest request = UnityWebRequest.Get(downloadUrl))
             {
@@ -150,7 +165,7 @@ namespace RWXLoader
         /// <summary>
         /// Downloads and caches a texture from the remote server
         /// </summary>
-        public IEnumerator DownloadTexture(string objectPath, string textureName, System.Action<bool, string> onComplete)
+        public IEnumerator DownloadTexture(string objectPath, string textureName, System.Action<bool, string> onComplete, string password = null)
         {
             string cacheDir = GetCacheDirectory(objectPath);
             string sanitizedTextureName = SanitizeFileName(textureName);
@@ -165,7 +180,7 @@ namespace RWXLoader
 
             // Construct download URL with textures subdirectory
             string encodedTextureName = UnityWebRequest.EscapeURL(textureName);
-            string downloadUrl = objectPath.TrimEnd('/') + "/textures/" + encodedTextureName;
+            string downloadUrl = AppendPasswordQuery(objectPath.TrimEnd('/') + "/textures/" + encodedTextureName, password);
 
             // Use regular UnityWebRequest.Get for all files (including ZIP files)
             // UnityWebRequestTexture.GetTexture() is only for image files, not ZIP archives

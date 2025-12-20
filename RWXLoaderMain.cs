@@ -70,7 +70,7 @@ namespace RWXLoader
             remoteObjectPath = objectPath;
             if (materialManager != null)
             {
-                materialManager.SetTextureSource(objectPath);
+                materialManager.SetTextureSource(objectPath, null);
             }
         }
 

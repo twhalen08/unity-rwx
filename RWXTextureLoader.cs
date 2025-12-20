@@ -17,15 +17,17 @@ namespace RWXLoader
         private readonly Dictionary<string, Texture2D> textureCache = new Dictionary<string, Texture2D>();
         private RWXAssetManager assetManager;
         private string currentObjectPath;
+        private string objectPathPassword;
 
         private void Start()
         {
             assetManager = RWXAssetManager.Instance;
         }
 
-        public void SetTextureSource(string objectPath)
+        public void SetTextureSource(string objectPath, string password)
         {
             currentObjectPath = objectPath;
+            objectPathPassword = password;
             if (assetManager == null)
             {
                 assetManager = RWXAssetManager.Instance;
@@ -276,7 +278,7 @@ namespace RWXLoader
             {
                 downloadSuccess = success;
                 localZipPath = result;
-            });
+            }, objectPathPassword);
 
             if (!downloadSuccess)
             {
@@ -374,7 +376,7 @@ namespace RWXLoader
             {
                 downloadSuccess = success;
                 localTexturePath = result;
-            });
+            }, objectPathPassword);
 
             if (downloadSuccess && File.Exists(localTexturePath))
             {

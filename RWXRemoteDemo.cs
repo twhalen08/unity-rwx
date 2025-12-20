@@ -12,6 +12,8 @@ public class RWXRemoteDemo : MonoBehaviour
     [Header("Remote Object Path Settings")]
     [Tooltip("Base URL of the object server (e.g., http://objects.virtualparadise.org/vpbuild/)")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
+    [Tooltip("Password for password-protected object paths (used for model and texture ZIP files)")]
+    public string objectPathPassword = "";
     
     [Header("Model Settings")]
     [Tooltip("Name of the model to load (without .rwx extension)")]
@@ -52,6 +54,7 @@ public class RWXRemoteDemo : MonoBehaviour
 
         // Configure the loader
         loader.defaultObjectPath = objectPath;
+        loader.objectPathPassword = objectPathPassword;
         loader.enableDebugLogs = enableDebugLogs;
         loader.parentTransform = transform;
 
@@ -82,7 +85,7 @@ public class RWXRemoteDemo : MonoBehaviour
 
 
         // Load the model from remote with caching
-        loader.LoadModelFromRemote(modelName, objectPath, OnModelLoaded);
+        loader.LoadModelFromRemote(modelName, objectPath, OnModelLoaded, objectPathPassword);
     }
 
     void OnModelLoaded(GameObject model, string result)
@@ -235,6 +238,10 @@ public class RWXRemoteDemo : MonoBehaviour
     {
         string encodedFileName = UnityEngine.Networking.UnityWebRequest.EscapeURL(modelName + ".zip");
         string testUrl = objectPath.TrimEnd('/') + "/models/" + encodedFileName;
+        if (!string.IsNullOrEmpty(objectPathPassword))
+        {
+            testUrl += (testUrl.Contains("?") ? "&" : "?") + "password=" + UnityEngine.Networking.UnityWebRequest.EscapeURL(objectPathPassword);
+        }
         Debug.Log($"Testing connection to: {testUrl}");
         
         using (UnityEngine.Networking.UnityWebRequest request = UnityEngine.Networking.UnityWebRequest.Head(testUrl))
