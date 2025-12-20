@@ -447,13 +447,9 @@ namespace RWXLoader
 
             meshBuilder.CommitCurrentMesh(context);
 
-            // Preserve the incoming transform so it doesn't leak to sibling clumps
+            // Preserve the incoming transform so we can compute a clump-local matrix
+            // when ending the clump without reapplying the parent portion.
             context.clumpTransformStack.Push(context.currentTransform);
-
-            // Start a fresh transform scope for this clump so child operations
-            // are relative to the parent rather than compounding the parent's
-            // accumulated matrix again. The saved value is restored on ClumpEnd.
-            context.currentTransform = Matrix4x4.identity;
 
             // Generate a more descriptive name based on hierarchy depth
             int depth = context.objectStack.Count;
@@ -470,8 +466,7 @@ namespace RWXLoader
             context.vertices.Clear();
 
             Debug.Log($"🎯 CLUMP BEGIN - Depth: {depth}");
-            Debug.Log($"   📦 Created: '{clumpName}' - will apply clump-local transforms on clumpend");
-            Debug.Log($"   🔄 Resetting clump-local transform to identity (parent preserved on stack)");
+            Debug.Log($"   📦 Created: '{clumpName}' - clump-local matrix will be derived from parent on clumpend");
             Debug.Log($"   ═══════════════════════════════════════");
 
             return true;
@@ -702,26 +697,31 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
-            // Apply the accumulated transform to the current clump before ending it
-            if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
-            {
-                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
-            }
-            else if (context.currentObject != null)
-            {
-                Debug.Log($"   ⚪ No transform to apply (identity matrix)");
-            }
+            Matrix4x4 parentTransform = context.clumpTransformStack.Count > 0
+                ? context.clumpTransformStack.Pop()
+                : Matrix4x4.identity;
 
-            // Restore the transform that was active before this clump began
-            if (context.clumpTransformStack.Count > 0)
+            // Compute a clump-local matrix so the parent transform isn't double-applied
+            Matrix4x4 parentInverse;
+            if (Matrix4x4.Inverse3DAffine(parentTransform, out parentInverse))
             {
-                context.currentTransform = context.clumpTransformStack.Pop();
+                Matrix4x4 clumpLocal = parentInverse * context.currentTransform;
+                if (context.currentObject != null)
+                {
+                    ApplyTransformToObject(clumpLocal, context.currentObject, context);
+                }
             }
             else
             {
-                context.currentTransform = Matrix4x4.identity;
-                Debug.LogWarning("Clump transform stack underflow - resetting to identity");
+                Debug.LogWarning("Unable to invert parent transform; applying accumulated matrix directly");
+                if (context.currentObject != null)
+                {
+                    ApplyTransformToObject(context.currentTransform, context.currentObject, context);
+                }
             }
+
+            // Restore the parent transform for subsequent siblings
+            context.currentTransform = parentTransform;
 
             if (context.objectStack.Count > 0)
             {
