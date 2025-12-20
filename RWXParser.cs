@@ -702,8 +702,8 @@ namespace RWXLoader
                 : Matrix4x4.identity;
 
             // Compute a clump-local matrix so the parent transform isn't double-applied
-            Matrix4x4 parentInverse;
-            if (Matrix4x4.Inverse3DAffine(parentTransform, out parentInverse))
+            Matrix4x4 parentInverse = Matrix4x4.identity;
+            if (Matrix4x4.Inverse3DAffine(parentTransform, ref parentInverse))
             {
                 Matrix4x4 clumpLocal = parentInverse * context.currentTransform;
                 if (context.currentObject != null)
