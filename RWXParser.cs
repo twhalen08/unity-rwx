@@ -465,6 +465,9 @@ namespace RWXLoader
             // In RWX, each clump starts vertex numbering from 1 again
             context.vertices.Clear();
 
+            // Reset baked-prototype flag for this clump scope
+            context.hasBakedPrototypeInstances = false;
+
             Debug.Log($"🎯 CLUMP BEGIN - Depth: {depth}");
             Debug.Log($"   📦 Created: '{clumpName}' - clump-local matrix will be derived from parent on clumpend");
             Debug.Log($"   ═══════════════════════════════════════");
@@ -697,12 +700,19 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
-            // Apply the accumulated transform directly to this clump's GameObject.
-            // The parent transform will be restored afterwards for siblings, so we
-            // don't need to strip it out here.
+            // Apply the accumulated transform directly to this clump's GameObject unless
+            // we've already baked the parent transform into prototype instances. In that
+            // case, skip reapplying it to avoid double transforms.
             if (context.currentObject != null)
             {
-                ApplyTransformToObject(context.currentTransform, context.currentObject, context);
+                if (context.hasBakedPrototypeInstances)
+                {
+                    Debug.Log("   ⏭️ Skipping clump transform (prototype instances already baked)");
+                }
+                else
+                {
+                    ApplyTransformToObject(context.currentTransform, context.currentObject, context);
+                }
             }
 
             // Restore the parent transform for subsequent siblings
@@ -723,7 +733,10 @@ namespace RWXLoader
             {
                 context.currentMaterial = context.materialStack.Pop();
             }
-            
+
+            // Clear baked prototype flag for future clumps
+            context.hasBakedPrototypeInstances = false;
+
             Debug.Log($"   ═══════════════════════════════════════");
 
             return true;

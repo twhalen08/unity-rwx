@@ -20,6 +20,10 @@ namespace RWXLoader
         public RWXMaterial currentMeshMaterial;
         public int meshCount = 0;
 
+        // Set when prototype instances have their parent transform baked directly onto
+        // the instance objects. Used to avoid reapplying the clump transform at clump end.
+        public bool hasBakedPrototypeInstances = false;
+
         public RWXParseContext()
         {
             vertices = new List<RWXVertex>();
@@ -31,7 +35,7 @@ namespace RWXLoader
             clumpTransformStack = new Stack<Matrix4x4>();
             jointTransformStack = new Stack<Matrix4x4>();
             objectStack = new Stack<GameObject>();
-            
+
             // Initialize with a proper default material instead of null
             currentMaterial = new RWXMaterial();
             // Set default material to white instead of black

@@ -114,34 +114,48 @@ namespace RWXLoader
             // Save current state
             var savedObject = context.currentObject;
             var savedMaterial = context.currentMaterial.Clone();
-            var savedTransform = context.currentTransform;
+            var parentTransform = context.currentTransform; // Transform that positioned this instance in the stream
             var savedVertices = new List<RWXVertex>(context.vertices);
             var savedTriangles = new List<int>(context.currentTriangles);
             var savedMeshMaterial = context.currentMeshMaterial?.Clone();
 
-            // Set up context for prototype instance (start from the current transform so translates/rotates
-            // that led here are preserved, then apply instance-local transforms relative to this baseline)
+            // Set up context for prototype instance
             context.currentObject = instanceObject;
             context.vertices.Clear(); // Start with clean vertex list for this prototype
             context.currentTriangles.Clear();
             context.currentMeshMaterial = null;
 
-            // Process all lines from the prototype
+            // Process prototype content from a fresh local transform so parent placement
+            // is applied once at the end instead of leaking into vertex transforms.
+            context.currentTransform = Matrix4x4.identity;
+
             var prototypeLines = prototypes[prototypeName];
             foreach (string prototypeLine in prototypeLines)
             {
                 if (!string.IsNullOrWhiteSpace(prototypeLine))
                 {
-                    // Process prototype content normally so transforms accumulate into context.currentTransform
                     mainParser.ProcessLine(prototypeLine, context);
                 }
             }
 
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
 
-            // Apply the accumulated transform at this point in the stream so the
-            // instance inherits any parent translations/rotations already in effect.
-            ApplyTransformToInstance(instanceObject, context.currentTransform);
+            // Decide how to position the prototype instance:
+            // - If the prototype defines its own Transform matrix, use it directly.
+            // - If it has no internal Transform, bake the parent stream transform so
+            //   placement commands (Translate/Rotate/Scale) in the RWX stream position
+            //   each instance once. Mark the clump so we don't reapply the same matrix
+            //   at ClumpEnd (prevents double transforms like street1 dashes snapping to origin).
+            bool prototypeHasTransform = PrototypeHasTransform(prototypeName);
+            Matrix4x4 instanceTransform = context.currentTransform;
+
+            if (!prototypeHasTransform)
+            {
+                instanceTransform = parentTransform * instanceTransform;
+                context.hasBakedPrototypeInstances = true;
+            }
+
+            ApplyTransformToInstance(instanceObject, instanceTransform);
 
             // Commit the prototype instance mesh immediately
             meshBuilder.CommitPrototypeMesh(context);
@@ -149,7 +163,7 @@ namespace RWXLoader
             // Restore context
             context.currentObject = savedObject;
             context.currentMaterial = savedMaterial;
-            context.currentTransform = savedTransform;
+            context.currentTransform = parentTransform;
             context.vertices = savedVertices;
             context.currentTriangles = savedTriangles;
             context.currentMeshMaterial = savedMeshMaterial;
