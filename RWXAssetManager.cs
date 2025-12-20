@@ -225,19 +225,7 @@ namespace RWXLoader
         {
             try
             {
-                var entry = archive.GetEntry(fileName);
-                if (entry == null)
-                {
-                    // Try case-insensitive search
-                    foreach (var e in archive.Entries)
-                    {
-                        if (string.Equals(e.Name, fileName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            entry = e;
-                            break;
-                        }
-                    }
-                }
+                var entry = FindZipEntry(archive, fileName);
 
                 if (entry != null)
                 {
@@ -265,19 +253,7 @@ namespace RWXLoader
         {
             try
             {
-                var entry = archive.GetEntry(fileName);
-                if (entry == null)
-                {
-                    // Try case-insensitive search
-                    foreach (var e in archive.Entries)
-                    {
-                        if (string.Equals(e.Name, fileName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            entry = e;
-                            break;
-                        }
-                    }
-                }
+                var entry = FindZipEntry(archive, fileName);
 
                 if (entry != null)
                 {
@@ -297,6 +273,39 @@ namespace RWXLoader
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Finds a ZIP entry by trying exact, decoded, case-insensitive, and path-based matches.
+        /// </summary>
+        private ZipArchiveEntry FindZipEntry(ZipArchive archive, string fileName)
+        {
+            // First try exact lookups to handle matching full paths inside the archive
+            var entry = archive.GetEntry(fileName);
+            if (entry != null)
+                return entry;
+
+            string decodedName = UnityWebRequest.UnEscapeURL(fileName);
+            if (!string.Equals(decodedName, fileName, StringComparison.Ordinal))
+            {
+                entry = archive.GetEntry(decodedName);
+                if (entry != null)
+                    return entry;
+            }
+
+            // Fall back to case-insensitive comparisons against file names only
+            foreach (var e in archive.Entries)
+            {
+                string entryFileName = Path.GetFileName(e.FullName);
+
+                if (string.Equals(entryFileName, fileName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(entryFileName, decodedName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return e;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
