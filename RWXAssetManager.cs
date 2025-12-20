@@ -66,6 +66,19 @@ namespace RWXLoader
         }
 
         /// <summary>
+        /// Replaces invalid filename characters so we can store files reliably on disk.
+        /// </summary>
+        private string SanitizeFileName(string name)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+
+            return name;
+        }
+
+        /// <summary>
         /// Gets or creates the local cache directory for an object path
         /// </summary>
         private string GetCacheDirectory(string objectPath)
@@ -96,7 +109,8 @@ namespace RWXLoader
         public IEnumerator DownloadModel(string objectPath, string modelName, System.Action<bool, string> onComplete)
         {
             string cacheDir = GetCacheDirectory(objectPath);
-            string localZipPath = Path.Combine(cacheDir, "models", $"{modelName}.zip");
+            string sanitizedModelName = SanitizeFileName(modelName);
+            string localZipPath = Path.Combine(cacheDir, "models", $"{sanitizedModelName}.zip");
             
             // Check if already cached
             if (File.Exists(localZipPath))
@@ -106,7 +120,8 @@ namespace RWXLoader
             }
 
             // Construct download URL with models subdirectory
-            string downloadUrl = objectPath.TrimEnd('/') + "/models/" + modelName + ".zip";
+            string encodedFileName = UnityWebRequest.EscapeURL(modelName + ".zip");
+            string downloadUrl = objectPath.TrimEnd('/') + "/models/" + encodedFileName;
 
             using (UnityWebRequest request = UnityWebRequest.Get(downloadUrl))
             {
@@ -138,7 +153,8 @@ namespace RWXLoader
         public IEnumerator DownloadTexture(string objectPath, string textureName, System.Action<bool, string> onComplete)
         {
             string cacheDir = GetCacheDirectory(objectPath);
-            string localTexturePath = Path.Combine(cacheDir, "textures", textureName);
+            string sanitizedTextureName = SanitizeFileName(textureName);
+            string localTexturePath = Path.Combine(cacheDir, "textures", sanitizedTextureName);
             
             // Check if already cached
             if (File.Exists(localTexturePath))
@@ -148,7 +164,8 @@ namespace RWXLoader
             }
 
             // Construct download URL with textures subdirectory
-            string downloadUrl = objectPath.TrimEnd('/') + "/textures/" + textureName;
+            string encodedTextureName = UnityWebRequest.EscapeURL(textureName);
+            string downloadUrl = objectPath.TrimEnd('/') + "/textures/" + encodedTextureName;
 
             // Use regular UnityWebRequest.Get for all files (including ZIP files)
             // UnityWebRequestTexture.GetTexture() is only for image files, not ZIP archives

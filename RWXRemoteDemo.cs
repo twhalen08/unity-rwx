@@ -233,7 +233,8 @@ public class RWXRemoteDemo : MonoBehaviour
 
     System.Collections.IEnumerator TestConnectionCoroutine()
     {
-        string testUrl = objectPath.TrimEnd('/') + "/models/" + modelName + ".zip";
+        string encodedFileName = UnityEngine.Networking.UnityWebRequest.EscapeURL(modelName + ".zip");
+        string testUrl = objectPath.TrimEnd('/') + "/models/" + encodedFileName;
         Debug.Log($"Testing connection to: {testUrl}");
         
         using (UnityEngine.Networking.UnityWebRequest request = UnityEngine.Networking.UnityWebRequest.Head(testUrl))
