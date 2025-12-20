@@ -422,7 +422,7 @@ namespace RWXLoader
 
             foreach (var candidate in candidateNames)
             {
-                byte[] data = TryReadEntryWithDotNetZip(zipPath, candidate, password);
+                byte[] data = TryReadEntryWithSharpZipLib(zipPath, candidate, password);
                 if (data != null && data.Length > 0)
                 {
                     return data;
@@ -431,7 +431,7 @@ namespace RWXLoader
 
             foreach (var candidate in candidateNames)
             {
-                byte[] data = TryReadEntryWithSharpZipLib(zipPath, candidate, password);
+                byte[] data = TryReadEntryWithDotNetZip(zipPath, candidate, password);
                 if (data != null && data.Length > 0)
                 {
                     return data;
@@ -455,6 +455,29 @@ namespace RWXLoader
                 if (direct != null)
                 {
                     return direct;
+                }
+
+                // If we were given an assembly-qualified name, try to explicitly load that assembly
+                var commaIndex = typeName.IndexOf(',');
+                if (commaIndex > 0 && commaIndex < typeName.Length - 1)
+                {
+                    string assemblyName = typeName.Substring(commaIndex + 1).Trim();
+                    if (!string.IsNullOrEmpty(assemblyName))
+                    {
+                        try
+                        {
+                            var loaded = System.Reflection.Assembly.Load(new System.Reflection.AssemblyName(assemblyName));
+                            var resolved = loaded?.GetType(typeName.Substring(0, commaIndex).Trim());
+                            if (resolved != null)
+                            {
+                                return resolved;
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore and fall back to scanning already-loaded assemblies
+                        }
+                    }
                 }
 
                 // Fall back to scanning loaded assemblies to handle alternate assembly names
@@ -552,6 +575,59 @@ namespace RWXLoader
                 {
                     var passwordProp = zipType.GetProperty("Password");
                     passwordProp?.SetValue(zipInstance, password);
+
+                    // Prefer direct lookups when available to honor the ignoreCase flag
+                    var findEntry = zipType.GetMethod("FindEntry", new[] { typeof(string), typeof(bool) });
+                    var getEntryByIndex = zipType.GetProperty("Item", new[] { typeof(int) });
+                    var getEntryByName = zipType.GetMethod("GetEntry", new[] { typeof(string) });
+                    var getInputStreamFromEntry = zipType.GetMethod("GetInputStream", new[] { ResolveType("ICSharpCode.SharpZipLib.Zip.ZipEntry, ICSharpCode.SharpZipLib" ) ?? typeof(object) });
+
+                    foreach (var nameCandidate in BuildZipNameCandidates(fileName))
+                    {
+                        object entry = null;
+                        if (findEntry != null && getEntryByIndex != null)
+                        {
+                            try
+                            {
+                                int index = (int)findEntry.Invoke(zipInstance, new object[] { nameCandidate, true });
+                                if (index >= 0)
+                                {
+                                    entry = getEntryByIndex.GetValue(zipInstance, new object[] { index });
+                                }
+                            }
+                            catch (Exception)
+                            {
+                                // Ignore and fall through to other strategies
+                            }
+                        }
+
+                        if (entry == null && getEntryByName != null)
+                        {
+                            try
+                            {
+                                entry = getEntryByName.Invoke(zipInstance, new object[] { nameCandidate });
+                            }
+                            catch (Exception)
+                            {
+                                // Ignore and fall back to enumeration
+                            }
+                        }
+
+                        if (entry != null)
+                        {
+                            var entryType = entry.GetType();
+                            var inputStreamMethod = getInputStreamFromEntry ?? zipType.GetMethod("GetInputStream", new[] { entryType });
+                            using (var stream = inputStreamMethod?.Invoke(zipInstance, new object[] { entry }) as Stream)
+                            using (var memoryStream = new MemoryStream())
+                            {
+                                stream?.CopyTo(memoryStream);
+                                if (memoryStream.Length > 0)
+                                {
+                                    return memoryStream.ToArray();
+                                }
+                            }
+                        }
+                    }
 
                     var getEnumerator = zipType.GetMethod("GetEnumerator");
                     var enumerator = getEnumerator?.Invoke(zipInstance, null) as System.Collections.IEnumerator;
