@@ -35,7 +35,7 @@ namespace RWXLoader
             clumpTransformStack = new Stack<Matrix4x4>();
             jointTransformStack = new Stack<Matrix4x4>();
             objectStack = new Stack<GameObject>();
-            
+
             // Initialize with a proper default material instead of null
             currentMaterial = new RWXMaterial();
             // Set default material to white instead of black
