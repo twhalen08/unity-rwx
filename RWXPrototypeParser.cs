@@ -140,10 +140,10 @@ namespace RWXLoader
 
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
 
-            // Combine the parent transform (where the instance sits in the stream)
-            // with the prototype's own transform (if any) so positioning isn't lost
-            // when prototypes supply their own matrix.
-            Matrix4x4 instanceTransform = parentTransform * context.currentTransform;
+            // Apply only the prototype's own transform here; the parent/clump transform
+            // will be applied later to the clump GameObject, avoiding double application
+            // of parent translations/rotations on prototype instances.
+            Matrix4x4 instanceTransform = context.currentTransform;
             ApplyTransformToInstance(instanceObject, instanceTransform);
 
             // Commit the prototype instance mesh immediately
