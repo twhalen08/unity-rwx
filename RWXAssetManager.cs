@@ -295,26 +295,57 @@ namespace RWXLoader
         /// </summary>
         private ZipArchiveEntry FindZipEntry(ZipArchive archive, string fileName)
         {
-            // First try exact lookups to handle matching full paths inside the archive
-            var entry = archive.GetEntry(fileName);
-            if (entry != null)
-                return entry;
-
-            string decodedName = UnityWebRequest.UnEscapeURL(fileName);
-            if (!string.Equals(decodedName, fileName, StringComparison.Ordinal))
+            if (archive == null || string.IsNullOrEmpty(fileName))
             {
-                entry = archive.GetEntry(decodedName);
-                if (entry != null)
-                    return entry;
+                return null;
             }
 
-            // Fall back to case-insensitive comparisons against file names only
+            string decodedName = UnityWebRequest.UnEscapeURL(fileName);
+
+            // First try exact lookups to handle matching full paths inside the archive
+            foreach (string candidate in new[] { fileName, decodedName })
+            {
+                if (string.IsNullOrEmpty(candidate))
+                {
+                    continue;
+                }
+
+                var directEntry = archive.GetEntry(candidate);
+                if (directEntry != null)
+                {
+                    return directEntry;
+                }
+            }
+
+            // Normalize requested names for comparison
+            string trimmedFileName = fileName.Trim();
+            string trimmedDecodedName = decodedName.Trim();
+            string targetFileName = Path.GetFileName(trimmedFileName);
+            string targetDecodedFileName = Path.GetFileName(trimmedDecodedName);
+            string targetNameWithoutExt = Path.GetFileNameWithoutExtension(trimmedFileName);
+            string targetDecodedNameWithoutExt = Path.GetFileNameWithoutExtension(trimmedDecodedName);
+
+            // Fall back to case-insensitive comparisons against file names only, with trimmed and decoded variants
             foreach (var e in archive.Entries)
             {
-                string entryFileName = Path.GetFileName(e.FullName);
+                string entryFileName = Path.GetFileName(e.FullName)?.Trim();
+                string decodedEntryFileName = UnityWebRequest.UnEscapeURL(entryFileName ?? string.Empty).Trim();
+                string entryNameWithoutExt = Path.GetFileNameWithoutExtension(entryFileName);
+                string decodedEntryNameWithoutExt = Path.GetFileNameWithoutExtension(decodedEntryFileName);
 
-                if (string.Equals(entryFileName, fileName, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(entryFileName, decodedName, StringComparison.OrdinalIgnoreCase))
+                bool namesMatch =
+                    string.Equals(entryFileName, targetFileName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(entryFileName, targetDecodedFileName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(decodedEntryFileName, targetFileName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(decodedEntryFileName, targetDecodedFileName, StringComparison.OrdinalIgnoreCase);
+
+                bool namesWithoutExtMatch =
+                    string.Equals(entryNameWithoutExt, targetNameWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(entryNameWithoutExt, targetDecodedNameWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(decodedEntryNameWithoutExt, targetNameWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(decodedEntryNameWithoutExt, targetDecodedNameWithoutExt, StringComparison.OrdinalIgnoreCase);
+
+                if (namesMatch || namesWithoutExtMatch)
                 {
                     return e;
                 }
