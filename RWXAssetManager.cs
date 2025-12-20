@@ -441,11 +441,44 @@ namespace RWXLoader
             return null;
         }
 
+        private Type ResolveType(params string[] typeNames)
+        {
+            foreach (var typeName in typeNames)
+            {
+                if (string.IsNullOrEmpty(typeName))
+                {
+                    continue;
+                }
+
+                // Try direct resolution first (works when the assembly-qualified name is correct)
+                var direct = Type.GetType(typeName);
+                if (direct != null)
+                {
+                    return direct;
+                }
+
+                // Fall back to scanning loaded assemblies to handle alternate assembly names
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    var resolved = assembly.GetType(typeName);
+                    if (resolved != null)
+                    {
+                        return resolved;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private byte[] TryReadEntryWithDotNetZip(string zipPath, string fileName, string password)
         {
             try
             {
-                var zipType = Type.GetType("Ionic.Zip.ZipFile, Ionic.Zip");
+                var zipType = ResolveType(
+                    "Ionic.Zip.ZipFile, DotNetZip",
+                    "Ionic.Zip.ZipFile, Ionic.Zip",
+                    "Ionic.Zip.ZipFile");
                 if (zipType == null)
                 {
                     return null;
@@ -506,7 +539,9 @@ namespace RWXLoader
         {
             try
             {
-                var zipType = Type.GetType("ICSharpCode.SharpZipLib.Zip.ZipFile, ICSharpCode.SharpZipLib");
+                var zipType = ResolveType(
+                    "ICSharpCode.SharpZipLib.Zip.ZipFile, ICSharpCode.SharpZipLib",
+                    "ICSharpCode.SharpZipLib.Zip.ZipFile");
                 if (zipType == null)
                 {
                     return null;
