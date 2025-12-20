@@ -446,7 +446,11 @@ namespace RWXLoader
             if (!clumpBeginRegex.IsMatch(line)) return false;
 
             meshBuilder.CommitCurrentMesh(context);
-            
+
+            // Preserve the incoming transform so we can compute a clump-local matrix
+            // when ending the clump without reapplying the parent portion.
+            context.clumpTransformStack.Push(context.currentTransform);
+
             // Generate a more descriptive name based on hierarchy depth
             int depth = context.objectStack.Count;
             string clumpName = $"Clump_Depth{depth}";
@@ -460,21 +464,9 @@ namespace RWXLoader
             // FIXED: Clear vertices when starting a new clump since each clump has its own vertex space
             // In RWX, each clump starts vertex numbering from 1 again
             context.vertices.Clear();
-            
-            // DON'T reset the current transform to identity - preserve accumulated transforms!
-            // The transforms that follow will be applied to position this clump correctly
-            
+
             Debug.Log($"🎯 CLUMP BEGIN - Depth: {depth}");
-            Debug.Log($"   📦 Created: '{clumpName}' - will apply accumulated transforms on clumpend");
-            if (context.currentTransform != Matrix4x4.identity)
-            {
-                Vector3 translation = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-                Debug.Log($"   🔄 Preserving accumulated transform with translation: ({translation.x:F6}, {translation.y:F6}, {translation.z:F6})");
-            }
-            else
-            {
-                Debug.Log($"   ⚪ No accumulated transform to preserve");
-            }
+            Debug.Log($"   📦 Created: '{clumpName}' - clump-local matrix will be derived from parent on clumpend");
             Debug.Log($"   ═══════════════════════════════════════");
 
             return true;
@@ -705,21 +697,25 @@ namespace RWXLoader
             Debug.Log($"🏁 CLUMP END - Depth: {depth}");
             Debug.Log($"   📦 Ending: '{currentName}'");
 
-            // Apply the accumulated transform to the current clump before ending it
-            if (context.currentObject != null && context.currentTransform != Matrix4x4.identity)
+            // Apply the accumulated transform directly to this clump's GameObject.
+            // The parent transform will be restored afterwards for siblings, so we
+            // don't need to strip it out here.
+            if (context.currentObject != null)
             {
                 ApplyTransformToObject(context.currentTransform, context.currentObject, context);
             }
-            else if (context.currentObject != null)
-            {
-                Debug.Log($"   ⚪ No transform to apply (identity matrix)");
-            }
+
+            // Restore the parent transform for subsequent siblings
+            Matrix4x4 parentTransform = context.clumpTransformStack.Count > 0
+                ? context.clumpTransformStack.Pop()
+                : Matrix4x4.identity;
+
+            context.currentTransform = parentTransform;
 
             if (context.objectStack.Count > 0)
             {
                 context.currentObject = context.objectStack.Pop();
                 string parentName = context.currentObject != null ? context.currentObject.name : "NULL";
-                Debug.Log($"   ⬆️ Returning to parent: '{parentName}'");
                 Debug.Log($"   ⬆️ Returning to parent: '{parentName}'");
             }
 
@@ -952,15 +948,16 @@ namespace RWXLoader
                 values[i] = float.Parse(floatMatches[i].Value, CultureInfo.InvariantCulture);
             }
 
-            // RWX matrices are stored in row-major order with translation in the LAST COLUMN
-            // RenderWare docs describe the matrix as: [m00 m01 m02 tx; m10 m11 m12 ty; m20 m21 m22 tz; 0 0 0 1]
-            // Unity's Matrix4x4 fields are addressed by row/column, so we can assign them directly without transposing.
+            // RWX matrices are written in column-major order (RenderWare style):
+            //   m00 m10 m20 m30 m01 m11 m21 m31 m02 m12 m22 m32 m03 m13 m23 m33
+            // with translation in the final column (indices 12–14). Map them into Unity's
+            // row/column fields explicitly so translation is preserved.
             Matrix4x4 matrix = new Matrix4x4();
 
-            matrix.m00 = values[0];  matrix.m01 = values[1];  matrix.m02 = values[2];  matrix.m03 = values[3];
-            matrix.m10 = values[4];  matrix.m11 = values[5];  matrix.m12 = values[6];  matrix.m13 = values[7];
-            matrix.m20 = values[8];  matrix.m21 = values[9];  matrix.m22 = values[10]; matrix.m23 = values[11];
-            matrix.m30 = values[12]; matrix.m31 = values[13]; matrix.m32 = values[14]; matrix.m33 = values[15];
+            matrix.m00 = values[0];  matrix.m10 = values[1];  matrix.m20 = values[2];  matrix.m30 = values[3];
+            matrix.m01 = values[4];  matrix.m11 = values[5];  matrix.m21 = values[6];  matrix.m31 = values[7];
+            matrix.m02 = values[8];  matrix.m12 = values[9];  matrix.m22 = values[10]; matrix.m32 = values[11];
+            matrix.m03 = values[12]; matrix.m13 = values[13]; matrix.m23 = values[14]; matrix.m33 = values[15];
             
             // HACK: Some RWX files have m33=0 in their matrices, which is invalid for TRS.
             // Force it to 1 to treat it as an affine transformation.

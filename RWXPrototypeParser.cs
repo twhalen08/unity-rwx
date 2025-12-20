@@ -114,79 +114,45 @@ namespace RWXLoader
             // Save current state
             var savedObject = context.currentObject;
             var savedMaterial = context.currentMaterial.Clone();
-            var savedTransform = context.currentTransform;
+            var parentTransform = context.currentTransform; // Transform that positioned this instance in the stream
             var savedVertices = new List<RWXVertex>(context.vertices);
             var savedTriangles = new List<int>(context.currentTriangles);
             var savedMeshMaterial = context.currentMeshMaterial?.Clone();
-            
+
             // Set up context for prototype instance
             context.currentObject = instanceObject;
-            context.currentTransform = Matrix4x4.identity; // Reset for prototype processing
             context.vertices.Clear(); // Start with clean vertex list for this prototype
             context.currentTriangles.Clear();
             context.currentMeshMaterial = null;
-            
-            // Track the transform that should be applied to this instance
-            Matrix4x4 instanceTransform = Matrix4x4.identity;
-            
-            // Process all lines from the prototype
+
+            // Process prototype content from a fresh local transform so parent placement
+            // is applied once at the end instead of leaking into vertex transforms.
+            context.currentTransform = Matrix4x4.identity;
+
             var prototypeLines = prototypes[prototypeName];
             foreach (string prototypeLine in prototypeLines)
             {
                 if (!string.IsNullOrWhiteSpace(prototypeLine))
                 {
-            // Check if this is a Transform command - if so, handle it specially
-            if (prototypeLine.Trim().ToLower().StartsWith("transform"))
-            {
-                instanceTransform = ExtractTransformFromLine(prototypeLine);
-                
-                // For bed-style prototypes with Transform matrices, apply the transform directly to vertices
-                // This preserves the precise orientations defined in the prototype
-                if (IsBedStylePrototype(prototypeName, instanceTransform))
-                {
-                    context.currentTransform = instanceTransform;
-                    Debug.Log($"🛏️ BED PROTOTYPE: {prototypeName} - Applied Transform matrix directly to context for vertex processing");
-                    Debug.Log($"🛏️ Transform: Translation=({instanceTransform.m03:F6}, {instanceTransform.m13:F6}, {instanceTransform.m23:F6})");
-                    
-                    // Add detailed matrix logging for bed prototypes
-                    if (IsBedHeadFootboardPrototype(prototypeName, instanceTransform))
-                    {
-                        Debug.Log($"🛏️ BED MATRIX | {prototypeName}");
-                        float det = instanceTransform.m00 * (instanceTransform.m11 * instanceTransform.m22 - instanceTransform.m12 * instanceTransform.m21) -
-                                   instanceTransform.m01 * (instanceTransform.m10 * instanceTransform.m22 - instanceTransform.m12 * instanceTransform.m20) +
-                                   instanceTransform.m02 * (instanceTransform.m10 * instanceTransform.m21 - instanceTransform.m11 * instanceTransform.m20);
-                        Debug.Log($"   Unity: Det={det:F3}, Trans=({instanceTransform.m03:F3}, {instanceTransform.m13:F3}, {instanceTransform.m23:F3})");
-                    }
-                }
-                else
-                {
-                    // For tree-style prototypes, capture for instance positioning
-                    Debug.Log($"🌲 TREE PROTOTYPE: {prototypeName} - Captured instance transform: Translation=({instanceTransform.m03:F6}, {instanceTransform.m13:F6}, {instanceTransform.m23:F6})");
+                    mainParser.ProcessLine(prototypeLine, context);
                 }
             }
-            else
-            {
-                // Process other commands normally (geometry, materials, etc.)
-                mainParser.ProcessLine(prototypeLine, context);
-            }
-                }
-            }
-            
+
             Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
-            
-            // Apply the captured transform to the instance object
-            if (instanceTransform != Matrix4x4.identity)
-            {
-                ApplyTransformToInstance(instanceObject, instanceTransform);
-            }
-            
+
+            // Combine the parent transform (where the instance sits in the stream)
+            // with the prototype's own transform (if any) so positioning isn't lost
+            // when prototypes supply their own matrix.
+            Matrix4x4 instanceTransform = parentTransform * context.currentTransform;
+            ApplyTransformToInstance(instanceObject, instanceTransform);
+
             // Commit the prototype instance mesh immediately
             meshBuilder.CommitPrototypeMesh(context);
             
             // Restore context
             context.currentObject = savedObject;
             context.currentMaterial = savedMaterial;
-            context.currentTransform = savedTransform;
+            context.currentTransform = parentTransform;
             context.vertices = savedVertices;
             context.currentTriangles = savedTriangles;
             context.currentMeshMaterial = savedMeshMaterial;
