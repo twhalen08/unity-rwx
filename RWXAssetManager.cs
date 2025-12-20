@@ -254,7 +254,7 @@ namespace RWXLoader
                 // Password-protected ZIPs are not handled by ZipArchive. If a password is supplied, try an alternative reader.
                 if (!string.IsNullOrEmpty(password))
                 {
-                    byte[] protectedBytes = TryReadEntryWithPassword(zipPath, fileName, password);
+                    byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
                     if (protectedBytes != null && protectedBytes.Length > 0)
                     {
                         using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
@@ -273,7 +273,7 @@ namespace RWXLoader
                 {
                     try
                     {
-                        byte[] protectedBytes = TryReadEntryWithPassword(zipPath, fileName, password);
+                        byte[] protectedBytes = TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
                         if (protectedBytes != null && protectedBytes.Length > 0)
                         {
                             using (var reader = new StreamReader(new MemoryStream(protectedBytes)))
@@ -313,7 +313,7 @@ namespace RWXLoader
 
                 if (!string.IsNullOrEmpty(password))
                 {
-                    return TryReadEntryWithPassword(zipPath, fileName, password);
+                    return TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
                 }
 
                 return null;
@@ -324,7 +324,7 @@ namespace RWXLoader
                 {
                     try
                     {
-                        return TryReadEntryWithPassword(zipPath, fileName, password);
+                        return TryReadEntryWithPassword(zipPath, BuildZipNameCandidates(fileName), password);
                     }
                     catch (Exception)
                     {
@@ -404,20 +404,32 @@ namespace RWXLoader
         /// Fallback for reading password-protected ZIP files using reflection so we don't hard-require an extra dependency.
         /// Supports Ionic.Zip (DotNetZip) and SharpZipLib when present in the project.
         /// </summary>
-        private byte[] TryReadEntryWithPassword(string zipPath, string fileName, string password)
+        private byte[] TryReadEntryWithPassword(string zipPath, List<string> candidateNames, string password)
         {
-            if (string.IsNullOrEmpty(zipPath) || string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(password))
+            if (string.IsNullOrEmpty(zipPath) || candidateNames == null || candidateNames.Count == 0 || string.IsNullOrEmpty(password))
             {
                 return null;
             }
 
-            byte[] data = TryReadEntryWithDotNetZip(zipPath, fileName, password);
-            if (data != null && data.Length > 0)
+            foreach (var candidate in candidateNames)
             {
-                return data;
+                byte[] data = TryReadEntryWithDotNetZip(zipPath, candidate, password);
+                if (data != null && data.Length > 0)
+                {
+                    return data;
+                }
             }
 
-            return TryReadEntryWithSharpZipLib(zipPath, fileName, password);
+            foreach (var candidate in candidateNames)
+            {
+                byte[] data = TryReadEntryWithSharpZipLib(zipPath, candidate, password);
+                if (data != null && data.Length > 0)
+                {
+                    return data;
+                }
+            }
+
+            return null;
         }
 
         private byte[] TryReadEntryWithDotNetZip(string zipPath, string fileName, string password)
@@ -530,6 +542,62 @@ namespace RWXLoader
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Builds a list of candidate names for matching a ZIP entry, including decoded and case variations.
+        /// </summary>
+        private List<string> BuildZipNameCandidates(string fileName)
+        {
+            var candidates = new List<string>();
+
+            if (string.IsNullOrEmpty(fileName))
+            {
+                return candidates;
+            }
+
+            string decoded = UnityWebRequest.UnEscapeURL(fileName);
+            string trimmed = fileName.Trim();
+            string trimmedDecoded = decoded.Trim();
+
+            void Add(string value)
+            {
+                if (!string.IsNullOrEmpty(value) && !candidates.Contains(value))
+                {
+                    candidates.Add(value);
+                }
+            }
+
+            Add(trimmed);
+            Add(trimmedDecoded);
+            Add(trimmed.ToLowerInvariant());
+            Add(trimmed.ToUpperInvariant());
+            Add(trimmedDecoded.ToLowerInvariant());
+            Add(trimmedDecoded.ToUpperInvariant());
+
+            // Try toggling extensions to account for .rwx/.RWX or missing extensions
+            string lowerExt = Path.ChangeExtension(trimmed, ".rwx");
+            string upperExt = Path.ChangeExtension(trimmed, ".RWX");
+            string decodedLowerExt = Path.ChangeExtension(trimmedDecoded, ".rwx");
+            string decodedUpperExt = Path.ChangeExtension(trimmedDecoded, ".RWX");
+
+            Add(lowerExt);
+            Add(upperExt);
+            Add(decodedLowerExt);
+            Add(decodedUpperExt);
+
+            // Allow matching by name only when callers include a path component
+            string baseName = Path.GetFileName(trimmed);
+            string baseNameDecoded = Path.GetFileName(trimmedDecoded);
+
+            Add(baseName);
+            Add(baseNameDecoded);
+            Add(baseName.ToLowerInvariant());
+            Add(baseName.ToUpperInvariant());
+            Add(baseNameDecoded.ToLowerInvariant());
+            Add(baseNameDecoded.ToUpperInvariant());
+
+            return candidates;
         }
 
         private bool IsZipNameMatch(string entryName, string requestedName)
