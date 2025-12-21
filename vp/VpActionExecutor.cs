@@ -1,0 +1,714 @@
+﻿using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using RWXLoader;
+using UnityEngine;
+
+public static class VpActionExecutor
+{
+    private const float VpShearToUnity = 0.5f;
+    private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
+    private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
+    private static readonly int _BaseMapId = Shader.PropertyToID("_BaseMap");
+    /// <summary>
+    /// Convenience wrapper (optional) so older call sites can use Execute(...)
+    /// </summary>
+    public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    {
+        ExecuteCreate(target, cmd, objectPath, password, host);
+    }
+
+    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    {
+        if (target == null || cmd == null)
+            return;
+
+        switch (cmd.verb)
+        {
+            case "texture":
+                ExecuteTexture(target, cmd, objectPath, password, host);
+                break;
+
+            case "normalmap":
+                ExecuteNormalMap(target, cmd, objectPath, password, host);
+                break;
+
+            case "ambient":
+                ExecuteAmbient(target, cmd);
+                break;
+
+            case "diffuse":
+                ExecuteDiffuse(target, cmd);
+                break;
+
+            case "scale":
+                ExecuteScale(target, cmd);
+                break;
+
+            case "visible":
+                ExecuteVisible(target, cmd);
+                break;
+
+            case "shear":
+                ExecuteShear(target, cmd);
+                break;
+        }
+    }
+
+    // -------------------------
+    // TEXTURE
+    // -------------------------
+    private static void ExecuteTexture(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    {
+        if (host == null)
+        {
+            Debug.LogWarning("[VP] Cannot run texture action: coroutine host is null.");
+            return;
+        }
+
+        string tex = null;
+
+        if (cmd.positional != null && cmd.positional.Count > 0)
+            tex = cmd.positional[0];
+
+        if (string.IsNullOrWhiteSpace(tex) && cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("name", out var name))
+                tex = name;
+            else if (cmd.kv.TryGetValue("texture", out var t))
+                tex = t;
+        }
+
+        if (string.IsNullOrWhiteSpace(tex))
+        {
+            Debug.LogWarning($"[VP] texture action missing texture name: {cmd.raw}");
+            return;
+        }
+
+        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password));
+    }
+
+
+    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password)
+    {
+        if (RWXAssetManager.Instance == null)
+        {
+            var go = new GameObject("RWX Asset Manager");
+            go.AddComponent<RWXAssetManager>();
+        }
+
+        var assetMgr = RWXAssetManager.Instance;
+        if (assetMgr == null)
+        {
+            Debug.LogError("[VP] RWXAssetManager missing.");
+            yield break;
+        }
+
+        // ---- Cache check (reused textures should not be reloaded or reallocated) ----
+        string cacheKey = MakeTextureCacheKey(objectPath, textureName);
+        if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
+        {
+            ApplyTextureToAllRenderers(target, cachedTex);
+            yield break;
+        }
+
+        List<string> candidates = BuildTextureCandidates(textureName);
+
+        string localPath = null;
+        string lastError = null;
+
+        foreach (var candidate in candidates)
+        {
+            bool done = false;
+            bool ok = false;
+            string result = null;
+
+            yield return assetMgr.DownloadTexture(objectPath, candidate, (success, res) =>
+            {
+                ok = success;
+                result = res;
+                done = true;
+            }, password);
+
+            while (!done)
+                yield return null;
+
+            if (ok && File.Exists(result))
+            {
+                localPath = result;
+                break;
+            }
+
+            lastError = result;
+        }
+
+        if (string.IsNullOrEmpty(localPath))
+        {
+            Debug.LogWarning($"[VP] texture '{textureName}' download failed. Last error: {lastError}");
+            yield break;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(localPath);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[VP] texture read failed '{localPath}': {e.Message}");
+            yield break;
+        }
+
+        var tex = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain: true);
+        if (!tex.LoadImage(bytes))
+        {
+            Debug.LogWarning($"[VP] Unity couldn't decode texture '{textureName}' at '{localPath}'");
+            yield break;
+        }
+
+        tex.name = Path.GetFileNameWithoutExtension(localPath);
+
+        // Optional but usually correct for VP content
+        tex.wrapMode = TextureWrapMode.Repeat;
+        tex.filterMode = FilterMode.Bilinear;
+
+        // Helps prevent aggressive unloads if you ever call Resources.UnloadUnusedAssets()
+        tex.hideFlags = HideFlags.DontUnloadUnusedAsset;
+
+        _textureCache[cacheKey] = tex;
+
+        ApplyTextureToAllRenderers(target, tex);
+
+        Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
+    }
+
+    private static List<string> BuildTextureCandidates(string textureName)
+    {
+        var list = new List<string>();
+
+        void Add(string s)
+        {
+            if (!string.IsNullOrWhiteSpace(s) && !list.Contains(s))
+                list.Add(s);
+        }
+
+        string t = textureName.Trim();
+        Add(t);
+
+        string ext = Path.GetExtension(t);
+        if (!string.IsNullOrEmpty(ext))
+            return list;
+
+        Add(t + ".jpg");
+        Add(t + ".jpeg");
+        Add(t + ".png");
+        Add(t + ".bmp");
+
+        Add(t + ".JPG");
+        Add(t + ".PNG");
+
+        return list;
+    }
+
+    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex)
+    {
+        if (root == null || tex == null) return;
+
+        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
+        var block = new MaterialPropertyBlock();
+
+        foreach (var r in renderers)
+        {
+            if (r == null) continue;
+
+            r.GetPropertyBlock(block);
+
+            // Set both; shaders that don't use a property will just ignore it.
+            block.SetTexture(_MainTexId, tex);
+            block.SetTexture(_BaseMapId, tex);
+
+            r.SetPropertyBlock(block);
+        }
+    }
+
+
+    // -------------------------
+    // NORMALMAP
+    // -------------------------
+    private static void ExecuteNormalMap(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    {
+        if (host == null)
+        {
+            Debug.LogWarning("[VP] Cannot run normalmap action: coroutine host is null.");
+            return;
+        }
+
+        if (cmd.positional == null || cmd.positional.Count == 0)
+        {
+            Debug.LogWarning($"[VP] normalmap missing filename: {cmd.raw}");
+            return;
+        }
+
+        string normalName = cmd.positional[0];
+        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password));
+    }
+
+    private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password)
+    {
+        var assetMgr = RWXAssetManager.Instance;
+        if (assetMgr == null)
+            yield break;
+
+        List<string> candidates = BuildTextureCandidates(textureName);
+
+        string localPath = null;
+
+        foreach (var c in candidates)
+        {
+            bool done = false;
+            bool ok = false;
+            string result = null;
+
+            yield return assetMgr.DownloadTexture(objectPath, c, (success, res) =>
+            {
+                ok = success;
+                result = res;
+                done = true;
+            }, password);
+
+            while (!done) yield return null;
+
+            if (ok && File.Exists(result))
+            {
+                localPath = result;
+                break;
+            }
+        }
+
+        if (localPath == null)
+        {
+            Debug.LogWarning($"[VP] normalmap '{textureName}' not found");
+            yield break;
+        }
+
+        byte[] bytes = File.ReadAllBytes(localPath);
+        var tex = new Texture2D(2, 2, TextureFormat.RGBA32, true);
+        if (!tex.LoadImage(bytes))
+        {
+            Debug.LogWarning($"[VP] Unity couldn't decode normalmap '{textureName}' at '{localPath}'");
+            yield break;
+        }
+
+        tex.name = Path.GetFileNameWithoutExtension(localPath);
+        tex.Apply(true, false);
+
+        ApplyNormalMapToRenderers(target, tex);
+    }
+
+    private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal)
+    {
+        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+        {
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+
+                if (m.HasProperty("_BumpMap"))
+                {
+                    m.EnableKeyword("_NORMALMAP");
+                    m.SetTexture("_BumpMap", normal);
+                }
+            }
+        }
+    }
+
+    // -------------------------
+    // AMBIENT / DIFFUSE (simple color multiplier)
+    // -------------------------
+    private static void ExecuteAmbient(GameObject target, VpActionCommand cmd)
+    {
+        if (cmd.positional == null || cmd.positional.Count == 0)
+            return;
+
+        float ambient = ParseFloat(cmd.positional[0], 1f);
+        ambient = Mathf.Clamp01(ambient);
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        {
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
+                }
+            }
+        }
+    }
+
+    private static void ExecuteDiffuse(GameObject target, VpActionCommand cmd)
+    {
+        if (cmd.positional == null || cmd.positional.Count == 0)
+            return;
+
+        float diffuse = ParseFloat(cmd.positional[0], 1f);
+        diffuse = Mathf.Max(0f, diffuse);
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        {
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a
+                    );
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a
+                    ));
+                }
+            }
+        }
+    }
+
+    // -------------------------
+    // SCALE
+    // -------------------------
+    private static void ExecuteScale(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null)
+            return;
+
+        const float MinScale = 0.1f;
+
+        float x = 1f, y = 1f, z = 1f;
+
+        if (cmd.positional == null || cmd.positional.Count == 0)
+            return;
+
+        if (cmd.positional.Count == 1)
+        {
+            float s = Mathf.Max(MinScale, ParseFloat(cmd.positional[0], 1f));
+            x = y = z = s;
+        }
+        else if (cmd.positional.Count >= 3)
+        {
+            x = Mathf.Max(MinScale, ParseFloat(cmd.positional[0], 1f));
+            y = Mathf.Max(MinScale, ParseFloat(cmd.positional[1], 1f));
+            z = Mathf.Max(MinScale, ParseFloat(cmd.positional[2], 1f));
+        }
+        else
+        {
+            x = Mathf.Max(MinScale, ParseFloat(cmd.positional[0], 1f));
+            y = Mathf.Max(MinScale, ParseFloat(cmd.positional[1], 1f));
+            z = 1f;
+        }
+
+        target.transform.localScale = new Vector3(x, y, z);
+    }
+
+    private static float ParseFloat(string s, float fallback)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+            return v;
+
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out v))
+            return v;
+
+        return fallback;
+    }
+
+    // -------------------------
+    // VISIBLE
+    // -------------------------
+    private static void ExecuteVisible(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null)
+            return;
+
+        if (cmd.positional == null || cmd.positional.Count == 0)
+            return;
+
+        string v = cmd.positional[0].Trim().ToLowerInvariant();
+
+        bool visible =
+            v == "yes" ||
+            v == "true" ||
+            v == "1" ||
+            v == "on";
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+            r.enabled = visible;
+    }
+
+    // -------------------------
+    // SHEAR (VP exact: yz zx xy -zy -xz -yx), OBJECT-RELATIVE
+    //
+    // VP shear parameters (order): shear z+ [x+] [y+] [y-] [z-] [x-]
+    //
+    // In VP object space (centered):
+    // x' = x + (xPlus*z)  - (xMinus*y)   // zx - yx
+    // y' = y + (yPlus*x)  - (yMinus*z)   // xy - zy
+    // z' = z + (zPlus*y)  - (zMinus*x)   // yz - xz
+    //
+    // IMPORTANT: Apply in ROOT-LOCAL space (object space), not world,
+    // so it is relative to the object's orientation like VP.
+    // -------------------------
+    private static void ExecuteShear(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null)
+            return;
+
+        // VP order: shear z+ [x+] [y+] [y-] [z-] [x-]
+        float zPlus = GetPosFloat(cmd, 0, 0f);
+        float xPlus = GetPosFloat(cmd, 1, 0f);
+        float yPlus = GetPosFloat(cmd, 2, 0f);
+        float yMinus = GetPosFloat(cmd, 3, 0f);
+        float zMinus = GetPosFloat(cmd, 4, 0f);
+        float xMinus = GetPosFloat(cmd, 5, 0f);
+
+        ApplyShearToAllMeshes_VpMatrix_ObjectLocal(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
+    }
+
+    private static void ApplyShearToAllMeshes_VpMatrix_ObjectLocal(
+        GameObject root,
+        float zPlus, float xPlus, float yPlus,
+        float yMinus, float zMinus, float xMinus)
+    {
+        if (root == null) return;
+
+        var filters = root.GetComponentsInChildren<MeshFilter>(includeInactive: true);
+        if (filters == null || filters.Length == 0) return;
+
+        // Compute ONE AABB in ROOT-LOCAL space (this is object space)
+        if (!TryComputeRootLocalAabb(root, filters, out Vector3 min, out Vector3 max))
+            return;
+
+        Vector3 centerRootLocal = (min + max) * 0.5f;
+
+        // Apply to every mesh, but using the SAME root-local center
+        for (int f = 0; f < filters.Length; f++)
+        {
+            var mf = filters[f];
+            if (mf == null) continue;
+
+            var shared = mf.sharedMesh;
+            if (shared == null) continue;
+
+            // Clone per instance
+            var mesh = UnityEngine.Object.Instantiate(shared);
+            mesh.name = shared.name + "_sheared";
+            mf.sharedMesh = mesh;
+
+            // mesh-local -> root-local (object space)
+            Matrix4x4 meshLocalToRootLocal =
+                root.transform.worldToLocalMatrix * mf.transform.localToWorldMatrix;
+
+            // root-local -> mesh-local
+            Matrix4x4 rootLocalToMeshLocal =
+                mf.transform.worldToLocalMatrix * root.transform.localToWorldMatrix;
+
+            ApplyShearToMesh_VpMatrix_ObjectLocal(
+                mesh,
+                meshLocalToRootLocal,
+                rootLocalToMeshLocal,
+                centerRootLocal,
+                zPlus, xPlus, yPlus,
+                yMinus, zMinus, xMinus
+            );
+        }
+    }
+
+    private static void ApplyShearToMesh_VpMatrix_ObjectLocal(
+        Mesh mesh,
+        Matrix4x4 meshLocalToRootLocal,
+        Matrix4x4 rootLocalToMeshLocal,
+        Vector3 centerRootLocal,
+        float zPlus, float xPlus, float yPlus,
+        float yMinus, float zMinus, float xMinus)
+    {
+        var verts = mesh.vertices;
+        if (verts == null || verts.Length == 0)
+            return;
+
+        for (int i = 0; i < verts.Length; i++)
+        {
+            // mesh-local -> root-local (OBJECT space)
+            Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
+
+            // center
+            p -= centerRootLocal;
+
+            // Convert Unity(root-local) -> VP local coords
+            // Your VP->Unity position mapping: unity.x = -vp.x, unity.y = vp.y, unity.z = vp.z
+            // So vp = (-unity.x, unity.y, unity.z)
+            float x0 = -p.x; // vpX (+X = west)
+            float y0 = p.y; // vpY (+Y = up)
+            float z0 = p.z; // vpZ (+Z = north)
+
+            // Apply VP shear matrix (yz zx xy -zy -xz -yx)
+            float x1 = x0 + (xPlus * z0) - (xMinus * y0);
+            float y1 = y0 + (yPlus * x0) - (yMinus * z0);
+            float z1 = z0 + (zPlus * y0) - (zMinus * x0);
+
+            // VP -> Unity(root-local)
+            p.x = -x1;
+            p.y = y1;
+            p.z = z1;
+
+            // uncenter
+            p += centerRootLocal;
+
+            // root-local -> mesh-local
+            verts[i] = rootLocalToMeshLocal.MultiplyPoint3x4(p);
+        }
+
+        mesh.vertices = verts;
+        mesh.RecalculateBounds();
+        mesh.RecalculateNormals();
+        mesh.RecalculateTangents();
+    }
+
+
+    private static bool TryComputeRootLocalAabb(GameObject root, MeshFilter[] filters, out Vector3 min, out Vector3 max)
+    {
+        min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+        max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+
+        bool any = false;
+
+        // Strip root rotation so shear is evaluated in "pre-rotation" object space (VP-like).
+        Quaternion rootRot = root.transform.localRotation;
+        Quaternion invRootRot = Quaternion.Inverse(rootRot);
+
+        for (int f = 0; f < filters.Length; f++)
+        {
+            var mf = filters[f];
+            if (mf == null) continue;
+
+            var mesh = mf.sharedMesh;
+            if (mesh == null) continue;
+
+            var verts = mesh.vertices;
+            if (verts == null || verts.Length == 0) continue;
+
+            Matrix4x4 meshLocalToRootLocal =
+                root.transform.worldToLocalMatrix * mf.transform.localToWorldMatrix;
+
+            for (int i = 0; i < verts.Length; i++)
+            {
+                // mesh-local -> root-local (this includes root rotation)
+                Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
+
+                // unrotate into VP-like object space
+                p = invRootRot * p;
+
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+                any = true;
+            }
+        }
+
+        if (!any)
+        {
+            min = Vector3.zero;
+            max = Vector3.one;
+            return false;
+        }
+
+        return true;
+    }
+
+
+    private static Bounds ComputeRootLocalBoundsFromMeshes(GameObject root, MeshFilter[] filters)
+    {
+        bool hasAny = false;
+        Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+
+        for (int f = 0; f < filters.Length; f++)
+        {
+            var mf = filters[f];
+            if (mf == null) continue;
+
+            var mesh = mf.sharedMesh;
+            if (mesh == null) continue;
+
+            var verts = mesh.vertices;
+            if (verts == null || verts.Length == 0) continue;
+
+            Matrix4x4 meshLocalToRootLocal =
+                root.transform.worldToLocalMatrix * mf.transform.localToWorldMatrix;
+
+            for (int i = 0; i < verts.Length; i++)
+            {
+                Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
+
+                if (!hasAny)
+                {
+                    b = new Bounds(p, Vector3.zero);
+                    hasAny = true;
+                }
+                else
+                {
+                    b.Encapsulate(p);
+                }
+            }
+        }
+
+        if (!hasAny)
+            b = new Bounds(Vector3.zero, Vector3.one);
+
+        return b;
+    }
+
+    private static float GetPosFloat(VpActionCommand cmd, int index, float fallback)
+    {
+        if (cmd.positional == null || cmd.positional.Count <= index)
+            return fallback;
+
+        string s = cmd.positional[index];
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+            return v;
+
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out v))
+            return v;
+
+        return fallback;
+    }
+
+    private static string MakeTextureCacheKey(string objectPath, string textureName)
+    {
+        string op = (objectPath ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
+        string tn = (textureName ?? string.Empty).Trim().ToLowerInvariant();
+        return op + "||" + tn;
+    }
+
+}

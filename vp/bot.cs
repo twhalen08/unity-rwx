@@ -9,7 +9,6 @@ using RWXLoader;
 
 public class VPWorldAreaLoader : MonoBehaviour
 {
-
     [Header("VP Login")]
     public string userName = "Tom";
     public string botName = "Unity";
@@ -28,6 +27,12 @@ public class VPWorldAreaLoader : MonoBehaviour
     [Header("VP Object Server")]
     [Tooltip("Base URL of the VP build object server")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
+    [Tooltip("Password used for password-protected object paths")]
+    public string objectPathPassword = "";
+
+    [Header("VP Actions Debug")]
+    public bool logCreateActions = true;
+    public bool logActivateActions = true;
 
     private VirtualParadiseClient vpClient;
     private GameObject areaRoot;
@@ -37,6 +42,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         public string modelName;
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
+        public string action;
     }
 
     private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
@@ -44,18 +50,15 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private void Start()
     {
-        // 1) Create a root for this chunk of world
         areaRoot = new GameObject($"VP_Area_{centerX}_{centerY}");
-
-        // Kick off the progressive initialization routine
         StartCoroutine(InitializeAndLoad());
     }
 
     private IEnumerator InitializeAndLoad()
     {
-        // 2) Connect & enter the world
         var loginTask = ConnectAndLogin();
         yield return WaitForTask(loginTask);
+
         if (loginTask.IsFaulted || loginTask.IsCanceled)
         {
             string message = loginTask.IsFaulted
@@ -65,10 +68,7 @@ public class VPWorldAreaLoader : MonoBehaviour
             yield break;
         }
 
-        // 3) Ensure our loader and cache manager are set up
         SetupModelLoader();
-
-        // 4) Query the cells & spawn all models progressively
         yield return QueryAndBuildAreaProgressively();
     }
 
@@ -84,25 +84,24 @@ public class VPWorldAreaLoader : MonoBehaviour
                 World = new World { Name = worldName }
             }
         };
-        await vpClient.LoginAndEnterAsync("xxxxxxxx", true);
+
+        await vpClient.LoginAndEnterAsync("", true);
         Debug.Log($"[VP] Connected & entered '{worldName}' as {userName}");
     }
 
     private void SetupModelLoader()
     {
-        // Guarantee we have an RWXLoaderAdvanced in the scene
         if (modelLoader == null)
         {
             var loaderGO = new GameObject("RWX Remote Loader");
             modelLoader = loaderGO.AddComponent<RWXLoaderAdvanced>();
         }
 
-        // Point it at our VP object server, enable debug, and parent under areaRoot
         modelLoader.defaultObjectPath = objectPath.TrimEnd('/') + "/";
+        modelLoader.objectPathPassword = objectPathPassword;
         modelLoader.enableDebugLogs = true;
         modelLoader.parentTransform = areaRoot.transform;
 
-        // Also ensure the asset-manager singleton exists
         if (RWXAssetManager.Instance == null)
         {
             var mgrGO = new GameObject("RWX Asset Manager");
@@ -129,24 +128,18 @@ public class VPWorldAreaLoader : MonoBehaviour
                 }
 
                 ProcessCell(cellTask.Result);
-                // Give the queue processor a frame to start loading
                 yield return null;
             }
         }
 
-        // Wait for any outstanding model loads to complete before finishing
         while (pendingModelLoads.Count > 0 || loadQueueCoroutine != null)
-        {
             yield return null;
-        }
     }
 
     private IEnumerator WaitForTask(Task task)
     {
         while (!task.IsCompleted)
-        {
             yield return null;
-        }
     }
 
     private void ProcessCell(QueryCellResult cell)
@@ -156,33 +149,32 @@ public class VPWorldAreaLoader : MonoBehaviour
             if (string.IsNullOrEmpty(obj.Model))
                 continue;
 
-            // Strip trailing ".rwx" if present
             string modelName = obj.Model.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase)
                 ? Path.GetFileNameWithoutExtension(obj.Model)
                 : obj.Model;
 
-            // Convert VP coords → Unity coords (swap X and Z)
             UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
+            Quaternion rot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
 
-            Quaternion unityRot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
+            // ✅ action is per-instance metadata
+            string action = obj.Action;
 
-            EnqueueModelLoad(modelName, pos, unityRot);
+            EnqueueModelLoad(modelName, pos, rot, action);
         }
     }
 
-    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation)
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action)
     {
         pendingModelLoads.Enqueue(new PendingModelLoad
         {
             modelName = modelName,
             position = position,
-            rotation = rotation
+            rotation = rotation,
+            action = action
         });
 
         if (loadQueueCoroutine == null)
-        {
             loadQueueCoroutine = StartCoroutine(ProcessLoadQueue());
-        }
     }
 
     private IEnumerator ProcessLoadQueue()
@@ -191,42 +183,69 @@ public class VPWorldAreaLoader : MonoBehaviour
         {
             var request = pendingModelLoads.Dequeue();
 
+            string modelId = System.IO.Path.GetFileNameWithoutExtension(request.modelName);
+
             bool completed = false;
             GameObject loadedObject = null;
             string errorMessage = null;
 
             modelLoader.LoadModelFromRemote(
-                request.modelName,
+                modelId,
                 modelLoader.defaultObjectPath,
                 (go, errMsg) =>
                 {
                     loadedObject = go;
                     errorMessage = errMsg;
                     completed = true;
-                });
+                },
+                objectPathPassword
+            );
 
             while (!completed)
-            {
                 yield return null;
+
+            if (loadedObject == null)
+            {
+                Debug.LogError($"RWX load failed: {request.modelName} (normalized='{modelId}') → {errorMessage}");
+                yield return null;
+                continue;
             }
 
-            if (loadedObject != null)
+            loadedObject.transform.localPosition = request.position;
+            loadedObject.transform.localRotation = request.rotation;
+            loadedObject.transform.localScale = UnityEngine.Vector3.one;
+
+            // Give the loader a frame to finish any late material/renderer setup
+            yield return null;
+
+            // ✅ Apply VP action semantics (create actions ONCE)
+            if (!string.IsNullOrWhiteSpace(request.action))
             {
-                loadedObject.transform.localPosition = request.position;
-                loadedObject.transform.localRotation = request.rotation;
-                loadedObject.transform.localScale = UnityEngine.Vector3.one;
-            }
-            else
-            {
-                Debug.LogError($"RWX load failed: {request.modelName} → {errorMessage}");
+                VpActionParser.Parse(request.action, out var createActions, out var activateActions);
+
+                if (logCreateActions && createActions.Count > 0)
+                    Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
+
+                foreach (var a in createActions)
+                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+
+                if (activateActions.Count > 0)
+                {
+                    var act = loadedObject.GetComponent<VpActivateActions>();
+                    if (act == null) act = loadedObject.AddComponent<VpActivateActions>();
+                    act.actions.AddRange(activateActions);
+
+                    if (logActivateActions)
+                        Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
+                }
             }
 
-            // Allow other systems to breathe before the next heavy load
             yield return null;
         }
 
         loadQueueCoroutine = null;
     }
+
 
     private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 vpRotation, double vpAngle, string modelName)
     {
@@ -237,8 +256,6 @@ public class VPWorldAreaLoader : MonoBehaviour
         {
             if (IsVectorValid(rotationVector))
             {
-                // VP uses the rotation vector as Euler angles when the angle value is infinite
-                // Flip Y/Z so the handedness matches Unity just like the previous implementation
                 UnityEngine.Vector3 unityEuler = new UnityEngine.Vector3(rotationVector.x, -rotationVector.y, -rotationVector.z);
                 unityRot = Quaternion.Euler(unityEuler);
             }
@@ -285,7 +302,6 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private Quaternion ConvertVpQuaternionToUnity(Quaternion vpQuaternion)
     {
-        // Mirror the Virtual Paradise quaternion into Unity space by flipping Y/Z components
         Quaternion unityQuat = new Quaternion(vpQuaternion.x, -vpQuaternion.y, -vpQuaternion.z, vpQuaternion.w);
         return Quaternion.Normalize(unityQuat);
     }
@@ -304,15 +320,10 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
-        // Convert VP coordinates to Unity with X-Y as ground plane and Z as height:
-        // Flip only X axis to fix mirroring, keep Y and Z normal
-        // VP.X (east/west on ground) → Unity.-X (flip east/west)
-        // VP.Y (north/south on ground) → Unity.Y (normal north/south)
-        // VP.Z (up/down height) → Unity.Z (up/down height)
         return new UnityEngine.Vector3(
-            -(float)vpPos.X,  // VP ground X to Unity ground -X (flipped)
-            (float)vpPos.Y,   // VP ground Y to Unity ground Y (normal)
-            (float)vpPos.Z    // VP height Z to Unity height Z
+            -(float)vpPos.X,
+            (float)vpPos.Y,
+            (float)vpPos.Z
         );
     }
 }
