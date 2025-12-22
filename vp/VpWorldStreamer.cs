@@ -129,6 +129,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public Task<ParsedActions> parsedActions;
+    }
+
+    private sealed class ParsedActions
+    {
+        public List<VpActionCommand> createActions;
+        public List<VpActionCommand> activateActions;
     }
 
     // Model priority heap: smallest priority loads first
@@ -377,7 +384,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 modelName = modelName,
                 position = pos,
                 rotation = rot,
-                action = obj.Action
+                action = obj.Action,
+                parsedActions = string.IsNullOrWhiteSpace(obj.Action) ? null : StartParseActionsJob(obj.Action)
             };
 
             float pri = ComputeModelPriority(pos, camPos);
@@ -442,7 +450,27 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         // Phase 2: apply actions (time-sliced)
         if (!string.IsNullOrWhiteSpace(req.action))
         {
-            VpActionParser.Parse(req.action, out var createActions, out var activateActions);
+            ParsedActions parsed = null;
+
+            if (req.parsedActions != null)
+            {
+                yield return WaitForTask(req.parsedActions);
+
+                if (req.parsedActions.IsFaulted)
+                {
+                    Debug.LogError($"[VP] Action parse failed for {loadedObject.name}: {req.parsedActions.Exception?.GetBaseException().Message}");
+                }
+                else
+                {
+                    parsed = req.parsedActions.Result;
+                }
+            }
+
+            if (parsed == null)
+                parsed = ParseActionsSync(req.action);
+
+            var createActions = parsed.createActions;
+            var activateActions = parsed.activateActions;
 
             if (logCreateActions && createActions.Count > 0)
                 Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
@@ -634,6 +662,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Utilities
     // -------------------------
+    private Task<ParsedActions> StartParseActionsJob(string action)
+    {
+        return Task.Run(() => ParseActionsSync(action));
+    }
+
+    private ParsedActions ParseActionsSync(string action)
+    {
+        VpActionParser.Parse(action, out var createActions, out var activateActions);
+        return new ParsedActions
+        {
+            createActions = createActions,
+            activateActions = activateActions
+        };
+    }
+
     private IEnumerator WaitForTask(Task task)
     {
         while (!task.IsCompleted)
