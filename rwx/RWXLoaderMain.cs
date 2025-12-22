@@ -1,4 +1,6 @@
+using System.Collections;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace RWXLoader
@@ -86,6 +88,42 @@ namespace RWXLoader
             return ParseRWX(Path.GetFileNameWithoutExtension(filePath), content);
         }
 
+        /// <summary>
+        /// Reads and parses an RWX file without blocking the main Unity thread.
+        /// Heavy I/O and string handling are done on a background worker, while
+        /// parsing is spread across multiple frames on the main thread.
+        /// </summary>
+        /// <param name="filePath">Absolute path to the RWX file.</param>
+        /// <param name="onComplete">Invoked with the loaded GameObject when finished.</param>
+        /// <param name="linesPerFrame">How many lines to process per frame.</param>
+        /// <returns>Coroutine that yields until parsing is complete.</returns>
+        public IEnumerator LoadRWXFileAsync(string filePath, System.Action<GameObject> onComplete = null, int linesPerFrame = 250)
+        {
+            if (!File.Exists(filePath))
+            {
+                Debug.LogError($"RWX file not found: {filePath}");
+                yield break;
+            }
+
+            string content = null;
+
+            // Offload file I/O to a background thread to keep the main loop responsive.
+            var readTask = Task.Run(() => File.ReadAllText(filePath));
+            while (!readTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (readTask.IsFaulted)
+            {
+                Debug.LogError($"Failed to read RWX file: {readTask.Exception}");
+                yield break;
+            }
+
+            content = readTask.Result;
+            yield return ParseRWXCoroutine(Path.GetFileNameWithoutExtension(filePath), content, onComplete, linesPerFrame);
+        }
+
         public GameObject LoadRWXFromPersistentData(string fileName)
         {
             string filePath = Path.Combine(Application.persistentDataPath, "Models", fileName);
@@ -124,6 +162,44 @@ namespace RWXLoader
             rootObject.transform.localScale = Vector3.one * 10f;
 
             return rootObject;
+        }
+
+        private IEnumerator ParseRWXCoroutine(string name, string content, System.Action<GameObject> onComplete, int linesPerFrame)
+        {
+            var rootObject = new GameObject(name);
+            var context = new RWXParseContext
+            {
+                rootObject = rootObject,
+                currentObject = rootObject,
+                currentMaterial = new RWXMaterial()
+            };
+
+            using (var reader = new StringReader(content))
+            {
+                string line;
+                int processedThisFrame = 0;
+
+                while ((line = reader.ReadLine()) != null)
+                {
+                    line = line.Trim();
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        parser.ProcessLine(line, context);
+                    }
+
+                    processedThisFrame++;
+                    if (processedThisFrame >= linesPerFrame)
+                    {
+                        processedThisFrame = 0;
+                        yield return null; // Let the main loop breathe
+                    }
+                }
+            }
+
+            meshBuilder.FinalCommit(context);
+            rootObject.transform.localScale = Vector3.one * 10f;
+
+            onComplete?.Invoke(rootObject);
         }
 
         public void ClearCache()
