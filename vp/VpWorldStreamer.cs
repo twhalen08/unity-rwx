@@ -79,6 +79,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Cooldown between heap reprioritizations when camera cell changes. 0 = always.")]
     public float reprioritizeCooldownSeconds = 0.25f;
 
+    [Header("Adaptive Performance")]
+    [Tooltip("If true, throttle model starts/action work when the previous frame exceeded the budget.")]
+    public bool adaptToFrameRate = true;
+
+    [Tooltip("Frame time budget in milliseconds before we start throttling (0 = disable).")]
+    public float adaptiveFrameBudgetMs = 18f;
+
+    [Tooltip("Clamp for how much we can slow down work when throttling.")]
+    public float adaptiveMaxSlowdown = 4f;
+
+    [Tooltip("Minimum per-frame action budget when throttled (ms) to avoid starving work entirely.")]
+    public float adaptiveMinWorkBudgetMs = 0.5f;
+
     [Header("Prioritization")]
     [Tooltip("When camera changes cell, rebuild pending model priorities so nearer/visible objects load first.")]
     public bool reprioritizeModelsOnCellChange = true;
@@ -264,9 +277,24 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             int startedThisFrame = 0;
 
+            int startLimit = maxModelStartsPerFrame;
+            float actionBudgetMs = modelWorkBudgetMs;
+
+            if (adaptToFrameRate && adaptiveFrameBudgetMs > 0f && Time.deltaTime > 0f)
+            {
+                float frameMs = Time.deltaTime * 1000f;
+                if (frameMs > adaptiveFrameBudgetMs)
+                {
+                    float slowdown = Mathf.Clamp(frameMs / adaptiveFrameBudgetMs, 1f, Mathf.Max(1f, adaptiveMaxSlowdown));
+
+                    startLimit = Mathf.Max(1, Mathf.FloorToInt(maxModelStartsPerFrame / slowdown));
+                    actionBudgetMs = Mathf.Max(adaptiveMinWorkBudgetMs, modelWorkBudgetMs / slowdown);
+                }
+            }
+
             while (modelHeap.Count > 0 &&
                    inFlightModelLoads < maxConcurrentModelLoads &&
-                   startedThisFrame < maxModelStartsPerFrame)
+                   startedThisFrame < startLimit)
             {
                 var req = modelHeap.PopMin();
 
@@ -277,7 +305,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                     inFlightModelLoads++;
                     startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, cellRoot.transform));
+                    StartCoroutine(LoadOneModelBudgeted(req, cellRoot.transform, actionBudgetMs));
                 }
                 else
                 {
@@ -287,7 +315,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                     inFlightModelLoads++;
                     startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, parent));
+                    StartCoroutine(LoadOneModelBudgeted(req, parent, actionBudgetMs));
                 }
             }
 
@@ -360,7 +388,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Model load + actions (budgeted)
     // -------------------------
-    private IEnumerator LoadOneModelBudgeted(PendingModelLoad req, Transform parent)
+    private IEnumerator LoadOneModelBudgeted(PendingModelLoad req, Transform parent, float actionBudgetMs)
     {
         string modelId = Path.GetFileNameWithoutExtension(req.modelName);
 
@@ -433,7 +461,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     VpActionExecutor.ExecuteCreate(loadedObject, createActions[i], modelLoader.defaultObjectPath, objectPathPassword, this);
 
                     float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
-                    if (elapsedMs >= modelWorkBudgetMs)
+                    if (elapsedMs >= actionBudgetMs)
                     {
                         yield return null;
                         start = Time.realtimeSinceStartup;
@@ -654,6 +682,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+        GUI.Label(new Rect(10, 120, 1600, 22), $"Adaptive={adaptToFrameRate} FrameBudgetMs={adaptiveFrameBudgetMs} MaxSlow={adaptiveMaxSlowdown} MinActionMs={adaptiveMinWorkBudgetMs}");
     }
 
     // -------------------------
