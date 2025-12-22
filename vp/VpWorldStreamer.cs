@@ -130,6 +130,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public Quaternion rotation;
         public string action;
         public Task<ParsedActions> parsedActions;
+        public bool hasTextureOverrides;
     }
 
     private sealed class ParsedActions
@@ -385,7 +386,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 position = pos,
                 rotation = rot,
                 action = obj.Action,
-                parsedActions = string.IsNullOrWhiteSpace(obj.Action) ? null : StartParseActionsJob(obj.Action)
+                parsedActions = string.IsNullOrWhiteSpace(obj.Action) ? null : StartParseActionsJob(obj.Action),
+                hasTextureOverrides = ActionOverridesTextures(obj.Action)
             };
 
             float pri = ComputeModelPriority(pos, camPos);
@@ -406,6 +408,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         modelLoader.parentTransform = parent;
 
+        bool skipEmbeddedTextures = req.hasTextureOverrides;
+
         modelLoader.LoadModelFromRemote(
             modelId,
             modelLoader.defaultObjectPath,
@@ -415,7 +419,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 errorMessage = errMsg;
                 completed = true;
             },
-            objectPathPassword
+            objectPathPassword,
+            enableTextures: !skipEmbeddedTextures
         );
 
         while (!completed)
@@ -662,6 +667,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Utilities
     // -------------------------
+    private bool ActionOverridesTextures(string action)
+    {
+        if (string.IsNullOrWhiteSpace(action))
+            return false;
+
+        return action.IndexOf("texture", StringComparison.OrdinalIgnoreCase) >= 0
+            || action.IndexOf("normalmap", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private Task<ParsedActions> StartParseActionsJob(string action)
     {
         return Task.Run(() => ParseActionsSync(action));

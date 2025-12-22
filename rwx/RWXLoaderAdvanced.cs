@@ -61,7 +61,7 @@ namespace RWXLoader
         /// <param name="modelName">Name of the model (without .rwx extension)</param>
         /// <param name="objectPath">Remote object server URL (optional, uses default if null)</param>
         /// <param name="onComplete">Callback when loading is complete</param>
-        public void LoadModelFromRemote(string modelName, string objectPath = null, System.Action<GameObject, string> onComplete = null, string password = null)
+        public void LoadModelFromRemote(string modelName, string objectPath = null, System.Action<GameObject, string> onComplete = null, string password = null, bool enableTextures = true)
         {
             if (string.IsNullOrEmpty(objectPath))
             {
@@ -74,13 +74,13 @@ namespace RWXLoader
             }
 
             // Fast path: reuse a cached prefab instead of reparsing/downloading
-            if (TryInstantiateFromCache(objectPath, modelName, out GameObject cachedInstance))
+            if (enableTextures && TryInstantiateFromCache(objectPath, modelName, out GameObject cachedInstance))
             {
                 onComplete?.Invoke(cachedInstance, "Success (cached)");
                 return;
             }
 
-            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, onComplete));
+            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, enableTextures, onComplete));
         }
 
         private bool TryInstantiateFromCache(string objectPath, string modelName, out GameObject instance)
@@ -116,7 +116,7 @@ namespace RWXLoader
             return cacheContainer;
         }
 
-        private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, string password, System.Action<GameObject, string> onComplete)
+        private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, string password, bool enableTextures, System.Action<GameObject, string> onComplete)
         {
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
@@ -196,6 +196,7 @@ namespace RWXLoader
             GameObject modelObject = null;
             try
             {
+                materialManager.enableTextures = enableTextures;
                 modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
             }
             catch (Exception e)
@@ -207,7 +208,7 @@ namespace RWXLoader
             }
 
             // Cache the parsed prefab so future loads are instant
-            if (modelObject != null)
+            if (modelObject != null && enableTextures)
             {
                 CachePrefab(objectPath, modelName, modelObject);
 
