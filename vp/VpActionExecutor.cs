@@ -43,6 +43,10 @@ public static class VpActionExecutor
                 ExecuteDiffuse(target, cmd);
                 break;
 
+            case "light":
+                ExecuteLight(target, cmd);
+                break;
+
             case "scale":
                 ExecuteScale(target, cmd);
                 break;
@@ -394,6 +398,42 @@ public static class VpActionExecutor
     }
 
     // -------------------------
+    // LIGHT
+    // -------------------------
+    private static void ExecuteLight(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null)
+            return;
+
+        Color color = ParseColor(GetValue(cmd, "color"), Color.white);
+        float radius = Mathf.Max(0.01f, GetFloat(cmd, "radius", 10f));
+        float brightness = Mathf.Max(0.01f, GetFloat(cmd, "brightness", 0.5f));
+        float fxTime = Mathf.Max(0.01f, GetFloat(cmd, "time", 1f));
+        float maxDistance = Mathf.Max(0f, GetFloat(cmd, "maxdist", 1000f));
+        float spotAngle = Mathf.Max(0.01f, GetFloat(cmd, "angle", 45f));
+        string fx = GetValue(cmd, "fx")?.ToLowerInvariant();
+        string type = GetValue(cmd, "type")?.ToLowerInvariant();
+
+        var lightObj = new GameObject("vp-light");
+        lightObj.transform.SetParent(target.transform, worldPositionStays: false);
+
+        var light = lightObj.AddComponent<Light>();
+        light.type = type == "spot" ? LightType.Spot : LightType.Point;
+        light.range = radius;
+        light.color = color;
+        light.intensity = brightness;
+
+        if (light.type == LightType.Spot)
+            light.spotAngle = spotAngle;
+
+        if (!string.IsNullOrWhiteSpace(fx) || maxDistance > 0f)
+        {
+            var effect = lightObj.AddComponent<VpLightEffect>();
+            effect.Initialize(light, fx, brightness, fxTime, maxDistance, color);
+        }
+    }
+
+    // -------------------------
     // SCALE
     // -------------------------
     private static void ExecuteScale(GameObject target, VpActionCommand cmd)
@@ -441,6 +481,84 @@ public static class VpActionExecutor
             return v;
 
         return fallback;
+    }
+
+    private static float GetFloat(VpActionCommand cmd, string key, float fallback)
+    {
+        if (cmd == null || cmd.kv == null)
+            return fallback;
+
+        if (!cmd.kv.TryGetValue(key, out string s) || string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        return ParseFloat(s, fallback);
+    }
+
+    private static string GetValue(VpActionCommand cmd, string key)
+    {
+        if (cmd == null || cmd.kv == null)
+            return null;
+
+        if (cmd.kv.TryGetValue(key, out string val))
+            return val;
+
+        return null;
+    }
+
+    private static Color ParseColor(string s, Color fallback)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        string trimmed = s.Trim();
+
+        if (ColorUtility.TryParseHtmlString(trimmed, out Color c))
+            return c;
+
+        if (!trimmed.StartsWith("#") && (trimmed.Length == 6 || trimmed.Length == 8))
+        {
+            if (ColorUtility.TryParseHtmlString("#" + trimmed, out c))
+                return c;
+        }
+
+        if (TryParseRgbList(trimmed, out c))
+            return c;
+
+        return fallback;
+    }
+
+    private static bool TryParseRgbList(string s, out Color color)
+    {
+        color = Color.white;
+
+        var parts = s.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3 && parts.Length != 4)
+            return false;
+
+        float[] vals = new float[parts.Length];
+        bool anyAboveOne = false;
+
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (!float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out float v) &&
+                !float.TryParse(parts[i], NumberStyles.Float, CultureInfo.CurrentCulture, out v))
+            {
+                return false;
+            }
+
+            vals[i] = v;
+            if (v > 1f)
+                anyAboveOne = true;
+        }
+
+        float scale = anyAboveOne ? 1f / 255f : 1f;
+        float r = vals[0] * scale;
+        float g = vals[1] * scale;
+        float b = vals[2] * scale;
+        float a = (parts.Length == 4 ? vals[3] * scale : 1f);
+
+        color = new Color(r, g, b, a);
+        return true;
     }
 
     // -------------------------
@@ -711,4 +829,127 @@ public static class VpActionExecutor
         return op + "||" + tn;
     }
 
+}
+
+public class VpLightEffect : MonoBehaviour
+{
+    private Light _light;
+    private string _effect;
+    private float _brightness;
+    private float _period;
+    private float _maxDistance;
+    private Color _baseColor;
+    private float _time;
+
+    public void Initialize(Light light, string effect, float brightness, float period, float maxDistance, Color baseColor)
+    {
+        _light = light;
+        _effect = effect ?? string.Empty;
+        _brightness = brightness;
+        _period = Mathf.Max(0.01f, period);
+        _maxDistance = Mathf.Max(0f, maxDistance);
+        _baseColor = baseColor;
+    }
+
+    private void Awake()
+    {
+        if (_light == null)
+            _light = GetComponent<Light>();
+
+        if (_period <= 0f)
+            _period = 1f;
+    }
+
+    private void Update()
+    {
+        if (_light == null)
+            return;
+
+        _time += Time.deltaTime;
+
+        if (_maxDistance > 0f && Camera.main != null)
+        {
+            float dist = Vector3.Distance(Camera.main.transform.position, _light.transform.position);
+            _light.enabled = dist <= _maxDistance;
+        }
+        else
+        {
+            _light.enabled = true;
+        }
+
+        switch (_effect)
+        {
+            case "blink":
+                Blink();
+                break;
+
+            case "fadein":
+                FadeIn();
+                break;
+
+            case "fadeout":
+                FadeOut();
+                break;
+
+            case "fire":
+                Fire();
+                break;
+
+            case "pulse":
+                Pulse();
+                break;
+
+            case "rainbow":
+                Rainbow();
+                break;
+
+            default:
+                _light.color = _baseColor;
+                _light.intensity = _brightness;
+                break;
+        }
+    }
+
+    private void Blink()
+    {
+        float phase = Mathf.Floor(_time / _period);
+        bool on = ((int)phase % 2) == 0;
+        _light.intensity = on ? _brightness : 0f;
+        _light.color = _baseColor;
+    }
+
+    private void FadeIn()
+    {
+        float t = Mathf.Clamp01(_time / _period);
+        _light.intensity = Mathf.Lerp(0f, _brightness, t);
+        _light.color = _baseColor;
+    }
+
+    private void FadeOut()
+    {
+        float t = Mathf.Clamp01(_time / _period);
+        _light.intensity = Mathf.Lerp(_brightness, 0f, t);
+        _light.color = _baseColor;
+    }
+
+    private void Fire()
+    {
+        float flicker = UnityEngine.Random.Range(0.5f * _brightness, 1.5f * _brightness);
+        _light.intensity = flicker;
+        _light.color = _baseColor;
+    }
+
+    private void Pulse()
+    {
+        float sin = Mathf.Sin((_time / _period) * Mathf.PI * 2f);
+        _light.intensity = _brightness * (0.5f + 0.5f * sin);
+        _light.color = _baseColor;
+    }
+
+    private void Rainbow()
+    {
+        float h = (_time / _period) % 1f;
+        _light.color = Color.HSVToRGB(h, 1f, 1f);
+        _light.intensity = _brightness;
+    }
 }
