@@ -506,10 +506,8 @@ public static class VpActionExecutor
         if (filters == null || filters.Length == 0) return;
 
         // Compute ONE AABB in ROOT-LOCAL space (this is object space)
-        if (!TryComputeRootLocalAabb(root, filters, out Vector3 min, out Vector3 max))
+        if (!TryComputeRootLocalAabb(root, filters, out Vector3 centerRootLocal))
             return;
-
-        Vector3 centerRootLocal = (min + max) * 0.5f;
 
         // Apply to every mesh, but using the SAME root-local center
         for (int f = 0; f < filters.Length; f++)
@@ -595,10 +593,10 @@ public static class VpActionExecutor
     }
 
 
-    private static bool TryComputeRootLocalAabb(GameObject root, MeshFilter[] filters, out Vector3 min, out Vector3 max)
+    private static bool TryComputeRootLocalAabb(GameObject root, MeshFilter[] filters, out Vector3 centerRootLocal)
     {
-        min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
-        max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+        Vector3 min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+        Vector3 max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
 
         bool any = false;
 
@@ -636,11 +634,13 @@ public static class VpActionExecutor
 
         if (!any)
         {
-            min = Vector3.zero;
-            max = Vector3.one;
+            centerRootLocal = Vector3.zero;
             return false;
         }
 
+        // Center is computed in VP-like (unrotated) object space, then rotated back
+        // into Unity's root-local space so shears are positioned correctly.
+        centerRootLocal = rootRot * ((min + max) * 0.5f);
         return true;
     }
 
