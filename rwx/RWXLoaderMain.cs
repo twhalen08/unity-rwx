@@ -102,11 +102,19 @@ namespace RWXLoader
                 currentMaterial = new RWXMaterial()
             };
 
-            string[] lines = content.Split(new[] { '\n', '\r' }, System.StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (string line in lines)
+            using (var reader = new StringReader(content))
             {
-                parser.ProcessLine(line.Trim(), context);
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    line = line.Trim();
+                    if (string.IsNullOrEmpty(line))
+                    {
+                        continue;
+                    }
+
+                    parser.ProcessLine(line, context);
+                }
             }
 
             // Commit any remaining mesh
