@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Diagnostics;
 using System.IO.Compression;
 using UnityEngine;
 
@@ -16,6 +17,10 @@ namespace RWXLoader
         
         [Header("Debug")]
         public bool enableDebugLogs = true;
+
+        [Header("Performance")]
+        [Tooltip("Max milliseconds of RWX parsing per frame (0 = parse in one frame).")]
+        public float parseFrameBudgetMs = 2.5f;
         
         private RWXParser parser;
         private RWXMeshBuilder meshBuilder;
@@ -194,16 +199,23 @@ namespace RWXLoader
 
             // Step 4: Parse RWX content and create GameObject
             GameObject modelObject = null;
-            try
+            string parseError = null;
+
+            yield return ParseRWXFromMemoryCoroutine(
+                rwxContent,
+                modelName,
+                archive,
+                objectPath,
+                password,
+                enableTextures,
+                go => modelObject = go,
+                err => parseError = err,
+                parseFrameBudgetMs);
+
+            if (!string.IsNullOrEmpty(parseError))
             {
-                materialManager.enableTextures = enableTextures;
-                modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
-            }
-            catch (Exception e)
-            {
-                string error = $"Failed to parse RWX model: {e.Message}";
-                Debug.LogError(error);
-                onComplete?.Invoke(null, error);
+                Debug.LogError(parseError);
+                onComplete?.Invoke(null, parseError);
                 yield break;
             }
 
@@ -225,57 +237,114 @@ namespace RWXLoader
         }
 
         /// <summary>
-        /// Parses RWX content from memory and creates a GameObject
+        /// Parses RWX content from memory with optional per-frame time slicing to avoid long stalls.
         /// </summary>
-        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
+        private IEnumerator ParseRWXFromMemoryCoroutine(
+            string rwxContent,
+            string modelName,
+            ZipArchive archive,
+            string objectPath,
+            string password,
+            bool enableTextures,
+            Action<GameObject> onComplete,
+            Action<string> onError,
+            float sliceBudgetMs)
         {
-            // Create root object
-            GameObject rootObject = new GameObject(modelName);
-            
-            // Initialize parse context
-            var context = new RWXParseContext();
-            context.rootObject = rootObject;
-            context.currentObject = rootObject;
-
-            // Ensure components are initialized
             if (materialManager == null || meshBuilder == null || parser == null)
             {
-                Debug.LogError("Components not properly initialized");
-                return null;
+                onError?.Invoke("Components not properly initialized");
+                yield break;
             }
 
-            // Set up material manager to load textures from remote
-            materialManager.SetTextureSource(objectPath, password);
+            // Create root object and parse context up front so Unity object creation happens once.
+            GameObject rootObject = new GameObject(modelName);
+            var context = new RWXParseContext
+            {
+                rootObject = rootObject,
+                currentObject = rootObject
+            };
 
-            // Reset parser state for new model
+            materialManager.enableTextures = enableTextures;
+            materialManager.SetTextureSource(objectPath, password);
             parser?.Reset();
 
             int lineCount = 0;
+            var stopwatch = Stopwatch.StartNew();
+            bool shouldSlice = sliceBudgetMs > 0f;
 
             using (var reader = new StringReader(rwxContent))
             {
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
-                    parser.ProcessLine(line, context);
+                    try
+                    {
+                        parser.ProcessLine(line, context);
+                    }
+                    catch (Exception e)
+                    {
+                        onError?.Invoke($"Failed to parse RWX line {lineCount + 1}: {e.Message}");
+                        yield break;
+                    }
+
                     lineCount++;
+
+                    if (shouldSlice && stopwatch.Elapsed.TotalMilliseconds >= sliceBudgetMs)
+                    {
+                        stopwatch.Restart();
+                        yield return null; // Let a frame render
+                    }
                 }
+            }
+
+            try
+            {
+                meshBuilder.FinalCommit(context);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"Failed to finalize RWX mesh: {e.Message}");
+                yield break;
             }
 
             if (enableDebugLogs)
             {
                 Debug.Log($"Parsed {lineCount} lines of RWX content");
-            }
-
-            // Finalize mesh building
-            meshBuilder.FinalCommit(context);
-
-            if (enableDebugLogs)
-            {
                 Debug.Log($"Created model with {context.vertices.Count} vertices");
             }
 
-            return rootObject;
+            onComplete?.Invoke(rootObject);
+        }
+
+        /// <summary>
+        /// Synchronous wrapper for parsing when a coroutine is not available.
+        /// </summary>
+        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
+        {
+            GameObject model = null;
+            string error = null;
+            var routine = ParseRWXFromMemoryCoroutine(
+                rwxContent,
+                modelName,
+                archive,
+                objectPath,
+                password,
+                true,
+                go => model = go,
+                err => error = err,
+                0f);
+
+            while (routine.MoveNext())
+            {
+                // Iterate to completion synchronously
+            }
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                throw new Exception(error);
+            }
+
+            return model;
         }
 
         private void CachePrefab(string objectPath, string modelName, GameObject modelObject)
