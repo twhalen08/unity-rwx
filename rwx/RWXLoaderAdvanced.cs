@@ -250,15 +250,21 @@ namespace RWXLoader
             // Reset parser state for new model
             parser?.Reset();
 
-            // Parse RWX content line by line
-            string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            
-            if (enableDebugLogs)
-                Debug.Log($"Parsing {lines.Length} lines of RWX content");
+            int lineCount = 0;
 
-            foreach (string line in lines)
+            using (var reader = new StringReader(rwxContent))
             {
-                parser.ProcessLine(line, context);
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    parser.ProcessLine(line, context);
+                    lineCount++;
+                }
+            }
+
+            if (enableDebugLogs)
+            {
+                Debug.Log($"Parsed {lineCount} lines of RWX content");
             }
 
             // Finalize mesh building

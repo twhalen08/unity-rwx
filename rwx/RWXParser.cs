@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text.RegularExpressions;
 using UnityEngine;
 
@@ -9,37 +10,37 @@ namespace RWXLoader
     public class RWXParser
     {
         // Regex patterns for parsing RWX files
-        private readonly Regex vertexRegex = new Regex(@"^\s*(vertex|vertexext)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3})\s*(uv((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){2}))?.*$", RegexOptions.IgnoreCase);
-        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase);
-        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase);
-        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase);
-        private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", RegexOptions.IgnoreCase);
-        private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase);
-        private readonly Regex surfaceRegex = new Regex(@"^\s*(surface)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex ambientRegex = new Regex(@"^\s*(ambient)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase);
-        private readonly Regex diffuseRegex = new Regex(@"^\s*(diffuse)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase);
-        private readonly Regex specularRegex = new Regex(@"^\s*(specular)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase);
-        private readonly Regex materialModeRegex = new Regex(@"^\s*((add)?materialmode(s)?)\s+([A-Za-z0-9_\-]+).*$", RegexOptions.IgnoreCase);
-        private readonly Regex lightSamplingRegex = new Regex(@"^\s*(lightsampling)\s+(facet|vertex).*$", RegexOptions.IgnoreCase);
-        private readonly Regex geometrySamplingRegex = new Regex(@"^\s*(geometrysampling)\s+(pointcloud|wireframe|solid).*$", RegexOptions.IgnoreCase);
-        private readonly Regex textureModesRegex = new Regex(@"^\s*(texturemode(s)?)((\s+null)|(\s+lit|\s+foreshorten|\s+filter)+).*$", RegexOptions.IgnoreCase);
-        private readonly Regex clumpBeginRegex = new Regex(@"^\s*(clumpbegin).*$", RegexOptions.IgnoreCase);
-        private readonly Regex clumpEndRegex = new Regex(@"^\s*(clumpend).*$", RegexOptions.IgnoreCase);
-        private readonly Regex transformBeginRegex = new Regex(@"^\s*(transformbegin).*$", RegexOptions.IgnoreCase);
-        private readonly Regex transformEndRegex = new Regex(@"^\s*(transformend).*$", RegexOptions.IgnoreCase);
-        private readonly Regex translateRegex = new Regex(@"^\s*(translate)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex rotateRegex = new Regex(@"^\s*(rotate)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4})$", RegexOptions.IgnoreCase);
-        private readonly Regex scaleRegex = new Regex(@"^\s*(scale)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex identityRegex = new Regex(@"^\s*(identity)\s*$", RegexOptions.IgnoreCase);
-        private readonly Regex transformRegex = new Regex(@"^\s*(transform)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){16}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex jointtransformBeginRegex = new Regex(@"^\s*(jointtransformbegin).*$", RegexOptions.IgnoreCase);
-        private readonly Regex jointtransformEndRegex = new Regex(@"^\s*(jointtransformend).*$", RegexOptions.IgnoreCase);
-        private readonly Regex identityJointRegex = new Regex(@"^\s*(identityjoint).*$", RegexOptions.IgnoreCase);
-        private readonly Regex rotateJointTMRegex = new Regex(@"^\s*(rotatejointtm)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4}).*$", RegexOptions.IgnoreCase);
-        private readonly Regex floatRegex = new Regex(@"([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+][0-9]+)?)", RegexOptions.IgnoreCase);
-        private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", RegexOptions.IgnoreCase);
-        private readonly Regex nonCommentRegex = new Regex(@"^(.*)#(?!\!)", RegexOptions.IgnoreCase);
+        private readonly Regex vertexRegex = new Regex(@"^\s*(vertex|vertexext)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3})\s*(uv((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){2}))?.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s+([0-9]+))?.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex surfaceRegex = new Regex(@"^\s*(surface)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex ambientRegex = new Regex(@"^\s*(ambient)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex diffuseRegex = new Regex(@"^\s*(diffuse)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex specularRegex = new Regex(@"^\s*(specular)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex materialModeRegex = new Regex(@"^\s*((add)?materialmode(s)?)\s+([A-Za-z0-9_\-]+).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex lightSamplingRegex = new Regex(@"^\s*(lightsampling)\s+(facet|vertex).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex geometrySamplingRegex = new Regex(@"^\s*(geometrysampling)\s+(pointcloud|wireframe|solid).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex textureModesRegex = new Regex(@"^\s*(texturemode(s)?)((\s+null)|(\s+lit|\s+foreshorten|\s+filter)+).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex clumpBeginRegex = new Regex(@"^\s*(clumpbegin).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex clumpEndRegex = new Regex(@"^\s*(clumpend).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex transformBeginRegex = new Regex(@"^\s*(transformbegin).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex transformEndRegex = new Regex(@"^\s*(transformend).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex translateRegex = new Regex(@"^\s*(translate)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex rotateRegex = new Regex(@"^\s*(rotate)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex scaleRegex = new Regex(@"^\s*(scale)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex identityRegex = new Regex(@"^\s*(identity)\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex transformRegex = new Regex(@"^\s*(transform)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){16}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex jointtransformBeginRegex = new Regex(@"^\s*(jointtransformbegin).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex jointtransformEndRegex = new Regex(@"^\s*(jointtransformend).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex identityJointRegex = new Regex(@"^\s*(identityjoint).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex rotateJointTMRegex = new Regex(@"^\s*(rotatejointtm)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4}).*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex floatRegex = new Regex(@"([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+][0-9]+)?)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly Regex nonCommentRegex = new Regex(@"^(.*)#(?!\!)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
 
