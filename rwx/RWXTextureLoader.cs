@@ -175,6 +175,7 @@ namespace RWXLoader
                             bytesPerPixel = 4;
                             break;
                         default:
+                        {
                             // Handle uncompressed DDS without a FourCC (RGB/RGBA)
                             const int DDPF_RGB = 0x40;
                             if (string.IsNullOrWhiteSpace(fourCC) && (pixelFormatFlags & DDPF_RGB) == DDPF_RGB && rgbBitCount == 32)
@@ -182,11 +183,11 @@ namespace RWXLoader
                                 format = TextureFormat.RGBA32;
                                 isBlockCompressed = false;
                                 bytesPerPixel = 4;
+                                break;
                             }
-                            else
-                            {
-                                return null; // Unsupported DDS format
-                            }
+
+                            return null; // Unsupported DDS format
+                        }
                     }
                 }
 
