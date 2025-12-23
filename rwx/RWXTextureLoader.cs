@@ -101,6 +101,9 @@ namespace RWXLoader
                 int width = BitConverter.ToInt32(data, 16);
                 int mipMapCount = Math.Max(1, BitConverter.ToInt32(data, 28));
                 string fourCC = System.Text.Encoding.ASCII.GetString(data, 84, 4);
+                int pixelFormatFlags = BitConverter.ToInt32(data, 80);
+                int rgbBitCount = BitConverter.ToInt32(data, 88);
+                int alphaMask = BitConverter.ToInt32(data, 104);
                 int headerSize = 128;
 
                 TextureFormat format;
@@ -172,7 +175,18 @@ namespace RWXLoader
                             bytesPerPixel = 4;
                             break;
                         default:
-                            return null; // Unsupported DDS format
+                            // Handle uncompressed DDS without a FourCC (RGB/RGBA)
+                            const int DDPF_RGB = 0x40;
+                            if (string.IsNullOrWhiteSpace(fourCC) && (pixelFormatFlags & DDPF_RGB) == DDPF_RGB && rgbBitCount == 32)
+                            {
+                                format = TextureFormat.RGBA32;
+                                isBlockCompressed = false;
+                                bytesPerPixel = 4;
+                            }
+                            else
+                            {
+                                return null; // Unsupported DDS format
+                            }
                     }
                 }
 
