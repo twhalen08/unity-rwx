@@ -12,9 +12,9 @@ namespace RWXLoader
 
         // Regex patterns for parsing RWX files
         private readonly Regex vertexRegex = new Regex(@"^\s*(vertex|vertexext)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3})\s*(uv((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){2}))?.*$", DefaultRegexOptions);
-        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
-        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
-        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s*=?\s*([0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s*=?\s*([0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s*=?\s*([0-9]+))?.*$", DefaultRegexOptions);
         private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", DefaultRegexOptions);
         private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
@@ -272,10 +272,19 @@ namespace RWXLoader
             int a = int.Parse(intMatches[0].Value) - 1; // RWX uses 1-based indexing
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
+            int? tag = null;
+
+            if (match.Groups.Count > 6 && match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int tagValue))
+            {
+                tag = tagValue;
+            }
 
             // Use original triangle order since coordinate conversion is handled at matrix level
-            meshBuilder.CreateTriangle(context, a, b, c);
-            return true;
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreateTriangle(context, a, b, c);
+                return true;
+            });
         }
 
         private bool ProcessQuad(string line, RWXParseContext context)
@@ -295,10 +304,19 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
             int d = int.Parse(intMatches[3].Value) - 1;
+            int? tag = null;
+
+            if (match.Groups.Count > 6 && match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int tagValue))
+            {
+                tag = tagValue;
+            }
 
             // Use original quad order since we're handling coordinate conversion at root level
-            meshBuilder.CreateQuad(context, a, b, c, d);
-            return true;
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreateQuad(context, a, b, c, d);
+                return true;
+            });
         }
 
         private bool ProcessPolygon(string line, RWXParseContext context)
@@ -321,11 +339,35 @@ namespace RWXLoader
             {
                 indices.Add(int.Parse(intMatches[i].Value) - 1);
             }
+            int? tag = null;
+
+            if (match.Groups.Count > 6 && match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int tagValue))
+            {
+                tag = tagValue;
+            }
 
             // Use original polygon order since we're handling coordinate conversion at root level
             // indices.Reverse(); // Removed - no longer needed
-            meshBuilder.CreatePolygon(context, indices);
-            return true;
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreatePolygon(context, indices);
+                return true;
+            });
+        }
+
+        private bool ApplyWithTemporaryTag(RWXParseContext context, int? tag, Func<bool> action)
+        {
+            int originalTag = context.currentMaterial.tag;
+
+            if (tag.HasValue)
+            {
+                context.currentMaterial.tag = tag.Value;
+            }
+
+            bool result = action();
+            context.currentMaterial.tag = originalTag;
+
+            return result;
         }
 
         private bool ProcessTexture(string line, RWXParseContext context)
@@ -1253,6 +1295,34 @@ namespace RWXLoader
             return int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
         }
 
+        private static bool TryReadTag(ReadOnlySpan<char> line, ref int index, out int tag)
+        {
+            int originalIndex = index;
+            tag = 0;
+
+            if (!TryReadToken(line, ref index, out var token))
+            {
+                return false;
+            }
+
+            if (token.Equals("tag", StringComparison.OrdinalIgnoreCase))
+            {
+                return TryReadInt(line, ref index, out tag);
+            }
+
+            if (token.StartsWith("tag=", StringComparison.OrdinalIgnoreCase))
+            {
+                var valueSpan = token.Slice(4);
+                if (int.TryParse(valueSpan, NumberStyles.Integer, CultureInfo.InvariantCulture, out tag))
+                {
+                    return true;
+                }
+            }
+
+            index = originalIndex;
+            return false;
+        }
+
         private static bool IsCommand(ReadOnlySpan<char> line, string command, string alternate, out int index)
         {
             index = 0;
@@ -1332,8 +1402,17 @@ namespace RWXLoader
                 return false;
             }
 
-            meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
-            return true;
+            int? tag = null;
+            if (TryReadTag(line, ref index, out int tagValue))
+            {
+                tag = tagValue;
+            }
+
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
+                return true;
+            });
         }
 
         private bool TryProcessQuadFast(ReadOnlySpan<char> line, RWXParseContext context)
@@ -1349,8 +1428,17 @@ namespace RWXLoader
                 return false;
             }
 
-            meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
-            return true;
+            int? tag = null;
+            if (TryReadTag(line, ref index, out int tagValue))
+            {
+                tag = tagValue;
+            }
+
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
+                return true;
+            });
         }
 
         private bool TryProcessPolygonFast(ReadOnlySpan<char> line, RWXParseContext context)
@@ -1373,8 +1461,17 @@ namespace RWXLoader
                 indices.Add(value - 1);
             }
 
-            meshBuilder.CreatePolygon(context, indices);
-            return true;
+            int? tag = null;
+            if (TryReadTag(line, ref index, out int tagValue))
+            {
+                tag = tagValue;
+            }
+
+            return ApplyWithTemporaryTag(context, tag, () =>
+            {
+                meshBuilder.CreatePolygon(context, indices);
+                return true;
+            });
         }
 
         private bool TryProcessTextureFast(ReadOnlySpan<char> line, RWXParseContext context)

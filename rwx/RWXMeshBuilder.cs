@@ -168,6 +168,8 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            var tagComponent = meshObject.AddComponent<RWXTag>();
+            tagComponent.Tag = context.currentMeshMaterial?.tag ?? 0;
             
             // Apply material
             if (context.currentMeshMaterial != null)
@@ -241,6 +243,8 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            var tagComponent = meshObject.AddComponent<RWXTag>();
+            tagComponent.Tag = context.currentMeshMaterial?.tag ?? 0;
             
             // Apply material
             if (context.currentMeshMaterial != null)

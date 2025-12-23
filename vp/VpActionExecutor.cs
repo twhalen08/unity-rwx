@@ -12,6 +12,47 @@ public static class VpActionExecutor
     private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
     private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
     private static readonly int _BaseMapId = Shader.PropertyToID("_BaseMap");
+    private const float MinScale = 0.1f;
+
+    private static int? GetTagFilter(VpActionCommand cmd)
+    {
+        if (cmd?.kv != null && cmd.kv.TryGetValue("tag", out var tagStr))
+        {
+            if (int.TryParse(tagStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int tag))
+            {
+                return tag;
+            }
+        }
+
+        return null;
+    }
+
+    private static List<Renderer> GetRenderers(GameObject root, int? tagFilter)
+    {
+        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
+
+        if (tagFilter == null)
+        {
+            return new List<Renderer>(renderers);
+        }
+
+        var filtered = new List<Renderer>();
+
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null) continue;
+
+            var tagComponent = renderer.GetComponent<RWXTag>();
+            int rendererTag = tagComponent != null ? tagComponent.Tag : 0;
+
+            if (rendererTag == tagFilter.Value)
+            {
+                filtered.Add(renderer);
+            }
+        }
+
+        return filtered;
+    }
     /// <summary>
     /// Convenience wrapper (optional) so older call sites can use Execute(...)
     /// </summary>
@@ -20,14 +61,14 @@ public static class VpActionExecutor
         ExecuteCreate(target, cmd, objectPath, password, host);
     }
 
-    public static void ApplyAmbient(GameObject target, float ambient)
+    public static void ApplyAmbient(GameObject target, float ambient, int? tagFilter = null)
     {
         if (target == null)
             return;
 
         ambient = Mathf.Clamp01(ambient);
 
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        foreach (var r in GetRenderers(target, tagFilter))
         {
             foreach (var m in r.materials)
             {
@@ -47,14 +88,14 @@ public static class VpActionExecutor
         }
     }
 
-    public static void ApplyDiffuse(GameObject target, float diffuse)
+    public static void ApplyDiffuse(GameObject target, float diffuse, int? tagFilter = null)
     {
         if (target == null)
             return;
 
         diffuse = Mathf.Max(0f, diffuse);
 
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        foreach (var r in GetRenderers(target, tagFilter))
         {
             foreach (var m in r.materials)
             {
@@ -84,25 +125,37 @@ public static class VpActionExecutor
         }
     }
 
-    public static void ApplyVisible(GameObject target, bool visible)
+    public static void ApplyVisible(GameObject target, bool visible, int? tagFilter = null)
     {
         if (target == null)
             return;
 
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        foreach (var r in GetRenderers(target, tagFilter))
             r.enabled = visible;
     }
 
-    public static void ApplyScale(GameObject target, Vector3 scale)
+    public static void ApplyScale(GameObject target, Vector3 scale, int? tagFilter = null)
     {
         if (target == null)
             return;
 
-        const float MinScale = 0.1f;
-        target.transform.localScale = new Vector3(
-            Mathf.Max(MinScale, scale.x),
-            Mathf.Max(MinScale, scale.y),
-            Mathf.Max(MinScale, scale.z));
+        if (tagFilter == null)
+        {
+            target.transform.localScale = new Vector3(
+                Mathf.Max(MinScale, scale.x),
+                Mathf.Max(MinScale, scale.y),
+                Mathf.Max(MinScale, scale.z));
+            return;
+        }
+
+        foreach (var renderer in GetRenderers(target, tagFilter))
+        {
+            var t = renderer.transform;
+            t.localScale = new Vector3(
+                Mathf.Max(MinScale, scale.x),
+                Mathf.Max(MinScale, scale.y),
+                Mathf.Max(MinScale, scale.z));
+        }
     }
 
     public static void ApplyShear(GameObject target, float zPlus, float xPlus, float yPlus, float yMinus, float zMinus, float xMinus)
@@ -181,11 +234,12 @@ public static class VpActionExecutor
             return;
         }
 
-        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password));
+        var tagFilter = GetTagFilter(cmd);
+        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, tagFilter));
     }
 
 
-    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password)
+    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, int? tagFilter)
     {
         if (RWXAssetManager.Instance == null)
         {
@@ -204,7 +258,7 @@ public static class VpActionExecutor
         string cacheKey = MakeTextureCacheKey(objectPath, textureName);
         if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
         {
-            ApplyTextureToAllRenderers(target, cachedTex);
+            ApplyTextureToAllRenderers(target, cachedTex, tagFilter);
             yield break;
         }
 
@@ -273,7 +327,7 @@ public static class VpActionExecutor
 
         _textureCache[cacheKey] = tex;
 
-        ApplyTextureToAllRenderers(target, tex);
+        ApplyTextureToAllRenderers(target, tex, tagFilter);
 
         Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
     }
@@ -306,11 +360,11 @@ public static class VpActionExecutor
         return list;
     }
 
-    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex)
+    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex, int? tagFilter)
     {
         if (root == null || tex == null) return;
 
-        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
+        var renderers = GetRenderers(root, tagFilter);
         var block = new MaterialPropertyBlock();
 
         foreach (var r in renderers)
@@ -346,10 +400,11 @@ public static class VpActionExecutor
         }
 
         string normalName = cmd.positional[0];
-        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password));
+        var tagFilter = GetTagFilter(cmd);
+        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password, tagFilter));
     }
 
-    private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password)
+    private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password, int? tagFilter)
     {
         var assetMgr = RWXAssetManager.Instance;
         if (assetMgr == null)
@@ -398,12 +453,12 @@ public static class VpActionExecutor
         tex.name = Path.GetFileNameWithoutExtension(localPath);
         tex.Apply(true, false);
 
-        ApplyNormalMapToRenderers(target, tex);
+        ApplyNormalMapToRenderers(target, tex, tagFilter);
     }
 
-    private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal)
+    private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal, int? tagFilter)
     {
-        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+        foreach (var r in GetRenderers(root, tagFilter))
         {
             foreach (var m in r.materials)
             {
@@ -427,7 +482,8 @@ public static class VpActionExecutor
             return;
 
         float ambient = ParseFloat(cmd.positional[0], 1f);
-        ApplyAmbient(target, ambient);
+        var tagFilter = GetTagFilter(cmd);
+        ApplyAmbient(target, ambient, tagFilter);
     }
 
     private static void ExecuteDiffuse(GameObject target, VpActionCommand cmd)
@@ -436,7 +492,8 @@ public static class VpActionExecutor
             return;
 
         float diffuse = ParseFloat(cmd.positional[0], 1f);
-        ApplyDiffuse(target, diffuse);
+        var tagFilter = GetTagFilter(cmd);
+        ApplyDiffuse(target, diffuse, tagFilter);
     }
 
     // -------------------------
@@ -486,8 +543,6 @@ public static class VpActionExecutor
         if (target == null)
             return;
 
-        const float MinScale = 0.1f;
-
         float x = 1f, y = 1f, z = 1f;
 
         if (cmd.positional == null || cmd.positional.Count == 0)
@@ -511,7 +566,8 @@ public static class VpActionExecutor
             z = 1f;
         }
 
-        target.transform.localScale = new Vector3(x, y, z);
+        var tagFilter = GetTagFilter(cmd);
+        ApplyScale(target, new Vector3(x, y, z), tagFilter);
     }
 
     private static float ParseFloat(string s, float fallback)
@@ -625,7 +681,8 @@ public static class VpActionExecutor
             v == "1" ||
             v == "on";
 
-        ApplyVisible(target, visible);
+        var tagFilter = GetTagFilter(cmd);
+        ApplyVisible(target, visible, tagFilter);
     }
 
     // -------------------------

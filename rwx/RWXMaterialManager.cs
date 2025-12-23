@@ -278,6 +278,13 @@ namespace RWXLoader
                     // Only update if the renderer name matches the texture name (this indicates it's the right material group)
                     if (rendererName == expectedTextureName)
                     {
+                        var tagComponent = renderer.GetComponent<RWXTag>();
+                        int rendererTag = tagComponent != null ? tagComponent.Tag : 0;
+                        if (rendererTag != rwxMaterial.tag)
+                        {
+                            continue;
+                        }
+
                         // Update the renderer's material instance with the new texture
                         Material rendererMaterial = renderer.material;
                         
