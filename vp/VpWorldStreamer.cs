@@ -112,6 +112,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly HashSet<(int cx, int cy)> queryingCells = new();
     private readonly List<(int cx, int cy)> desiredCells = new();
     private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
+    private NativeArray<DesiredCellData> desiredCellBuffer;
 
     private struct DesiredCellData
     {
@@ -132,9 +133,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         [ReadOnly]
         public int radius;
 
-        [ReadOnly]
-        public float vpUnitsPerCell;
-
         [WriteOnly]
         public NativeArray<DesiredCellData> results;
 
@@ -144,17 +142,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             int dx = (index % gridSize) - radius;
             int dy = (index / gridSize) - radius;
 
-            // vpUnitsPerCell ensures the job stays consistent with the caller's cell sizing.
-            float cellSize = math.max(1f, vpUnitsPerCell);
-            int offsetX = (int)math.round(dx * cellSize / cellSize);
-            int offsetY = (int)math.round(dy * cellSize / cellSize);
-
             results[index] = new DesiredCellData
             {
-                cx = centerX + offsetX,
-                cy = centerY + offsetY,
-                chebyshev = math.max(math.abs(offsetX), math.abs(offsetY)),
-                manhattan = math.abs(offsetX) + math.abs(offsetY)
+                cx = centerX + dx,
+                cy = centerY + dy,
+                chebyshev = math.max(math.abs(dx), math.abs(dy)),
+                manhattan = math.abs(dx) + math.abs(dy)
             };
         }
     }
@@ -588,14 +581,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (cellCount == 0)
             return;
 
-        using var desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.TempJob);
+        EnsureDesiredCellBuffer(cellCount);
+        if (!desiredCellBuffer.IsCreated)
+            return;
 
         var job = new DesiredCellJob
         {
             centerX = centerX,
             centerY = centerY,
             radius = clampedRadius,
-            vpUnitsPerCell = vpUnitsPerCell,
             results = desiredCellBuffer
         };
 
@@ -660,6 +654,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
     }
 
+    private void EnsureDesiredCellBuffer(int cellCount)
+    {
+        if (desiredCellBuffer.IsCreated && desiredCellBuffer.Length == cellCount)
+            return;
+
+        if (desiredCellBuffer.IsCreated)
+            desiredCellBuffer.Dispose();
+
+        if (cellCount > 0)
+            desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+    }
+
     // -------------------------
     // Utilities
     // -------------------------
@@ -711,6 +717,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+    }
+
+    private void OnDestroy()
+    {
+        if (desiredCellBuffer.IsCreated)
+            desiredCellBuffer.Dispose();
     }
 
     // -------------------------
