@@ -424,7 +424,10 @@ public static class VpActionExecutor
         light.intensity = brightness;
 
         if (light.type == LightType.Spot)
+        {
             light.spotAngle = spotAngle;
+            lightObj.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+        }
 
         if (!string.IsNullOrWhiteSpace(fx) || maxDistance > 0f)
         {
