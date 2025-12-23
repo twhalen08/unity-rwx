@@ -108,6 +108,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly HashSet<(int cx, int cy)> queuedCells = new();
     private readonly HashSet<(int cx, int cy)> queryingCells = new();
     private readonly List<(int cx, int cy)> desiredCells = new();
+    private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
 
     private struct PendingModelLoad
     {
@@ -222,12 +223,20 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     if (queuedCells.Contains(c)) continue;
                     if (queryingCells.Contains(c)) continue;
 
-                    queuedCells.Add(c);
+                    if (queuedCells.Add(c))
+                    {
+                        float pri = ComputeCellPriority(c, camCell.cx, camCell.cy);
+                        queuedCellHeap.Push(c, pri);
+                    }
                 }
 
                 // Unload far cells if enabled
                 if (unloadRadius >= 0)
                     UnloadFarCells(camCell.cx, camCell.cy, unloadRadius);
+
+                // Refresh queued cell priorities when the camera changes cell
+                if (cellChanged)
+                    RebuildQueuedCellHeap(camCell.cx, camCell.cy);
 
                 // Reprioritize pending models (cooldown-protected)
                 if (cellChanged && reprioritizeModelsOnCellChange && modelHeap.Count > 0)
@@ -243,7 +252,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             // Start cell queries (closest-first)
             while (inFlightCellQueries < maxConcurrentCellQueries)
             {
-                var next = DequeueClosestQueuedCell(camCell.cx, camCell.cy);
+                var next = DequeueClosestQueuedCell();
                 if (next.cx == int.MinValue)
                     break;
 
@@ -556,25 +565,30 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         });
     }
 
-    private (int cx, int cy) DequeueClosestQueuedCell(int centerX, int centerY)
+    private (int cx, int cy) DequeueClosestQueuedCell()
     {
-        (int cx, int cy) best = (int.MinValue, int.MinValue);
-        int bestScore = int.MaxValue;
-
-        foreach (var c in queuedCells)
+        while (queuedCellHeap.Count > 0)
         {
-            int dx = Mathf.Abs(c.cx - centerX);
-            int dy = Mathf.Abs(c.cy - centerY);
-            int score = Mathf.Max(dx, dy) * 100 + (dx + dy);
+            var next = queuedCellHeap.PopMin();
 
-            if (score < bestScore)
-            {
-                bestScore = score;
-                best = c;
-            }
+            if (!queuedCells.Contains(next))
+                continue; // stale entry
+
+            // Skip items that got loaded/unloaded while waiting
+            if (loadedCells.Contains(next) || queryingCells.Contains(next))
+                continue;
+
+            return next;
         }
 
-        return best;
+        return (int.MinValue, int.MinValue);
+    }
+
+    private float ComputeCellPriority((int cx, int cy) cell, int centerX, int centerY)
+    {
+        int dx = Mathf.Abs(cell.cx - centerX);
+        int dy = Mathf.Abs(cell.cy - centerY);
+        return Mathf.Max(dx, dy) * 100 + (dx + dy);
     }
 
     private void UnloadFarCells(int centerX, int centerY, int radius)
@@ -593,6 +607,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         foreach (var c in toUnload)
         {
             loadedCells.Remove(c);
+            queuedCells.Remove(c);
 
             if (cellRoots.TryGetValue(c, out var root) && root != null)
                 Destroy(root);
@@ -601,6 +616,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
+
+        if (toUnload.Count > 0)
+            RebuildQueuedCellHeap(centerX, centerY);
     }
 
     // -------------------------
@@ -610,6 +628,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     {
         while (!task.IsCompleted)
             yield return null;
+    }
+
+    private void RebuildQueuedCellHeap(int centerX, int centerY)
+    {
+        queuedCellHeap.Clear();
+
+        foreach (var c in queuedCells)
+        {
+            float pri = ComputeCellPriority(c, centerX, centerY);
+            queuedCellHeap.Push(c, pri);
+        }
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
