@@ -207,9 +207,16 @@ namespace RWXLoader
                 }
 
                 int usedDataLength = offset;
+                if (usedDataLength < dxtData.Length)
+                {
+                    byte[] trimmedData = new byte[usedDataLength];
+                    Buffer.BlockCopy(dxtData, 0, trimmedData, 0, usedDataLength);
+                    dxtData = trimmedData;
+                }
+
                 bool hasMipMaps = computedMipCount > 1;
                 Texture2D texture = new Texture2D(width, height, format, hasMipMaps);
-                texture.LoadRawTextureData(dxtData, usedDataLength);
+                texture.LoadRawTextureData(dxtData);
                 texture.Apply(false, true);
                 texture.name = Path.GetFileNameWithoutExtension(fileName);
                 return texture;
