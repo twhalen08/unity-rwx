@@ -41,7 +41,7 @@ namespace RWXLoader
         private readonly Regex rotateJointTMRegex = new Regex(@"^\s*(rotatejointtm)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4}).*$", DefaultRegexOptions);
         private readonly Regex floatRegex = new Regex(@"([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+][0-9]+)?)", DefaultRegexOptions);
         private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", DefaultRegexOptions);
-        private readonly Regex nonCommentRegex = new Regex(@"^(.*)#(?!\!)", DefaultRegexOptions);
+        private static readonly Regex textureAttributeRegex = new Regex(@"\b(mask|normal|specular)\s+([A-Za-z0-9_\-\/:.]+)", DefaultRegexOptions);
 
         internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
 
@@ -130,17 +130,10 @@ namespace RWXLoader
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
-            // Remove comments
-            var commentMatch = nonCommentRegex.Match(line);
-            if (commentMatch.Success)
-            {
-                line = commentMatch.Groups[1].Value.Trim();
-                if (string.IsNullOrWhiteSpace(line))
-                    return;
-            }
-
-            // Replace tabs with spaces
-            line = line.Replace('\t', ' ');
+            // Remove comments without invoking regex each line
+            line = StripComments(line);
+            if (string.IsNullOrWhiteSpace(line))
+                return;
 
             // First check if this is a prototype command
             if (prototypeParser.ProcessLine(line, context)) return;
@@ -188,6 +181,11 @@ namespace RWXLoader
 
         private bool ProcessVertex(string line, RWXParseContext context)
         {
+            if (TryProcessVertexFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = vertexRegex.Match(line);
             if (!match.Success) return false;
 
@@ -210,10 +208,10 @@ namespace RWXLoader
                 {
                     float u = float.Parse(uvMatches[0].Value, CultureInfo.InvariantCulture);
                     float v = float.Parse(uvMatches[1].Value, CultureInfo.InvariantCulture);
-                    
+
                     // Standard UV flip for RWX to Unity conversion
                     uv = new Vector2(u, 1.0f - v);
-                    
+
                     // Additional UV correction for prototypes with specific Transform matrices
                     // that cause texture orientation issues (like bed headboard/footboard)
                     if (prototypeParser.IsInPrototype && NeedsUVCorrection(context))
@@ -260,6 +258,11 @@ namespace RWXLoader
 
         private bool ProcessTriangle(string line, RWXParseContext context)
         {
+            if (TryProcessTriangleFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = triangleRegex.Match(line);
             if (!match.Success) return false;
 
@@ -277,6 +280,11 @@ namespace RWXLoader
 
         private bool ProcessQuad(string line, RWXParseContext context)
         {
+            if (TryProcessQuadFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = quadRegex.Match(line);
             if (!match.Success) return false;
 
@@ -295,6 +303,11 @@ namespace RWXLoader
 
         private bool ProcessPolygon(string line, RWXParseContext context)
         {
+            if (TryProcessPolygonFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = polygonRegex.Match(line);
             if (!match.Success) return false;
 
@@ -317,11 +330,16 @@ namespace RWXLoader
 
         private bool ProcessTexture(string line, RWXParseContext context)
         {
+            if (TryProcessTextureFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = textureRegex.Match(line);
             if (!match.Success) return false;
 
             string textureName = match.Groups["texture"].Value.ToLower();
-            
+
             if (textureName == "null")
             {
                 context.currentMaterial.texture = null;
@@ -337,8 +355,7 @@ namespace RWXLoader
 
             // Parse additional attributes
             string rest = match.Groups["rest"]?.Value ?? "";
-            var attrRegex = new Regex(@"\b(mask|normal|specular)\s+([A-Za-z0-9_\-\/:.]+)", RegexOptions.IgnoreCase);
-            var attrMatches = attrRegex.Matches(rest);
+            var attrMatches = textureAttributeRegex.Matches(rest);
 
             foreach (Match attrMatch in attrMatches)
             {
@@ -364,6 +381,11 @@ namespace RWXLoader
 
         private bool ProcessColor(string line, RWXParseContext context)
         {
+            if (TryProcessColorFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = colorRegex.Match(line);
             if (!match.Success) return false;
 
@@ -380,6 +402,11 @@ namespace RWXLoader
 
         private bool ProcessOpacity(string line, RWXParseContext context)
         {
+            if (TryProcessOpacityFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = opacityRegex.Match(line);
             if (!match.Success) return false;
 
@@ -396,6 +423,11 @@ namespace RWXLoader
 
         private bool ProcessSurface(string line, RWXParseContext context)
         {
+            if (TryProcessSurfaceFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = surfaceRegex.Match(line);
             if (!match.Success) return false;
 
@@ -412,6 +444,11 @@ namespace RWXLoader
 
         private bool ProcessAmbient(string line, RWXParseContext context)
         {
+            if (TryProcessAmbientFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = ambientRegex.Match(line);
             if (!match.Success) return false;
 
@@ -422,6 +459,11 @@ namespace RWXLoader
 
         private bool ProcessDiffuse(string line, RWXParseContext context)
         {
+            if (TryProcessDiffuseFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = diffuseRegex.Match(line);
             if (!match.Success) return false;
 
@@ -432,6 +474,11 @@ namespace RWXLoader
 
         private bool ProcessSpecular(string line, RWXParseContext context)
         {
+            if (TryProcessSpecularFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
             var match = specularRegex.Match(line);
             if (!match.Success) return false;
 
@@ -853,40 +900,25 @@ namespace RWXLoader
 
         private bool ProcessTranslate(string line, RWXParseContext context)
         {
-            var match = translateRegex.Match(line);
-            if (!match.Success) return false;
+            if (!TryParseTranslateValues(line.AsSpan(), out var translationVector))
+                return false;
 
-            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
-            if (floatMatches.Count < 3) return false;
+            Matrix4x4 translation = Matrix4x4.Translate(translationVector);
 
-            float x = float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture);
-            float y = float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture);
-            float z = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
-
-            Matrix4x4 translation = Matrix4x4.Translate(new Vector3(x, y, z));
-            
             // Debug translate operations
             Vector3 oldPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
             context.currentTransform = context.currentTransform * translation;
             Vector3 newPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
-            
-            Debug.Log($"🔄 TRANSLATE: ({x:F6}, {y:F6}, {z:F6}) | Old pos: {oldPos:F6} → New pos: {newPos:F6}");
-            
+
+            Debug.Log($"🔄 TRANSLATE: ({translationVector.x:F6}, {translationVector.y:F6}, {translationVector.z:F6}) | Old pos: {oldPos:F6} → New pos: {newPos:F6}");
+
             return true;
         }
 
         private bool ProcessRotate(string line, RWXParseContext context)
         {
-            var match = rotateRegex.Match(line);
-            if (!match.Success) return false;
-
-            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
-            if (floatMatches.Count < 4) return false;
-
-            float axisX = float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture);
-            float axisY = float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture);
-            float axisZ = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
-            float angleDegrees = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
+            if (!TryParseRotateValues(line.AsSpan(), out float axisX, out float axisY, out float axisZ, out float angleDegrees))
+                return false;
 
             // Determine if this is a root-level model orientation rotation
             bool isRootLevelRotation = IsRootLevelModelOrientation(context, axisX, axisY, axisZ, angleDegrees);
@@ -1000,17 +1032,10 @@ namespace RWXLoader
 
         private bool ProcessScale(string line, RWXParseContext context)
         {
-            var match = scaleRegex.Match(line);
-            if (!match.Success) return false;
+            if (!TryParseScaleValues(line.AsSpan(), out Vector3 scaleVector))
+                return false;
 
-            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
-            if (floatMatches.Count < 3) return false;
-
-            float x = float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture);
-            float y = float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture);
-            float z = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
-
-            Matrix4x4 scale = Matrix4x4.Scale(new Vector3(x, y, z));
+            Matrix4x4 scale = Matrix4x4.Scale(scaleVector);
             context.currentTransform = context.currentTransform * scale;
             return true;
         }
@@ -1157,7 +1182,413 @@ namespace RWXLoader
             context.currentJointTransform = context.currentJointTransform * rotationMatrix;
             
             Debug.Log($"🔗 ROTATE JOINT TM - Axis: ({x:F3}, {y:F3}, {z:F3}), Angle: {angle:F1}°");
-            
+
+            return true;
+        }
+
+        private static string StripComments(string line)
+        {
+            int commentIndex = line.IndexOf('#');
+            if (commentIndex < 0)
+            {
+                return line;
+            }
+
+            // Respect escaped hash (#!) used in some RWX variants
+            if (commentIndex + 1 < line.Length && line[commentIndex + 1] == '!')
+            {
+                return line;
+            }
+
+            return line.Substring(0, commentIndex).TrimEnd();
+        }
+
+        private static void SkipWhitespace(ReadOnlySpan<char> line, ref int index)
+        {
+            while (index < line.Length && char.IsWhiteSpace(line[index]))
+            {
+                index++;
+            }
+        }
+
+        private static bool TryReadToken(ReadOnlySpan<char> line, ref int index, out ReadOnlySpan<char> token)
+        {
+            SkipWhitespace(line, ref index);
+
+            if (index >= line.Length)
+            {
+                token = default;
+                return false;
+            }
+
+            int start = index;
+            while (index < line.Length && !char.IsWhiteSpace(line[index]))
+            {
+                index++;
+            }
+
+            token = line.Slice(start, index - start);
+            return token.Length > 0;
+        }
+
+        private static bool TryReadFloat(ReadOnlySpan<char> line, ref int index, out float value)
+        {
+            if (!TryReadToken(line, ref index, out var token))
+            {
+                value = 0;
+                return false;
+            }
+
+            return float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool TryReadInt(ReadOnlySpan<char> line, ref int index, out int value)
+        {
+            if (!TryReadToken(line, ref index, out var token))
+            {
+                value = 0;
+                return false;
+            }
+
+            return int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool IsCommand(ReadOnlySpan<char> line, string command, string alternate, out int index)
+        {
+            index = 0;
+            if (!TryReadToken(line, ref index, out var token))
+            {
+                return false;
+            }
+
+            if (token.Equals(command, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(alternate) && token.Equals(alternate, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryProcessVertexFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "vertex", "vertexext", out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float x) ||
+                !TryReadFloat(line, ref index, out float y) ||
+                !TryReadFloat(line, ref index, out float z))
+            {
+                return false;
+            }
+
+            Vector3 position = new Vector3(x, y, z);
+            Vector2 uv = Vector2.zero;
+
+            int uvStart = index;
+            if (TryReadToken(line, ref index, out var uvToken) && uvToken.Equals("uv", StringComparison.OrdinalIgnoreCase))
+            {
+                if (TryReadFloat(line, ref index, out float u) && TryReadFloat(line, ref index, out float v))
+                {
+                    uv = new Vector2(u, 1.0f - v);
+
+                    if (prototypeParser.IsInPrototype && NeedsUVCorrection(context))
+                    {
+                        uv = new Vector2(uv.x, 1.0f - uv.y);
+                        Debug.Log($"🎨 UV CORRECTION: Applied additional UV flip for prototype texture orientation");
+                    }
+                }
+                else
+                {
+                    // Roll back if UV parsing failed so regex fallback can try
+                    index = uvStart;
+                }
+            }
+
+            if (prototypeParser.IsInPrototype && context.currentTransform != Matrix4x4.identity)
+            {
+                Vector4 homogeneousPos = new Vector4(position.x, position.y, position.z, 1.0f);
+                Vector4 transformedPos = context.currentTransform * homogeneousPos;
+                position = new Vector3(transformedPos.x, transformedPos.y, transformedPos.z);
+            }
+
+            context.vertices.Add(new RWXVertex(position, uv));
+            return true;
+        }
+
+        private bool TryProcessTriangleFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "triangle", "triangleext", out int index))
+                return false;
+
+            if (!TryReadInt(line, ref index, out int a) ||
+                !TryReadInt(line, ref index, out int b) ||
+                !TryReadInt(line, ref index, out int c))
+            {
+                return false;
+            }
+
+            meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
+            return true;
+        }
+
+        private bool TryProcessQuadFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "quad", "quadext", out int index))
+                return false;
+
+            if (!TryReadInt(line, ref index, out int a) ||
+                !TryReadInt(line, ref index, out int b) ||
+                !TryReadInt(line, ref index, out int c) ||
+                !TryReadInt(line, ref index, out int d))
+            {
+                return false;
+            }
+
+            meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
+            return true;
+        }
+
+        private bool TryProcessPolygonFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "polygon", "polygonext", out int index))
+                return false;
+
+            if (!TryReadInt(line, ref index, out int count) || count <= 0)
+                return false;
+
+            var indices = new List<int>(count);
+
+            for (int i = 0; i < count; i++)
+            {
+                if (!TryReadInt(line, ref index, out int value))
+                {
+                    return false;
+                }
+
+                indices.Add(value - 1);
+            }
+
+            meshBuilder.CreatePolygon(context, indices);
+            return true;
+        }
+
+        private bool TryProcessTextureFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "texture", null, out int index))
+                return false;
+
+            if (!TryReadToken(line, ref index, out var textureToken))
+                return false;
+
+            string textureName = textureToken.ToString().ToLowerInvariant();
+
+            context.currentMaterial.texture = textureName == "null" ? null : textureName;
+            context.currentMaterial.mask = null;
+            context.currentMaterial.normalMap = null;
+            context.currentMaterial.specularMap = null;
+
+            while (TryReadToken(line, ref index, out var keyToken))
+            {
+                if (!TryReadToken(line, ref index, out var valueToken))
+                {
+                    break;
+                }
+
+                string key = keyToken.ToString().ToLowerInvariant();
+                string value = valueToken.ToString();
+
+                switch (key)
+                {
+                    case "mask":
+                        context.currentMaterial.mask = value;
+                        break;
+                    case "normal":
+                        context.currentMaterial.normalMap = value;
+                        break;
+                    case "specular":
+                        context.currentMaterial.specularMap = value;
+                        break;
+                }
+            }
+
+            return true;
+        }
+
+        private bool TryProcessColorFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "color", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float r) ||
+                !TryReadFloat(line, ref index, out float g) ||
+                !TryReadFloat(line, ref index, out float b))
+            {
+                return false;
+            }
+
+            context.currentMaterial.color = new Color(r, g, b, context.currentMaterial.color.a);
+            return true;
+        }
+
+        private bool TryProcessOpacityFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "opacity", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float opacity))
+                return false;
+
+            context.currentMaterial.opacity = opacity;
+            context.currentMaterial.color = new Color(
+                context.currentMaterial.color.r,
+                context.currentMaterial.color.g,
+                context.currentMaterial.color.b,
+                opacity
+            );
+            return true;
+        }
+
+        private bool TryProcessSurfaceFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "surface", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float ambient) ||
+                !TryReadFloat(line, ref index, out float diffuse) ||
+                !TryReadFloat(line, ref index, out float specular))
+            {
+                return false;
+            }
+
+            context.currentMaterial.surface = new Vector3(ambient, diffuse, specular);
+            return true;
+        }
+
+        private bool TryProcessAmbientFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "ambient", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float ambient))
+                return false;
+
+            context.currentMaterial.surface = new Vector3(ambient, context.currentMaterial.surface.y, context.currentMaterial.surface.z);
+            return true;
+        }
+
+        private bool TryProcessDiffuseFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "diffuse", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float diffuse))
+                return false;
+
+            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, diffuse, context.currentMaterial.surface.z);
+            return true;
+        }
+
+        private bool TryProcessSpecularFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "specular", null, out int index))
+                return false;
+
+            if (!TryReadFloat(line, ref index, out float specular))
+                return false;
+
+            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
+            return true;
+        }
+
+        private bool TryParseTranslateValues(ReadOnlySpan<char> line, out Vector3 translation)
+        {
+            translation = Vector3.zero;
+
+            if (IsCommand(line, "translate", null, out int index))
+            {
+                if (TryReadFloat(line, ref index, out float x) &&
+                    TryReadFloat(line, ref index, out float y) &&
+                    TryReadFloat(line, ref index, out float z))
+                {
+                    translation = new Vector3(x, y, z);
+                    return true;
+                }
+            }
+
+            var match = translateRegex.Match(line.ToString());
+            if (!match.Success) return false;
+
+            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
+            if (floatMatches.Count < 3) return false;
+
+            translation = new Vector3(
+                float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture),
+                float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture),
+                float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture));
+
+            return true;
+        }
+
+        private bool TryParseScaleValues(ReadOnlySpan<char> line, out Vector3 scale)
+        {
+            scale = Vector3.one;
+
+            if (IsCommand(line, "scale", null, out int index))
+            {
+                if (TryReadFloat(line, ref index, out float x) &&
+                    TryReadFloat(line, ref index, out float y) &&
+                    TryReadFloat(line, ref index, out float z))
+                {
+                    scale = new Vector3(x, y, z);
+                    return true;
+                }
+            }
+
+            var match = scaleRegex.Match(line.ToString());
+            if (!match.Success) return false;
+
+            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
+            if (floatMatches.Count < 3) return false;
+
+            scale = new Vector3(
+                float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture),
+                float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture),
+                float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture));
+
+            return true;
+        }
+
+        private bool TryParseRotateValues(ReadOnlySpan<char> line, out float axisX, out float axisY, out float axisZ, out float angleDegrees)
+        {
+            axisX = axisY = axisZ = angleDegrees = 0f;
+
+            if (IsCommand(line, "rotate", null, out int index))
+            {
+                if (TryReadFloat(line, ref index, out axisX) &&
+                    TryReadFloat(line, ref index, out axisY) &&
+                    TryReadFloat(line, ref index, out axisZ) &&
+                    TryReadFloat(line, ref index, out angleDegrees))
+                {
+                    return true;
+                }
+            }
+
+            var match = rotateRegex.Match(line.ToString());
+            if (!match.Success) return false;
+
+            var floatMatches = floatRegex.Matches(match.Groups[2].Value);
+            if (floatMatches.Count < 4) return false;
+
+            axisX = float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture);
+            axisY = float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture);
+            axisZ = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
+            angleDegrees = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
+
             return true;
         }
     }
