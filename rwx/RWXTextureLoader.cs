@@ -152,6 +152,23 @@ namespace RWXLoader
                     }
                 }
 
+                if (!SystemInfo.SupportsTextureFormat(format))
+                {
+                    // Fallbacks for platforms lacking BC5/BC7
+                    if ((format == TextureFormat.BC5 || format == TextureFormat.BC7) && SystemInfo.SupportsTextureFormat(TextureFormat.DXT5))
+                    {
+                        format = TextureFormat.DXT5;
+                    }
+                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
+                    {
+                        format = TextureFormat.DXT1;
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
+
                 if (data.Length <= headerSize)
                 {
                     return null;
@@ -160,8 +177,39 @@ namespace RWXLoader
                 byte[] dxtData = new byte[data.Length - headerSize];
                 Buffer.BlockCopy(data, headerSize, dxtData, 0, dxtData.Length);
 
-                Texture2D texture = new Texture2D(width, height, format, mipMapCount > 1);
-                texture.LoadRawTextureData(dxtData);
+                // Ensure mipmap count matches available data to avoid LoadRawTextureData failures
+                int blockSize = (format == TextureFormat.DXT1) ? 8 : 16;
+                int computedMipCount = 0;
+                int offset = 0;
+                int mipWidth = width;
+                int mipHeight = height;
+
+                while (computedMipCount < mipMapCount)
+                {
+                    int blockCountX = Math.Max(1, (mipWidth + 3) / 4);
+                    int blockCountY = Math.Max(1, (mipHeight + 3) / 4);
+                    int mipSize = blockCountX * blockCountY * blockSize;
+
+                    if (offset + mipSize > dxtData.Length)
+                    {
+                        break;
+                    }
+
+                    offset += mipSize;
+                    computedMipCount++;
+                    mipWidth = Math.Max(1, mipWidth / 2);
+                    mipHeight = Math.Max(1, mipHeight / 2);
+                }
+
+                if (computedMipCount == 0)
+                {
+                    return null;
+                }
+
+                int usedDataLength = offset;
+                bool hasMipMaps = computedMipCount > 1;
+                Texture2D texture = new Texture2D(width, height, format, hasMipMaps);
+                texture.LoadRawTextureData(dxtData, usedDataLength);
                 texture.Apply(false, true);
                 texture.name = Path.GetFileNameWithoutExtension(fileName);
                 return texture;
