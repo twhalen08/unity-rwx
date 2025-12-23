@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using Unity.Burst;
 using Unity.Collections;
 using UnityEngine;
 using Unity.Jobs;
@@ -152,6 +153,58 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
     }
 
+    [BurstCompile]
+    private struct PreprocessActionJob : IJobParallelFor
+    {
+        [ReadOnly] public NativeArray<VpPreprocessActionInput> inputs;
+        [WriteOnly] public NativeArray<VpPreprocessedAction> outputs;
+
+        public void Execute(int index)
+        {
+            var input = inputs[index];
+            var result = new VpPreprocessedAction
+            {
+                type = input.type,
+                input0 = input.input0,
+                valid = false
+            };
+
+            switch (input.type)
+            {
+                case VpPreprocessedActionType.Ambient:
+                    result.value0 = math.clamp(input.input0.x, 0f, 1f);
+                    result.valid = true;
+                    break;
+
+                case VpPreprocessedActionType.Diffuse:
+                    result.value0 = math.max(0f, input.input0.x);
+                    result.valid = true;
+                    break;
+
+                case VpPreprocessedActionType.Visible:
+                    result.value0 = input.flags != 0 ? 1f : 0f;
+                    result.valid = true;
+                    break;
+
+                case VpPreprocessedActionType.Scale:
+                    float3 minScale = new float3(0.1f);
+                    float3 s = new float3(input.input0.x, input.input0.y, input.input0.z);
+                    result.data0 = math.max(s, minScale);
+                    result.valid = true;
+                    break;
+
+                case VpPreprocessedActionType.Shear:
+                    result.data0 = new float3(input.input0.x, input.input0.y, input.input0.z);
+                    result.data1 = new float3(input.input0.w, input.input1.x, input.input1.y);
+                    result.value0 = input.input1.z; // xMinus
+                    result.valid = true;
+                    break;
+            }
+
+            outputs[index] = result;
+        }
+    }
+
     private struct PendingModelLoad
     {
         public (int cx, int cy) cell;
@@ -174,6 +227,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // Debug
     private (int cx, int cy) debugCamCell;
     private UnityEngine.Vector3 debugCamPos;
+
+    private readonly List<VpPreprocessedAction> preprocessedActionResults = new();
+    private readonly List<VpPreprocessActionInput> preprocessedActionInputs = new();
+    private readonly List<ActionApplyStep> actionApplySteps = new();
 
     private void Start()
     {
@@ -457,11 +514,42 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
             else
             {
+                PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
+
+                if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                {
+                    var preprocessJob = new PreprocessActionJob
+                    {
+                        inputs = preprocessInputs,
+                        outputs = preprocessOutputs
+                    };
+
+                    int batchSize = math.max(1, preprocessInputs.Length / 4);
+                    preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
+
+                    preprocessedActionResults.Clear();
+                    for (int i = 0; i < preprocessOutputs.Length; i++)
+                        preprocessedActionResults.Add(preprocessOutputs[i]);
+                }
+
+                if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
+                if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
+
                 float start = Time.realtimeSinceStartup;
 
-                for (int i = 0; i < createActions.Count; i++)
+                for (int i = 0; i < actionApplySteps.Count; i++)
                 {
-                    VpActionExecutor.ExecuteCreate(loadedObject, createActions[i], modelLoader.defaultObjectPath, objectPathPassword, this);
+                    var step = actionApplySteps[i];
+
+                    if (step.isPreprocessed)
+                    {
+                        if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
+                            ApplyPreprocessedCreateAction(loadedObject, preprocessedActionResults[step.preprocessedIndex]);
+                    }
+                    else if (step.command != null)
+                    {
+                        VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
+                    }
 
                     float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
                     if (elapsedMs >= modelWorkBudgetMs)
@@ -664,6 +752,213 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (cellCount > 0)
             desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+    }
+
+    private struct ActionApplyStep
+    {
+        public bool isPreprocessed;
+        public int preprocessedIndex;
+        public VpActionCommand command;
+    }
+
+    private void PreparePreprocessedActions(
+        List<VpActionCommand> createActions,
+        out NativeArray<VpPreprocessActionInput> inputs,
+        out NativeArray<VpPreprocessedAction> outputs)
+    {
+        inputs = default;
+        outputs = default;
+
+        preprocessedActionInputs.Clear();
+        preprocessedActionResults.Clear();
+        actionApplySteps.Clear();
+
+        if (createActions == null || createActions.Count == 0)
+            return;
+
+        for (int i = 0; i < createActions.Count; i++)
+        {
+            var cmd = createActions[i];
+            if (TryBuildPreprocessInput(cmd, out var input))
+            {
+                actionApplySteps.Add(new ActionApplyStep
+                {
+                    isPreprocessed = true,
+                    preprocessedIndex = preprocessedActionInputs.Count,
+                    command = null
+                });
+                preprocessedActionInputs.Add(input);
+            }
+            else
+            {
+                actionApplySteps.Add(new ActionApplyStep
+                {
+                    isPreprocessed = false,
+                    preprocessedIndex = -1,
+                    command = cmd
+                });
+            }
+        }
+
+        if (preprocessedActionInputs.Count == 0)
+            return;
+
+        inputs = new NativeArray<VpPreprocessActionInput>(preprocessedActionInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        outputs = new NativeArray<VpPreprocessedAction>(preprocessedActionInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+        for (int i = 0; i < preprocessedActionInputs.Count; i++)
+            inputs[i] = preprocessedActionInputs[i];
+    }
+
+    private bool TryBuildPreprocessInput(VpActionCommand cmd, out VpPreprocessActionInput input)
+    {
+        input = default;
+
+        if (cmd == null || string.IsNullOrWhiteSpace(cmd.verb))
+            return false;
+
+        string verb = cmd.verb.Trim().ToLowerInvariant();
+
+        switch (verb)
+        {
+            case "ambient":
+                if (cmd.positional == null || cmd.positional.Count == 0)
+                    return false;
+                input.type = VpPreprocessedActionType.Ambient;
+                input.input0 = new float4(ParseFloat(cmd.positional[0], 1f), 0f, 0f, 0f);
+                return true;
+
+            case "diffuse":
+                if (cmd.positional == null || cmd.positional.Count == 0)
+                    return false;
+                input.type = VpPreprocessedActionType.Diffuse;
+                input.input0 = new float4(ParseFloat(cmd.positional[0], 1f), 0f, 0f, 0f);
+                return true;
+
+            case "visible":
+                if (cmd.positional == null || cmd.positional.Count == 0)
+                    return false;
+                input.type = VpPreprocessedActionType.Visible;
+                input.flags = ParseBool(cmd.positional[0]) ? 1 : 0;
+                return true;
+
+            case "scale":
+                if (cmd.positional == null || cmd.positional.Count == 0)
+                    return false;
+                input.type = VpPreprocessedActionType.Scale;
+                BuildScaleInputs(cmd, ref input);
+                return true;
+
+            case "shear":
+                if (cmd.positional == null || cmd.positional.Count == 0)
+                    return false;
+                input.type = VpPreprocessedActionType.Shear;
+                BuildShearInputs(cmd, ref input);
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private void BuildScaleInputs(VpActionCommand cmd, ref VpPreprocessActionInput input)
+    {
+        const float DefaultScale = 1f;
+
+        float x = DefaultScale, y = DefaultScale, z = DefaultScale;
+
+        if (cmd.positional.Count == 1)
+        {
+            float s = ParseFloat(cmd.positional[0], DefaultScale);
+            x = y = z = s;
+        }
+        else if (cmd.positional.Count >= 3)
+        {
+            x = ParseFloat(cmd.positional[0], DefaultScale);
+            y = ParseFloat(cmd.positional[1], DefaultScale);
+            z = ParseFloat(cmd.positional[2], DefaultScale);
+        }
+        else
+        {
+            x = ParseFloat(cmd.positional[0], DefaultScale);
+            y = ParseFloat(cmd.positional[1], DefaultScale);
+            z = DefaultScale;
+        }
+
+        input.input0 = new float4(x, y, z, 0f);
+    }
+
+    private void BuildShearInputs(VpActionCommand cmd, ref VpPreprocessActionInput input)
+    {
+        float zPlus = GetPositionalFloat(cmd, 0, 0f);
+        float xPlus = GetPositionalFloat(cmd, 1, 0f);
+        float yPlus = GetPositionalFloat(cmd, 2, 0f);
+        float yMinus = GetPositionalFloat(cmd, 3, 0f);
+        float zMinus = GetPositionalFloat(cmd, 4, 0f);
+        float xMinus = GetPositionalFloat(cmd, 5, 0f);
+
+        input.input0 = new float4(zPlus, xPlus, yPlus, yMinus);
+        input.input1 = new float3(zMinus, xMinus, xMinus);
+    }
+
+    private float ParseFloat(string s, float fallback)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        if (float.TryParse(s.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v))
+            return v;
+
+        if (float.TryParse(s.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out v))
+            return v;
+
+        return fallback;
+    }
+
+    private float GetPositionalFloat(VpActionCommand cmd, int index, float fallback)
+    {
+        if (cmd.positional == null || cmd.positional.Count <= index)
+            return fallback;
+
+        return ParseFloat(cmd.positional[index], fallback);
+    }
+
+    private bool ParseBool(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return false;
+
+        string v = s.Trim().ToLowerInvariant();
+        return v == "yes" || v == "true" || v == "1" || v == "on";
+    }
+
+    private void ApplyPreprocessedCreateAction(GameObject target, VpPreprocessedAction action)
+    {
+        if (target == null || !action.valid)
+            return;
+
+        switch (action.type)
+        {
+            case VpPreprocessedActionType.Ambient:
+                VpActionExecutor.ApplyAmbient(target, action.value0);
+                break;
+
+            case VpPreprocessedActionType.Diffuse:
+                VpActionExecutor.ApplyDiffuse(target, action.value0);
+                break;
+
+            case VpPreprocessedActionType.Visible:
+                VpActionExecutor.ApplyVisible(target, action.value0 > 0.5f);
+                break;
+
+            case VpPreprocessedActionType.Scale:
+                VpActionExecutor.ApplyScale(target, new UnityEngine.Vector3(action.data0.x, action.data0.y, action.data0.z));
+                break;
+
+            case VpPreprocessedActionType.Shear:
+                VpActionExecutor.ApplyShear(target, action.data0.x, action.data0.y, action.data0.z, action.data1.x, action.data1.y, action.value0);
+                break;
+        }
     }
 
     // -------------------------

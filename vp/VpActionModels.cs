@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Mathematics;
 
 public enum VpActionPhase
 {
@@ -16,4 +17,32 @@ public class VpActionCommand
     public Dictionary<string, string> kv = new(); // e.g. { "color":"blue" }
 
     public override string ToString() => raw ?? base.ToString();
+}
+
+public enum VpPreprocessedActionType
+{
+    None,
+    Ambient,
+    Diffuse,
+    Visible,
+    Scale,
+    Shear
+}
+
+public struct VpPreprocessedAction
+{
+    public VpPreprocessedActionType type;
+    public float4 input0;
+    public float3 data0;
+    public float3 data1;
+    public float value0;
+    public bool valid;
+}
+
+public struct VpPreprocessActionInput
+{
+    public VpPreprocessedActionType type;
+    public float4 input0;
+    public float3 input1;
+    public int flags;
 }

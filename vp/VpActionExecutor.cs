@@ -20,6 +20,96 @@ public static class VpActionExecutor
         ExecuteCreate(target, cmd, objectPath, password, host);
     }
 
+    public static void ApplyAmbient(GameObject target, float ambient)
+    {
+        if (target == null)
+            return;
+
+        ambient = Mathf.Clamp01(ambient);
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        {
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
+                }
+            }
+        }
+    }
+
+    public static void ApplyDiffuse(GameObject target, float diffuse)
+    {
+        if (target == null)
+            return;
+
+        diffuse = Mathf.Max(0f, diffuse);
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+        {
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a
+                    );
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a
+                    ));
+                }
+            }
+        }
+    }
+
+    public static void ApplyVisible(GameObject target, bool visible)
+    {
+        if (target == null)
+            return;
+
+        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+            r.enabled = visible;
+    }
+
+    public static void ApplyScale(GameObject target, Vector3 scale)
+    {
+        if (target == null)
+            return;
+
+        const float MinScale = 0.1f;
+        target.transform.localScale = new Vector3(
+            Mathf.Max(MinScale, scale.x),
+            Mathf.Max(MinScale, scale.y),
+            Mathf.Max(MinScale, scale.z));
+    }
+
+    public static void ApplyShear(GameObject target, float zPlus, float xPlus, float yPlus, float yMinus, float zMinus, float xMinus)
+    {
+        ApplyShearToAllMeshes_VpMatrix_ObjectLocal(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
+    }
+
     public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
     {
         if (target == null || cmd == null)
@@ -337,26 +427,7 @@ public static class VpActionExecutor
             return;
 
         float ambient = ParseFloat(cmd.positional[0], 1f);
-        ambient = Mathf.Clamp01(ambient);
-
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
-        {
-            foreach (var m in r.materials)
-            {
-                if (m == null) continue;
-
-                if (m.HasProperty("_Color"))
-                {
-                    Color c = m.color;
-                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
-                }
-                else if (m.HasProperty("_BaseColor"))
-                {
-                    Color c = m.GetColor("_BaseColor");
-                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
-                }
-            }
-        }
+        ApplyAmbient(target, ambient);
     }
 
     private static void ExecuteDiffuse(GameObject target, VpActionCommand cmd)
@@ -365,36 +436,7 @@ public static class VpActionExecutor
             return;
 
         float diffuse = ParseFloat(cmd.positional[0], 1f);
-        diffuse = Mathf.Max(0f, diffuse);
-
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
-        {
-            foreach (var m in r.materials)
-            {
-                if (m == null) continue;
-
-                if (m.HasProperty("_Color"))
-                {
-                    Color c = m.color;
-                    m.color = new Color(
-                        Mathf.Clamp01(c.r * diffuse),
-                        Mathf.Clamp01(c.g * diffuse),
-                        Mathf.Clamp01(c.b * diffuse),
-                        c.a
-                    );
-                }
-                else if (m.HasProperty("_BaseColor"))
-                {
-                    Color c = m.GetColor("_BaseColor");
-                    m.SetColor("_BaseColor", new Color(
-                        Mathf.Clamp01(c.r * diffuse),
-                        Mathf.Clamp01(c.g * diffuse),
-                        Mathf.Clamp01(c.b * diffuse),
-                        c.a
-                    ));
-                }
-            }
-        }
+        ApplyDiffuse(target, diffuse);
     }
 
     // -------------------------
@@ -583,8 +625,7 @@ public static class VpActionExecutor
             v == "1" ||
             v == "on";
 
-        foreach (var r in target.GetComponentsInChildren<Renderer>(true))
-            r.enabled = visible;
+        ApplyVisible(target, visible);
     }
 
     // -------------------------
@@ -613,7 +654,7 @@ public static class VpActionExecutor
         float zMinus = GetPosFloat(cmd, 4, 0f);
         float xMinus = GetPosFloat(cmd, 5, 0f);
 
-        ApplyShearToAllMeshes_VpMatrix_ObjectLocal(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
+        ApplyShear(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
     }
 
     private static void ApplyShearToAllMeshes_VpMatrix_ObjectLocal(
