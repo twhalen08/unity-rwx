@@ -626,13 +626,7 @@ public static class VpActionExecutor
         var filters = root.GetComponentsInChildren<MeshFilter>(includeInactive: true);
         if (filters == null || filters.Length == 0) return;
 
-        // Compute ONE AABB in ROOT-LOCAL space (this is object space)
-        if (!TryComputeRootLocalAabb(root, filters, out Vector3 min, out Vector3 max))
-            return;
-
-        Vector3 centerRootLocal = (min + max) * 0.5f;
-
-        // Apply to every mesh, but using the SAME root-local center
+        // Apply to every mesh in root-local (object) space
         for (int f = 0; f < filters.Length; f++)
         {
             var mf = filters[f];
@@ -658,7 +652,6 @@ public static class VpActionExecutor
                 mesh,
                 meshLocalToRootLocal,
                 rootLocalToMeshLocal,
-                centerRootLocal,
                 zPlus, xPlus, yPlus,
                 yMinus, zMinus, xMinus
             );
@@ -669,7 +662,6 @@ public static class VpActionExecutor
         Mesh mesh,
         Matrix4x4 meshLocalToRootLocal,
         Matrix4x4 rootLocalToMeshLocal,
-        Vector3 centerRootLocal,
         float zPlus, float xPlus, float yPlus,
         float yMinus, float zMinus, float xMinus)
     {
@@ -681,9 +673,6 @@ public static class VpActionExecutor
         {
             // mesh-local -> root-local (OBJECT space)
             Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
-
-            // center
-            p -= centerRootLocal;
 
             // Convert Unity(root-local) -> VP local coords
             // Your VP->Unity position mapping: unity.x = -vp.x, unity.y = vp.y, unity.z = vp.z
@@ -702,9 +691,6 @@ public static class VpActionExecutor
             p.y = y1;
             p.z = z1;
 
-            // uncenter
-            p += centerRootLocal;
-
             // root-local -> mesh-local
             verts[i] = rootLocalToMeshLocal.MultiplyPoint3x4(p);
         }
@@ -713,56 +699,6 @@ public static class VpActionExecutor
         mesh.RecalculateBounds();
         mesh.RecalculateNormals();
         mesh.RecalculateTangents();
-    }
-
-
-    private static bool TryComputeRootLocalAabb(GameObject root, MeshFilter[] filters, out Vector3 min, out Vector3 max)
-    {
-        min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
-        max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
-
-        bool any = false;
-
-        // Strip root rotation so shear is evaluated in "pre-rotation" object space (VP-like).
-        Quaternion rootRot = root.transform.localRotation;
-        Quaternion invRootRot = Quaternion.Inverse(rootRot);
-
-        for (int f = 0; f < filters.Length; f++)
-        {
-            var mf = filters[f];
-            if (mf == null) continue;
-
-            var mesh = mf.sharedMesh;
-            if (mesh == null) continue;
-
-            var verts = mesh.vertices;
-            if (verts == null || verts.Length == 0) continue;
-
-            Matrix4x4 meshLocalToRootLocal =
-                root.transform.worldToLocalMatrix * mf.transform.localToWorldMatrix;
-
-            for (int i = 0; i < verts.Length; i++)
-            {
-                // mesh-local -> root-local (this includes root rotation)
-                Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
-
-                // unrotate into VP-like object space
-                p = invRootRot * p;
-
-                min = Vector3.Min(min, p);
-                max = Vector3.Max(max, p);
-                any = true;
-            }
-        }
-
-        if (!any)
-        {
-            min = Vector3.zero;
-            max = Vector3.one;
-            return false;
-        }
-
-        return true;
     }
 
 
