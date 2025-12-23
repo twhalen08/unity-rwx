@@ -104,6 +104,8 @@ namespace RWXLoader
                 int headerSize = 128;
 
                 TextureFormat format;
+                bool isBlockCompressed = true;
+                int bytesPerPixel = 0;
                 if (fourCC == "DX10" && data.Length >= 148)
                 {
                     // DX10 header provides DXGI format
@@ -118,6 +120,18 @@ namespace RWXLoader
                             break;
                         case 77: // BC3_UNORM
                             format = TextureFormat.DXT5;
+                            break;
+                        case 80: // BC5_UNORM
+                            format = TextureFormat.BC5;
+                            break;
+                        case 98: // BC7_UNORM
+                            format = TextureFormat.BC7;
+                            break;
+                        case 28: // R8G8B8A8_UNORM (uncompressed)
+                        case 87: // R8G8B8A8_UNORM_SRGB
+                            format = TextureFormat.RGBA32;
+                            isBlockCompressed = false;
+                            bytesPerPixel = 4;
                             break;
                         case 80: // BC5_UNORM
                             format = TextureFormat.BC5;
@@ -147,6 +161,16 @@ namespace RWXLoader
                         case "BC5 ":
                             format = TextureFormat.BC5;
                             break;
+                        case "DX10": // DX10 without extra header (unlikely, but guard)
+                            format = TextureFormat.RGBA32;
+                            isBlockCompressed = false;
+                            bytesPerPixel = 4;
+                            break;
+                        case "ARGB": // Uncompressed legacy
+                            format = TextureFormat.RGBA32;
+                            isBlockCompressed = false;
+                            bytesPerPixel = 4;
+                            break;
                         default:
                             return null; // Unsupported DDS format
                     }
@@ -162,6 +186,12 @@ namespace RWXLoader
                     else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
                     {
                         format = TextureFormat.DXT1;
+                    }
+                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
+                    {
+                        format = TextureFormat.RGBA32;
+                        isBlockCompressed = false;
+                        bytesPerPixel = 4;
                     }
                     else
                     {
@@ -186,9 +216,17 @@ namespace RWXLoader
 
                 while (computedMipCount < mipMapCount)
                 {
-                    int blockCountX = Math.Max(1, (mipWidth + 3) / 4);
-                    int blockCountY = Math.Max(1, (mipHeight + 3) / 4);
-                    int mipSize = blockCountX * blockCountY * blockSize;
+                    int mipSize;
+                    if (isBlockCompressed)
+                    {
+                        int blockCountX = Math.Max(1, (mipWidth + 3) / 4);
+                        int blockCountY = Math.Max(1, (mipHeight + 3) / 4);
+                        mipSize = blockCountX * blockCountY * blockSize;
+                    }
+                    else
+                    {
+                        mipSize = mipWidth * mipHeight * Math.Max(1, bytesPerPixel);
+                    }
 
                     if (offset + mipSize > dxtData.Length)
                     {
