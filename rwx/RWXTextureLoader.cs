@@ -84,7 +84,7 @@ namespace RWXLoader
 
         private Texture2D LoadDdsTexture(byte[] data, string fileName)
         {
-            // Basic DDS loader supporting DXT1/DXT5 formats
+            // Basic DDS loader supporting common compressed formats
             try
             {
                 if (data == null || data.Length < 128)
@@ -101,23 +101,64 @@ namespace RWXLoader
                 int width = BitConverter.ToInt32(data, 16);
                 int mipMapCount = Math.Max(1, BitConverter.ToInt32(data, 28));
                 string fourCC = System.Text.Encoding.ASCII.GetString(data, 84, 4);
+                int headerSize = 128;
 
                 TextureFormat format;
-                switch (fourCC)
+                if (fourCC == "DX10" && data.Length >= 148)
                 {
-                    case "DXT1":
-                        format = TextureFormat.DXT1;
-                        break;
-                    case "DXT5":
-                        format = TextureFormat.DXT5;
-                        break;
-                    default:
-                        return null; // Unsupported DDS format
+                    // DX10 header provides DXGI format
+                    int dxgiFormat = BitConverter.ToInt32(data, 128);
+                    switch (dxgiFormat)
+                    {
+                        case 71: // BC1_UNORM
+                            format = TextureFormat.DXT1;
+                            break;
+                        case 74: // BC2_UNORM
+                            format = TextureFormat.DXT5; // Closest supported in Unity runtime
+                            break;
+                        case 77: // BC3_UNORM
+                            format = TextureFormat.DXT5;
+                            break;
+                        case 80: // BC5_UNORM
+                            format = TextureFormat.BC5;
+                            break;
+                        case 98: // BC7_UNORM
+                            format = TextureFormat.BC7;
+                            break;
+                        default:
+                            return null;
+                    }
+                    headerSize = 148; // DDS header + DX10 header
+                }
+                else
+                {
+                    switch (fourCC)
+                    {
+                        case "DXT1":
+                            format = TextureFormat.DXT1;
+                            break;
+                        case "DXT3":
+                            format = TextureFormat.DXT5; // Unity doesn't expose DXT3 separately at runtime; use DXT5 fallback
+                            break;
+                        case "DXT5":
+                            format = TextureFormat.DXT5;
+                            break;
+                        case "ATI2":
+                        case "BC5 ":
+                            format = TextureFormat.BC5;
+                            break;
+                        default:
+                            return null; // Unsupported DDS format
+                    }
                 }
 
-                const int DDS_HEADER_SIZE = 128;
-                byte[] dxtData = new byte[data.Length - DDS_HEADER_SIZE];
-                Buffer.BlockCopy(data, DDS_HEADER_SIZE, dxtData, 0, dxtData.Length);
+                if (data.Length <= headerSize)
+                {
+                    return null;
+                }
+
+                byte[] dxtData = new byte[data.Length - headerSize];
+                Buffer.BlockCopy(data, headerSize, dxtData, 0, dxtData.Length);
 
                 Texture2D texture = new Texture2D(width, height, format, mipMapCount > 1);
                 texture.LoadRawTextureData(dxtData);
