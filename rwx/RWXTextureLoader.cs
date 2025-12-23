@@ -1,6 +1,8 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using UnityEngine;
 
 namespace RWXLoader
@@ -54,6 +56,81 @@ namespace RWXLoader
             return textureName + (isMask ? ".bmp" : ".jpg");
         }
 
+        private bool IsMaskFile(string fileName)
+        {
+            string lowerName = fileName.ToLower();
+            return lowerName.Contains("mask") || lowerName.Contains("_m") || fileName.EndsWith("m.bmp") || lowerName.Contains("tl01m");
+        }
+
+        private bool TryDecompressGzip(byte[] data, out byte[] decompressedData)
+        {
+            try
+            {
+                using (var inputStream = new MemoryStream(data))
+                using (var gzipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                using (var outputStream = new MemoryStream())
+                {
+                    gzipStream.CopyTo(outputStream);
+                    decompressedData = outputStream.ToArray();
+                    return true;
+                }
+            }
+            catch
+            {
+                decompressedData = Array.Empty<byte>();
+                return false;
+            }
+        }
+
+        private Texture2D LoadDdsTexture(byte[] data, string fileName)
+        {
+            // Basic DDS loader supporting DXT1/DXT5 formats
+            try
+            {
+                if (data == null || data.Length < 128)
+                {
+                    return null;
+                }
+
+                if (!(data[0] == 'D' && data[1] == 'D' && data[2] == 'S' && data[3] == ' '))
+                {
+                    return null;
+                }
+
+                int height = BitConverter.ToInt32(data, 12);
+                int width = BitConverter.ToInt32(data, 16);
+                int mipMapCount = Math.Max(1, BitConverter.ToInt32(data, 28));
+                string fourCC = System.Text.Encoding.ASCII.GetString(data, 84, 4);
+
+                TextureFormat format;
+                switch (fourCC)
+                {
+                    case "DXT1":
+                        format = TextureFormat.DXT1;
+                        break;
+                    case "DXT5":
+                        format = TextureFormat.DXT5;
+                        break;
+                    default:
+                        return null; // Unsupported DDS format
+                }
+
+                const int DDS_HEADER_SIZE = 128;
+                byte[] dxtData = new byte[data.Length - DDS_HEADER_SIZE];
+                Buffer.BlockCopy(data, DDS_HEADER_SIZE, dxtData, 0, dxtData.Length);
+
+                Texture2D texture = new Texture2D(width, height, format, mipMapCount > 1);
+                texture.LoadRawTextureData(dxtData);
+                texture.Apply(false, true);
+                texture.name = Path.GetFileNameWithoutExtension(fileName);
+                return texture;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         /// <summary>
         /// Loads texture synchronously from local files
         /// </summary>
@@ -74,7 +151,7 @@ namespace RWXLoader
             }
 
             // Try multiple file extensions
-            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga" };
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
             
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
@@ -154,8 +231,15 @@ namespace RWXLoader
                 string fileName = Path.GetFileName(filePath);
                 
                 // Determine if this is a mask based on file name patterns
-                bool isMask = fileName.ToLower().Contains("mask") || fileName.ToLower().Contains("_m") || fileName.EndsWith("m.bmp") || fileName.ToLower().Contains("tl01m");
-                
+                string effectiveFileName = fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ? Path.GetFileNameWithoutExtension(fileName) : fileName;
+                bool isMask = IsMaskFile(effectiveFileName);
+
+                if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(fileData, out byte[] decompressedData))
+                {
+                    fileData = decompressedData;
+                    fileName = effectiveFileName;
+                }
+
                 return LoadTextureFromBytes(fileData, fileName, isMask, isDoubleSided);
             }
             catch (System.Exception e)
@@ -179,14 +263,32 @@ namespace RWXLoader
         {
             try
             {
+                string effectiveFileName = fileName;
+                byte[] workingData = data;
+
+                if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+                {
+                    workingData = decompressedData;
+                    effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
+                }
+
+                if (effectiveFileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
+                {
+                    Texture2D ddsTexture = LoadDdsTexture(workingData, effectiveFileName);
+                    if (ddsTexture != null)
+                    {
+                        return ddsTexture;
+                    }
+                }
+
                 // Create texture with appropriate format
                 Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                
+
                 // Try to load the image data
-                if (texture.LoadImage(data))
+                if (texture.LoadImage(workingData))
                 {
                     // Set the texture name for debugging
-                    texture.name = Path.GetFileNameWithoutExtension(fileName);
+                    texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
                     return texture;
                 }
                 else
@@ -194,19 +296,19 @@ namespace RWXLoader
                     Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
-                    if (fileName.EndsWith(".bmp"))
+                    if (effectiveFileName.EndsWith(".bmp"))
                     {
                         RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
                         if (bmpDecoder != null)
                         {
                             // FIXED: Use regular BMP decoder without rotation for all textures and masks
                             // The automatic rotation was causing mask orientation issues
-                            texture = bmpDecoder.DecodeBmpTexture(data, fileName);
+                            texture = bmpDecoder.DecodeBmpTexture(workingData, effectiveFileName);
                             
                             // Set the texture name for debugging
                             if (texture != null)
                             {
-                                texture.name = Path.GetFileNameWithoutExtension(fileName);
+                                texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
                             }
                             
                             return texture;
@@ -315,6 +417,10 @@ namespace RWXLoader
                         baseName + ".JPG",   // uppercase variant
                         baseName + ".jpeg",  // alternative extension
                         baseName + ".png",   // alternative extension
+                        baseName + ".dds",   // DDS texture
+                        baseName + ".DDS",   // uppercase DDS
+                        baseName + ".dds.gz",// compressed DDS
+                        baseName + ".DDS.GZ",// uppercase compressed DDS
                         baseName,            // just the base name
                     };
                 }
