@@ -3,7 +3,10 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using Unity.Collections;
 using UnityEngine;
+using Unity.Jobs;
+using Unity.Mathematics;
 using VpNet;
 using RWXLoader;
 
@@ -108,6 +111,46 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly HashSet<(int cx, int cy)> queuedCells = new();
     private readonly HashSet<(int cx, int cy)> queryingCells = new();
     private readonly List<(int cx, int cy)> desiredCells = new();
+    private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
+    private NativeArray<DesiredCellData> desiredCellBuffer;
+
+    private struct DesiredCellData
+    {
+        public int cx;
+        public int cy;
+        public int chebyshev;
+        public int manhattan;
+    }
+
+    private struct DesiredCellJob : IJobParallelFor
+    {
+        [ReadOnly]
+        public int centerX;
+
+        [ReadOnly]
+        public int centerY;
+
+        [ReadOnly]
+        public int radius;
+
+        [WriteOnly]
+        public NativeArray<DesiredCellData> results;
+
+        public void Execute(int index)
+        {
+            int gridSize = radius * 2 + 1;
+            int dx = (index % gridSize) - radius;
+            int dy = (index / gridSize) - radius;
+
+            results[index] = new DesiredCellData
+            {
+                cx = centerX + dx,
+                cy = centerY + dy,
+                chebyshev = math.max(math.abs(dx), math.abs(dy)),
+                manhattan = math.abs(dx) + math.abs(dy)
+            };
+        }
+    }
 
     private struct PendingModelLoad
     {
@@ -211,19 +254,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             {
                 lastCameraCell = camCell;
 
-                BuildDesiredCells(camCell.cx, camCell.cy, loadRadius);
-
-                // Enqueue desired cells
-                for (int i = 0; i < desiredCells.Count; i++)
-                {
-                    var c = desiredCells[i];
-
-                    if (loadedCells.Contains(c)) continue;
-                    if (queuedCells.Contains(c)) continue;
-                    if (queryingCells.Contains(c)) continue;
-
-                    queuedCells.Add(c);
-                }
+                BuildDesiredCellsWithJob(camCell.cx, camCell.cy, loadRadius);
 
                 // Unload far cells if enabled
                 if (unloadRadius >= 0)
@@ -243,7 +274,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             // Start cell queries (closest-first)
             while (inFlightCellQueries < maxConcurrentCellQueries)
             {
-                var next = DequeueClosestQueuedCell(camCell.cx, camCell.cy);
+                var next = DequeueClosestQueuedCell();
                 if (next.cx == int.MinValue)
                     break;
 
@@ -530,48 +561,68 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return (cx, cy);
     }
 
-    private void BuildDesiredCells(int centerX, int centerY, int radius)
+    private void BuildDesiredCellsWithJob(int centerX, int centerY, int radius)
     {
+        int clampedRadius = Mathf.Max(0, radius);
+        int gridSize = clampedRadius * 2 + 1;
+        int cellCount = gridSize * gridSize;
+
         desiredCells.Clear();
+        queuedCellHeap.Clear();
 
-        for (int dx = -radius; dx <= radius; dx++)
-            for (int dy = -radius; dy <= radius; dy++)
-                desiredCells.Add((centerX + dx, centerY + dy));
-
-        // Sort closest-first (Chebyshev then Manhattan)
-        desiredCells.Sort((a, b) =>
+        foreach (var queued in queuedCells)
         {
-            int dax = Mathf.Abs(a.cx - centerX);
-            int day = Mathf.Abs(a.cy - centerY);
-            int dbx = Mathf.Abs(b.cx - centerX);
-            int dby = Mathf.Abs(b.cy - centerY);
+            int dx = Mathf.Abs(queued.cx - centerX);
+            int dy = Mathf.Abs(queued.cy - centerY);
+            float score = Mathf.Max(dx, dy) * 100 + (dx + dy);
+            queuedCellHeap.Push(queued, score);
+        }
 
-            int ca = Mathf.Max(dax, day);
-            int cb = Mathf.Max(dbx, dby);
-            if (ca != cb) return ca.CompareTo(cb);
+        if (cellCount == 0)
+            return;
 
-            int ma = dax + day;
-            int mb = dbx + dby;
-            return ma.CompareTo(mb);
-        });
+        EnsureDesiredCellBuffer(cellCount);
+        if (!desiredCellBuffer.IsCreated)
+            return;
+
+        var job = new DesiredCellJob
+        {
+            centerX = centerX,
+            centerY = centerY,
+            radius = clampedRadius,
+            results = desiredCellBuffer
+        };
+
+        int batchSize = Mathf.Max(1, clampedRadius);
+        JobHandle handle = job.Schedule(cellCount, batchSize);
+        handle.Complete();
+
+        for (int i = 0; i < desiredCellBuffer.Length; i++)
+        {
+            var cell = desiredCellBuffer[i];
+            var coord = (cell.cx, cell.cy);
+
+            desiredCells.Add(coord);
+
+            if (loadedCells.Contains(coord) || queuedCells.Contains(coord) || queryingCells.Contains(coord))
+                continue;
+
+            float score = cell.chebyshev * 100 + cell.manhattan;
+            queuedCells.Add(coord);
+            queuedCellHeap.Push(coord, score);
+        }
     }
 
-    private (int cx, int cy) DequeueClosestQueuedCell(int centerX, int centerY)
+    private (int cx, int cy) DequeueClosestQueuedCell()
     {
         (int cx, int cy) best = (int.MinValue, int.MinValue);
-        int bestScore = int.MaxValue;
-
-        foreach (var c in queuedCells)
+        while (queuedCellHeap.Count > 0)
         {
-            int dx = Mathf.Abs(c.cx - centerX);
-            int dy = Mathf.Abs(c.cy - centerY);
-            int score = Mathf.Max(dx, dy) * 100 + (dx + dy);
+            best = queuedCellHeap.PopMin();
+            if (!queuedCells.Contains(best))
+                continue;
 
-            if (score < bestScore)
-            {
-                bestScore = score;
-                best = c;
-            }
+            return best;
         }
 
         return best;
@@ -601,6 +652,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
+    }
+
+    private void EnsureDesiredCellBuffer(int cellCount)
+    {
+        if (desiredCellBuffer.IsCreated && desiredCellBuffer.Length == cellCount)
+            return;
+
+        if (desiredCellBuffer.IsCreated)
+            desiredCellBuffer.Dispose();
+
+        if (cellCount > 0)
+            desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
     }
 
     // -------------------------
@@ -654,6 +717,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+    }
+
+    private void OnDestroy()
+    {
+        if (desiredCellBuffer.IsCreated)
+            desiredCellBuffer.Dispose();
     }
 
     // -------------------------
