@@ -672,7 +672,47 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Accumulate(vx, vz - 1);
                 Accumulate(vx - 1, vz - 1);
 
-                heightGrid[vx, vz] = count > 0 ? sum / count : 0f;
+                if (count == 0)
+                {
+                    int cx = Mathf.Clamp(vx, 0, tileSpan - 1);
+                    int cz = Mathf.Clamp(vz, 0, tileSpan - 1);
+                    var c = cellData[cx, cz];
+                    if (c.hasData && !c.isHole)
+                    {
+                        heightGrid[vx, vz] = c.height;
+                        continue;
+                    }
+
+                    // fallback to nearest valid neighbor inside tile
+                    bool found = false;
+                    for (int radius = 1; radius <= 2 && !found; radius++)
+                    {
+                        for (int dz = -radius; dz <= radius && !found; dz++)
+                        {
+                            for (int dx = -radius; dx <= radius && !found; dx++)
+                            {
+                                int nx = cx + dx;
+                                int nz = cz + dz;
+                                if (nx < 0 || nx >= tileSpan || nz < 0 || nz >= tileSpan)
+                                    continue;
+
+                                var nc = cellData[nx, nz];
+                                if (nc.hasData && !nc.isHole)
+                                {
+                                    heightGrid[vx, vz] = nc.height;
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!found)
+                        heightGrid[vx, vz] = 0f;
+                }
+                else
+                {
+                    heightGrid[vx, vz] = sum / count;
+                }
             }
         }
 
@@ -689,7 +729,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 float unityY = heightGrid[vx, vz] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
 
                 vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ));
-                uvs.Add(new UnityEngine.Vector2(vx, vz));
+                uvs.Add(new UnityEngine.Vector2(tileSpan - vx, tileSpan - vz));
             }
         }
 
