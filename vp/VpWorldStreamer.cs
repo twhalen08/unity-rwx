@@ -675,6 +675,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 return true;
             }
 
+            int localCX = worldCX - tileX * tileSpan;
+            int localCZ = worldCZ - tileZ * tileSpan;
+            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
+            {
+                var c = cellData[localCX, localCZ];
+                if (c.hasData && !c.isHole)
+                {
+                    h = c.height;
+                    return true;
+                }
+            }
+
             h = 0f;
             return false;
         }
@@ -686,9 +698,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             {
                 int worldCX = tileX * tileSpan + vx;
                 int worldCZ = tileZ * tileSpan + vz;
+                int ownerCX = worldCX - 1;
+                int ownerCZ = worldCZ - 1;
 
-                // Exact world cell height preferred
-                if (TryGetCellHeight(worldCX, worldCZ, out float hExact))
+                // Use a deterministic owner cell (lower-left of the vertex) to guarantee both tiles pick the same height
+                if (TryGetCellHeight(ownerCX, ownerCZ, out float hExact))
                 {
                     heightGrid[vx, vz] = hExact;
                     continue;
@@ -703,8 +717,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     {
                         for (int dx = -radius; dx <= radius && !found; dx++)
                         {
-                            int wx = worldCX + dx;
-                            int wz = worldCZ + dz;
+                            int wx = ownerCX + dx;
+                            int wz = ownerCZ + dz;
                             if (TryGetCellHeight(wx, wz, out float hh))
                             {
                                 foundH = hh;
