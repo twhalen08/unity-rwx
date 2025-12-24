@@ -696,15 +696,25 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             for (int vz = 0; vz <= tileSpan; vz++)
             {
-                int worldCX0 = tileX * tileSpan + vx - 1;
-                int worldCZ0 = tileZ * tileSpan + vz - 1;
+                int worldCX = tileX * tileSpan + vx;
+                int worldCZ = tileZ * tileSpan + vz;
+
+                // Prefer exact world-cell height for this vertex
+                if (TryGetCellHeight(worldCX, worldCZ, out float exactH))
+                {
+                    heightGrid[vx, vz] = exactH;
+                    continue;
+                }
+
+                // Fallback: average 4 surrounding world cells
+                int worldCX0 = worldCX - 1;
+                int worldCZ0 = worldCZ - 1;
 
                 float sum = 0f;
                 int count = 0;
 
                 void Acc(int wx, int wz)
                 {
-                    if (wx < 0 || wz < 0) return;
                     if (TryGetCellHeight(wx, wz, out float hh))
                     {
                         sum += hh;
@@ -717,17 +727,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Acc(worldCX0, worldCZ0 + 1);
                 Acc(worldCX0 + 1, worldCZ0 + 1);
 
-                if (count == 0)
-                {
-                    if (TryGetCellHeight(worldCX0 + 1, worldCZ0 + 1, out float fallbackH))
-                        heightGrid[vx, vz] = fallbackH;
-                    else
-                        heightGrid[vx, vz] = 0f;
-                }
-                else
-                {
-                    heightGrid[vx, vz] = sum / count;
-                }
+                heightGrid[vx, vz] = count > 0 ? sum / count : 0f;
             }
         }
 
