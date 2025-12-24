@@ -675,16 +675,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 return true;
             }
 
-            int localCX = worldCX - tileX * tileSpan;
-            int localCZ = worldCZ - tileZ * tileSpan;
-            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
+            int localCX = Mathf.Clamp(worldCX - tileX * tileSpan, 0, tileSpan - 1);
+            int localCZ = Mathf.Clamp(worldCZ - tileZ * tileSpan, 0, tileSpan - 1);
+            var c = cellData[localCX, localCZ];
+            if (c.hasData && !c.isHole)
             {
-                var c = cellData[localCX, localCZ];
-                if (c.hasData && !c.isHole)
-                {
-                    h = c.height;
-                    return true;
-                }
+                h = c.height;
+                return true;
             }
 
             h = 0f;
@@ -727,7 +724,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Acc(worldCX0, worldCZ0 + 1);
                 Acc(worldCX0 + 1, worldCZ0 + 1);
 
-                heightGrid[vx, vz] = count > 0 ? sum / count : 0f;
+                if (count > 0)
+                {
+                    heightGrid[vx, vz] = sum / count;
+                }
+                else
+                {
+                    // Last resort: clamp into this tile
+                    int localCX = Mathf.Clamp(worldCX, tileX * tileSpan, tileX * tileSpan + tileSpan - 1);
+                    int localCZ = Mathf.Clamp(worldCZ, tileZ * tileSpan, tileZ * tileSpan + tileSpan - 1);
+                    TryGetCellHeight(localCX, localCZ, out float clampH);
+                    heightGrid[vx, vz] = clampH;
+                }
             }
         }
 
