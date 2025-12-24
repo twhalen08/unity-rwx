@@ -653,66 +653,41 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             for (int vz = 0; vz <= tileSpan; vz++)
             {
-                float sum = 0f;
-                int count = 0;
+                int cx = Mathf.Clamp(vx, 0, tileSpan - 1);
+                int cz = Mathf.Clamp(vz, 0, tileSpan - 1);
+                var c = cellData[cx, cz];
 
-                void Accumulate(int cx, int cz)
+                if (c.hasData && !c.isHole)
                 {
-                    if (cx < 0 || cx >= tileSpan || cz < 0 || cz >= tileSpan)
-                        return;
-
-                    var c = cellData[cx, cz];
-                    if (!c.hasData || c.isHole) return;
-                    sum += c.height;
-                    count++;
+                    heightGrid[vx, vz] = c.height;
+                    continue;
                 }
 
-                Accumulate(vx, vz);
-                Accumulate(vx - 1, vz);
-                Accumulate(vx, vz - 1);
-                Accumulate(vx - 1, vz - 1);
-
-                if (count == 0)
+                // fallback to nearest valid neighbor inside tile
+                bool found = false;
+                for (int radius = 1; radius <= 2 && !found; radius++)
                 {
-                    int cx = Mathf.Clamp(vx, 0, tileSpan - 1);
-                    int cz = Mathf.Clamp(vz, 0, tileSpan - 1);
-                    var c = cellData[cx, cz];
-                    if (c.hasData && !c.isHole)
+                    for (int dz = -radius; dz <= radius && !found; dz++)
                     {
-                        heightGrid[vx, vz] = c.height;
-                        continue;
-                    }
-
-                    // fallback to nearest valid neighbor inside tile
-                    bool found = false;
-                    for (int radius = 1; radius <= 2 && !found; radius++)
-                    {
-                        for (int dz = -radius; dz <= radius && !found; dz++)
+                        for (int dx = -radius; dx <= radius && !found; dx++)
                         {
-                            for (int dx = -radius; dx <= radius && !found; dx++)
-                            {
-                                int nx = cx + dx;
-                                int nz = cz + dz;
-                                if (nx < 0 || nx >= tileSpan || nz < 0 || nz >= tileSpan)
-                                    continue;
+                            int nx = cx + dx;
+                            int nz = cz + dz;
+                            if (nx < 0 || nx >= tileSpan || nz < 0 || nz >= tileSpan)
+                                continue;
 
-                                var nc = cellData[nx, nz];
-                                if (nc.hasData && !nc.isHole)
-                                {
-                                    heightGrid[vx, vz] = nc.height;
-                                    found = true;
-                                }
+                            var nc = cellData[nx, nz];
+                            if (nc.hasData && !nc.isHole)
+                            {
+                                heightGrid[vx, vz] = nc.height;
+                                found = true;
                             }
                         }
                     }
+                }
 
-                    if (!found)
-                        heightGrid[vx, vz] = 0f;
-                }
-                else
-                {
-                    heightGrid[vx, vz] = sum / count;
-                }
+                if (!found)
+                    heightGrid[vx, vz] = 0f;
             }
         }
 
@@ -1469,32 +1444,39 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         terrainDownloadsInFlight.Add(textureId);
 
-        string url = $"{basePath}textures/terrain{textureId}.jpg";
-        using (var req = UnityWebRequestTexture.GetTexture(url))
+        string[] exts = { "jpg", "png" };
+        Texture2D texFound = null;
+        foreach (var ext in exts)
         {
-            yield return req.SendWebRequest();
+            string url = $"{basePath}textures/terrain{textureId}.{ext}";
+            using (var req = UnityWebRequestTexture.GetTexture(url))
+            {
+                yield return req.SendWebRequest();
 
 #if UNITY_2020_1_OR_NEWER
-            bool hasError = req.result != UnityWebRequest.Result.Success;
+                bool hasError = req.result != UnityWebRequest.Result.Success;
 #else
-            bool hasError = req.isNetworkError || req.isHttpError;
+                bool hasError = req.isNetworkError || req.isHttpError;
 #endif
 
-            if (hasError)
-            {
-                Debug.LogWarning($"[VP] Failed to download terrain texture {textureId} from {url}: {req.error}");
-                terrainDownloadsInFlight.Remove(textureId);
-                yield break;
+                if (!hasError)
+                {
+                    texFound = DownloadHandlerTexture.GetContent(req);
+                    break;
+                }
             }
+        }
 
-            var tex = DownloadHandlerTexture.GetContent(req);
-            if (tex != null)
-            {
-                tex.wrapMode = TextureWrapMode.Repeat;
-                target.mainTexture = tex;
-                if (target.HasProperty("_BaseMap"))
-                    target.SetTexture("_BaseMap", tex);
-            }
+        if (texFound != null)
+        {
+            texFound.wrapMode = TextureWrapMode.Repeat;
+            target.mainTexture = texFound;
+            if (target.HasProperty("_BaseMap"))
+                target.SetTexture("_BaseMap", texFound);
+        }
+        else
+        {
+            Debug.LogWarning($"[VP] Failed to download terrain texture {textureId} (.jpg/.png)");
         }
 
         terrainDownloadsInFlight.Remove(textureId);
