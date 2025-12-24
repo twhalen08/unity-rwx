@@ -147,6 +147,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly Dictionary<ushort, Material> terrainMaterialCache = new();
     private readonly HashSet<ushort> terrainDownloadsInFlight = new();
     private readonly HashSet<(int tx, int tz)> desiredTerrainTiles = new();
+    private readonly Dictionary<(int cx, int cz), TerrainCellCacheEntry> terrainCellCache = new();
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
 
@@ -194,6 +195,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public bool isHole;
         public float height;
         public ushort texture;
+    }
+
+    private struct TerrainCellCacheEntry
+    {
+        public bool hasData;
+        public bool isHole;
+        public float height;
     }
 
     [BurstCompile]
@@ -633,12 +641,23 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     if (cellX < 0 || cellX >= tileSpan || cellZ < 0 || cellZ >= tileSpan)
                         continue;
 
-                    cellData[cellX, cellZ] = new TerrainCellData
+                    var cell = new TerrainCellData
                     {
                         hasData = true,
                         height = node.Cells[idx].Height,
                         texture = node.Cells[idx].Texture,
                         isHole = node.Cells[idx].IsHole
+                    };
+
+                    cellData[cellX, cellZ] = cell;
+
+                    int worldCX = tileX * tileSpan + cellX;
+                    int worldCZ = tileZ * tileSpan + cellZ;
+                    terrainCellCache[(worldCX, worldCZ)] = new TerrainCellCacheEntry
+                    {
+                        hasData = cell.hasData,
+                        isHole = cell.isHole,
+                        height = cell.height
                     };
                 }
             }
@@ -655,8 +674,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             {
                 int cx = Mathf.Clamp(vx, 0, tileSpan - 1);
                 int cz = Mathf.Clamp(vz, 0, tileSpan - 1);
-                var c = cellData[cx, cz];
+                int worldCX = tileX * tileSpan + cx;
+                int worldCZ = tileZ * tileSpan + cz;
 
+                // Prefer cached world cell height to keep seams aligned across tiles
+                if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
+                {
+                    heightGrid[vx, vz] = cachedCell.height;
+                    continue;
+                }
+
+                var c = cellData[cx, cz];
                 if (c.hasData && !c.isHole)
                 {
                     heightGrid[vx, vz] = c.height;
