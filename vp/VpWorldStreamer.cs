@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Unity.Burst;
 using Unity.Collections;
@@ -10,6 +11,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using VpNet;
 using RWXLoader;
+using UnityEngine.Networking;
 
 /// <summary>
 /// VPWorldStreamerSmooth
@@ -99,6 +101,28 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Ignore frustum test beyond this distance (Unity units). 0 = no limit.")]
     public float frustumMaxDistance = 0f;
 
+    [Header("Terrain")]
+    [Tooltip("Load and render VP terrain tiles around the camera.")]
+    public bool streamTerrain = true;
+
+    [Tooltip("How many VP terrain cells make up one terrain tile (default VP tile = 32).")]
+    public int terrainTileCellSpan = 32;
+
+    [Tooltip("How many VP terrain cells make up one terrain node (default VP node = 8).")]
+    public int terrainNodeCellSpan = 8;
+
+    [Tooltip("Add a MeshCollider to each generated terrain tile.")]
+    public bool addTerrainColliders = false;
+
+    [Tooltip("Optional material template for terrain. If null a Standard material is created.")]
+    public Material terrainMaterialTemplate;
+
+    [Tooltip("Maximum terrain tile queries in-flight at once.")]
+    public int maxConcurrentTerrainQueries = 1;
+
+    [Tooltip("If true, skip building terrain tiles whose root was unloaded before completion.")]
+    public bool dropTerrainFromUnloadedTiles = true;
+
     [Header("Debug")]
     public bool logCellLoads = false;
     public bool showDebugOverlay = true;
@@ -114,6 +138,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly List<(int cx, int cy)> desiredCells = new();
     private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
     private NativeArray<DesiredCellData> desiredCellBuffer;
+
+    private readonly Dictionary<(int tx, int tz), GameObject> terrainTiles = new();
+    private readonly HashSet<(int tx, int tz)> loadedTerrainTiles = new();
+    private readonly HashSet<(int tx, int tz)> queuedTerrainTiles = new();
+    private readonly HashSet<(int tx, int tz)> queryingTerrainTiles = new();
+    private readonly MinHeap<(int tx, int tz)> queuedTerrainHeap = new MinHeap<(int tx, int tz)>();
+    private readonly Dictionary<ushort, Material> terrainMaterialCache = new();
+    private readonly HashSet<ushort> terrainDownloadsInFlight = new();
+    private readonly HashSet<(int tx, int tz)> desiredTerrainTiles = new();
+    private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
+    private GameObject terrainRoot;
 
     private struct DesiredCellData
     {
@@ -151,6 +186,14 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 manhattan = math.abs(dx) + math.abs(dy)
             };
         }
+    }
+
+    private struct TerrainCellData
+    {
+        public bool hasData;
+        public bool isHole;
+        public float height;
+        public ushort texture;
     }
 
     [BurstCompile]
@@ -219,8 +262,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     private int inFlightCellQueries = 0;
     private int inFlightModelLoads = 0;
+    private int inFlightTerrainQueries = 0;
 
     private (int cx, int cy) lastCameraCell = (int.MinValue, int.MinValue);
+    private (int cx, int cy) lastTerrainCameraCell = (int.MinValue, int.MinValue);
 
     private float nextReprioritizeTime = 0f;
 
@@ -237,6 +282,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (targetCamera == null) targetCamera = Camera.main;
 
         SetupModelLoader();
+
+        if (streamTerrain && terrainMaterialTemplate == null)
+        {
+            terrainMaterialTemplate = new Material(Shader.Find("Standard"))
+            {
+                name = "VP Terrain Material"
+            };
+        }
+
+        if (streamTerrain && terrainRoot == null)
+            terrainRoot = new GameObject("VP Terrain Root");
+
         StartCoroutine(InitializeAndStream());
     }
 
@@ -255,6 +312,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
 
         StartCoroutine(CellStreamingLoop());
+        if (streamTerrain)
+            StartCoroutine(TerrainStreamingLoop());
         StartCoroutine(ModelStreamingLoop());
     }
 
@@ -383,6 +442,40 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
     }
 
+    private IEnumerator TerrainStreamingLoop()
+    {
+        while (true)
+        {
+            var camCell = GetCameraCell();
+            bool cellChanged = camCell != lastTerrainCameraCell;
+
+            if (!updateOnlyOnCellChange || cellChanged)
+            {
+                lastTerrainCameraCell = camCell;
+
+                BuildDesiredTerrainTiles(camCell.cx, camCell.cy, loadRadius);
+
+                if (unloadRadius >= 0)
+                    UnloadFarTerrainTiles(camCell.cx, camCell.cy, unloadRadius);
+            }
+
+            while (inFlightTerrainQueries < maxConcurrentTerrainQueries)
+            {
+                var next = DequeueNextTerrainTile();
+                if (next.tx == int.MinValue)
+                    break;
+
+                queuedTerrainTiles.Remove(next);
+                queryingTerrainTiles.Add(next);
+                inFlightTerrainQueries++;
+
+                StartCoroutine(QueryTerrainTile(next.tx, next.tz));
+            }
+
+            yield return null;
+        }
+    }
+
     // -------------------------
     // Cell query + model enqueue
     // -------------------------
@@ -443,6 +536,196 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             float pri = ComputeModelPriority(pos, camPos);
             modelHeap.Push(req, pri);
         }
+    }
+
+    // -------------------------
+    // Terrain query + build
+    // -------------------------
+    private IEnumerator QueryTerrainTile(int tileX, int tileZ)
+    {
+        var terrainTask = vpClient.QueryTerrainAsync(tileX, tileZ, terrainFetchAllNodes);
+        yield return WaitForTask(terrainTask);
+
+        inFlightTerrainQueries--;
+        queryingTerrainTiles.Remove((tileX, tileZ));
+
+        if (terrainTask.IsFaulted || terrainTask.IsCanceled)
+        {
+            string message = terrainTask.IsFaulted
+                ? terrainTask.Exception?.GetBaseException().Message
+                : "Terrain query cancelled";
+            Debug.LogWarning($"[VP] Failed QueryTerrain ({tileX},{tileZ}): {message}");
+            yield break;
+        }
+
+        if (dropTerrainFromUnloadedTiles &&
+            !queuedTerrainTiles.Contains((tileX, tileZ)) &&
+            !desiredTerrainTiles.Contains((tileX, tileZ)))
+        {
+            // Tile was unloaded while we were fetching; drop it silently.
+            yield break;
+        }
+
+        BuildTerrainTile(tileX, tileZ, terrainTask.Result);
+    }
+
+    private void BuildTerrainTile(int tileX, int tileZ, TerrainNode[] nodes)
+    {
+        if (!streamTerrain)
+            return;
+
+        if (terrainRoot == null)
+            terrainRoot = new GameObject("VP Terrain Root");
+
+        var key = (tileX, tileZ);
+
+        if (terrainTiles.TryGetValue(key, out var existing) && existing != null)
+            Destroy(existing);
+
+        var mesh = BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
+        if (mesh == null)
+            return;
+
+        var go = new GameObject($"VP_Terrain_{tileX}_{tileZ}");
+        go.transform.SetParent(terrainRoot.transform, false);
+
+        var mf = go.AddComponent<MeshFilter>();
+        mf.sharedMesh = mesh;
+
+        var mr = go.AddComponent<MeshRenderer>();
+        mr.sharedMaterials = materials.ToArray();
+
+        if (addTerrainColliders)
+        {
+            var mc = go.AddComponent<MeshCollider>();
+            mc.sharedMesh = mesh;
+        }
+
+        terrainTiles[key] = go;
+        loadedTerrainTiles.Add(key);
+    }
+
+    private Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
+    {
+        materials = new List<Material>();
+
+        if (nodes == null || nodes.Length == 0 || terrainTileCellSpan <= 0 || terrainNodeCellSpan <= 0)
+            return null;
+
+        int tileSpan = terrainTileCellSpan;
+        int nodeSpan = terrainNodeCellSpan;
+
+        var cellData = new TerrainCellData[tileSpan, tileSpan];
+
+        foreach (var node in nodes)
+        {
+            for (int cz = 0; cz < nodeSpan; cz++)
+            {
+                for (int cx = 0; cx < nodeSpan; cx++)
+                {
+                    int idx = cz * nodeSpan + cx;
+                    if (node.Cells == null || idx >= node.Cells.Length)
+                        continue;
+
+                    int cellX = node.X * nodeSpan + cx;
+                    int cellZ = node.Z * nodeSpan + cz;
+
+                    if (cellX < 0 || cellX >= tileSpan || cellZ < 0 || cellZ >= tileSpan)
+                        continue;
+
+                    cellData[cellX, cellZ] = new TerrainCellData
+                    {
+                        hasData = true,
+                        height = node.Cells[idx].Height,
+                        texture = node.Cells[idx].Texture,
+                        isHole = node.Cells[idx].IsHole
+                    };
+                }
+            }
+        }
+
+        float cellSizeUnity = GetUnityUnitsPerVpCell();
+        if (cellSizeUnity <= 0f)
+            cellSizeUnity = 1f;
+
+        var vertices = new List<UnityEngine.Vector3>();
+        var normals = new List<UnityEngine.Vector3>();
+        var uvs = new List<UnityEngine.Vector2>();
+        var trianglesByTex = new Dictionary<ushort, List<int>>();
+
+        for (int z = 0; z < tileSpan; z++)
+        {
+            for (int x = 0; x < tileSpan; x++)
+            {
+                var cell = cellData[x, z];
+                if (!cell.hasData || cell.isHole)
+                    continue;
+
+                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
+                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
+                float unityY = cell.height / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+
+                int vStart = vertices.Count;
+
+                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), unityY, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), unityY, unityZ + cellSizeUnity));
+                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ + cellSizeUnity));
+
+                normals.AddRange(new[]
+                {
+                    UnityEngine.Vector3.up,
+                    UnityEngine.Vector3.up,
+                    UnityEngine.Vector3.up,
+                    UnityEngine.Vector3.up
+                });
+
+                uvs.AddRange(new[]
+                {
+                    new UnityEngine.Vector2(0f, 0f),
+                    new UnityEngine.Vector2(1f, 0f),
+                    new UnityEngine.Vector2(1f, 1f),
+                    new UnityEngine.Vector2(0f, 1f)
+                });
+
+                if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
+                {
+                    tris = new List<int>();
+                    trianglesByTex[cell.texture] = tris;
+                }
+
+                tris.AddRange(new[]
+                {
+                    vStart, vStart + 2, vStart + 1,
+                    vStart, vStart + 3, vStart + 2
+                });
+            }
+        }
+
+        if (vertices.Count == 0 || trianglesByTex.Count == 0)
+            return null;
+
+        var mesh = new Mesh
+        {
+            indexFormat = vertices.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16,
+            name = $"VP_Terrain_{tileX}_{tileZ}"
+        };
+
+        mesh.SetVertices(vertices);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.subMeshCount = trianglesByTex.Count;
+
+        int subMesh = 0;
+        foreach (var kvp in trianglesByTex)
+        {
+            mesh.SetTriangles(kvp.Value, subMesh++);
+            materials.Add(GetTerrainMaterial(kvp.Key));
+        }
+
+        mesh.RecalculateBounds();
+        mesh.RecalculateNormals();
+        return mesh;
     }
 
     // -------------------------
@@ -584,6 +867,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             pri -= frustumBonus; // smaller is earlier
 
         return pri;
+    }
+
+    private float ComputeTerrainPriority(int centerCellX, int centerCellY, int tileX, int tileZ)
+    {
+        int tileSpan = Mathf.Max(1, terrainTileCellSpan);
+        float centerX = tileX * tileSpan + tileSpan * 0.5f;
+        float centerZ = tileZ * tileSpan + tileSpan * 0.5f;
+
+        float dx = Mathf.Abs(centerX - centerCellX);
+        float dz = Mathf.Abs(centerZ - centerCellY);
+
+        return Mathf.Max(dx, dz) * 1000f + (dx + dz);
     }
 
     private bool IsInViewFrustum(UnityEngine.Vector3 worldPos)
@@ -752,6 +1047,86 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (cellCount > 0)
             desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+    }
+
+    private void BuildDesiredTerrainTiles(int centerCellX, int centerCellY, int radiusCells)
+    {
+        desiredTerrainTiles.Clear();
+        queuedTerrainHeap.Clear();
+
+        foreach (var queued in queuedTerrainTiles)
+        {
+            float score = ComputeTerrainPriority(centerCellX, centerCellY, queued.tx, queued.tz);
+            queuedTerrainHeap.Push(queued, score);
+        }
+
+        int tileSpan = Mathf.Max(1, terrainTileCellSpan);
+        int minTileX = Mathf.FloorToInt((centerCellX - radiusCells) / (float)tileSpan);
+        int maxTileX = Mathf.FloorToInt((centerCellX + radiusCells) / (float)tileSpan);
+        int minTileZ = Mathf.FloorToInt((centerCellY - radiusCells) / (float)tileSpan);
+        int maxTileZ = Mathf.FloorToInt((centerCellY + radiusCells) / (float)tileSpan);
+
+        for (int tz = minTileZ; tz <= maxTileZ; tz++)
+        {
+            for (int tx = minTileX; tx <= maxTileX; tx++)
+            {
+                var coord = (tx, tz);
+                desiredTerrainTiles.Add(coord);
+
+                if (loadedTerrainTiles.Contains(coord) || queuedTerrainTiles.Contains(coord) || queryingTerrainTiles.Contains(coord))
+                    continue;
+
+                float score = ComputeTerrainPriority(centerCellX, centerCellY, tx, tz);
+                queuedTerrainTiles.Add(coord);
+                queuedTerrainHeap.Push(coord, score);
+            }
+        }
+    }
+
+    private (int tx, int tz) DequeueNextTerrainTile()
+    {
+        (int tx, int tz) best = (int.MinValue, int.MinValue);
+        while (queuedTerrainHeap.Count > 0)
+        {
+            best = queuedTerrainHeap.PopMin();
+            if (!queuedTerrainTiles.Contains(best))
+                continue;
+
+            return best;
+        }
+
+        return best;
+    }
+
+    private void UnloadFarTerrainTiles(int centerCellX, int centerCellY, int radiusCells)
+    {
+        int tileSpan = Mathf.Max(1, terrainTileCellSpan);
+        var toUnload = new List<(int tx, int tz)>();
+
+        foreach (var tile in loadedTerrainTiles)
+        {
+            float centerX = tile.tx * tileSpan + tileSpan * 0.5f;
+            float centerZ = tile.tz * tileSpan + tileSpan * 0.5f;
+
+            float dx = Mathf.Abs(centerX - centerCellX);
+            float dz = Mathf.Abs(centerZ - centerCellY);
+
+            if (Mathf.Max(dx, dz) > radiusCells)
+                toUnload.Add(tile);
+        }
+
+        foreach (var tile in toUnload)
+        {
+            loadedTerrainTiles.Remove(tile);
+            queuedTerrainTiles.Remove(tile);
+            queryingTerrainTiles.Remove(tile);
+            desiredTerrainTiles.Remove(tile);
+
+            if (terrainTiles.TryGetValue(tile, out var go) && go != null)
+                Destroy(go);
+
+            terrainTiles.Remove(tile);
+        }
     }
 
     private struct ActionApplyStep
@@ -970,6 +1345,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
     }
 
+    private float GetUnityUnitsPerVpCell()
+    {
+        return vpUnitsPerCell / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+    }
+
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
         return new UnityEngine.Vector3(
@@ -1003,6 +1383,66 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return Quaternion.Normalize(unityQ);
     }
 
+    private Material GetTerrainMaterial(ushort textureId)
+    {
+        if (terrainMaterialCache.TryGetValue(textureId, out var cached) && cached != null)
+            return cached;
+
+        var mat = terrainMaterialTemplate != null
+            ? new Material(terrainMaterialTemplate)
+            : new Material(Shader.Find("Standard"));
+
+        mat.name = $"Terrain_{textureId}";
+        terrainMaterialCache[textureId] = mat;
+
+        if (!terrainDownloadsInFlight.Contains(textureId))
+            StartCoroutine(DownloadTerrainTexture(textureId, mat));
+
+        return mat;
+    }
+
+    private IEnumerator DownloadTerrainTexture(ushort textureId, Material target)
+    {
+        if (target == null)
+            yield break;
+
+        string basePath = string.IsNullOrWhiteSpace(objectPath) ? null : objectPath.TrimEnd('/') + "/";
+        if (string.IsNullOrEmpty(basePath))
+            yield break;
+
+        terrainDownloadsInFlight.Add(textureId);
+
+        string url = $"{basePath}terrain{textureId}.jpg";
+        using (var req = UnityWebRequestTexture.GetTexture(url))
+        {
+            yield return req.SendWebRequest();
+
+#if UNITY_2020_1_OR_NEWER
+            bool hasError = req.result != UnityWebRequest.Result.Success;
+#else
+            bool hasError = req.isNetworkError || req.isHttpError;
+#endif
+
+            if (hasError)
+            {
+                Debug.LogWarning($"[VP] Failed to download terrain texture {textureId} from {url}: {req.error}");
+                terrainDownloadsInFlight.Remove(textureId);
+                yield break;
+            }
+
+            var tex = DownloadHandlerTexture.GetContent(req);
+            if (tex != null)
+            {
+                tex.wrapMode = TextureWrapMode.Repeat;
+                target.mainTexture = tex;
+                if (target.HasProperty("_BaseMap"))
+                    target.SetTexture("_BaseMap", tex);
+            }
+        }
+
+        terrainDownloadsInFlight.Remove(textureId);
+    }
+
     private void OnGUI()
     {
         if (!showDebugOverlay) return;
@@ -1012,6 +1452,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+        if (streamTerrain)
+            GUI.Label(new Rect(10, 120, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
     }
 
     private void OnDestroy()
