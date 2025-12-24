@@ -675,13 +675,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 return true;
             }
 
-            int localCX = Mathf.Clamp(worldCX - tileX * tileSpan, 0, tileSpan - 1);
-            int localCZ = Mathf.Clamp(worldCZ - tileZ * tileSpan, 0, tileSpan - 1);
-            var c = cellData[localCX, localCZ];
-            if (c.hasData && !c.isHole)
+            int localCX = worldCX - tileX * tileSpan;
+            int localCZ = worldCZ - tileZ * tileSpan;
+            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
             {
-                h = c.height;
-                return true;
+                var c = cellData[localCX, localCZ];
+                if (c.hasData && !c.isHole)
+                {
+                    h = c.height;
+                    return true;
+                }
             }
 
             h = 0f;
@@ -696,14 +699,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 int worldCX = tileX * tileSpan + vx;
                 int worldCZ = tileZ * tileSpan + vz;
 
-                // Prefer exact world-cell height for this vertex
-                if (TryGetCellHeight(worldCX, worldCZ, out float exactH))
-                {
-                    heightGrid[vx, vz] = exactH;
-                    continue;
-                }
-
-                // Fallback: average 4 surrounding world cells
+                // Average the four surrounding cells (from cache or current tile)
                 int worldCX0 = worldCX - 1;
                 int worldCZ0 = worldCZ - 1;
 
@@ -730,11 +726,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 }
                 else
                 {
-                    // Last resort: clamp into this tile
-                    int localCX = Mathf.Clamp(worldCX, tileX * tileSpan, tileX * tileSpan + tileSpan - 1);
-                    int localCZ = Mathf.Clamp(worldCZ, tileZ * tileSpan, tileZ * tileSpan + tileSpan - 1);
-                    TryGetCellHeight(localCX, localCZ, out float clampH);
-                    heightGrid[vx, vz] = clampH;
+                    // Last resort: nearest in-tile cell
+                    int localCX = Mathf.Clamp(worldCX - tileX * tileSpan, 0, tileSpan - 1);
+                    int localCZ = Mathf.Clamp(worldCZ - tileZ * tileSpan, 0, tileSpan - 1);
+                    var c = cellData[localCX, localCZ];
+                    heightGrid[vx, vz] = c.hasData && !c.isHole ? c.height : 0f;
                 }
             }
         }
