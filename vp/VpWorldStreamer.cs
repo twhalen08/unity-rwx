@@ -104,6 +104,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public bool showDebugOverlay = true;
     public bool logCreateActions = false;
     public bool logActivateActions = false;
+    public bool logTerrainEdges = false;
 
     private VirtualParadiseClient vpClient;
 
@@ -964,6 +965,172 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Utilities
     // -------------------------
+    private Mesh BuildTerrainMesh(
+        int tileX,
+        int tileY,
+        int vertsPerSide,
+        float tileSize,
+        Func<int, int, float?> sampleCachedHeight,
+        Func<int, int, float?> sampleFallbackHeight,
+        bool drawEdgeLines = true)
+    {
+        vertsPerSide = Mathf.Max(2, vertsPerSide);
+
+        float step = tileSize / (vertsPerSide - 1);
+        int vertexCount = vertsPerSide * vertsPerSide;
+        var vertices = new UnityEngine.Vector3[vertexCount];
+        var uvs = new UnityEngine.Vector2[vertexCount];
+        var triangles = new int[(vertsPerSide - 1) * (vertsPerSide - 1) * 6];
+
+        int exactVertexCount = 0;
+        int fallbackVertexCount = 0;
+        float minHeight = float.PositiveInfinity;
+        float maxHeight = float.NegativeInfinity;
+
+        var leftEdgeHeights = new float[vertsPerSide];
+        var rightEdgeHeights = new float[vertsPerSide];
+        var bottomEdgeHeights = new float[vertsPerSide];
+        var topEdgeHeights = new float[vertsPerSide];
+
+        for (int z = 0; z < vertsPerSide; z++)
+        {
+            for (int x = 0; x < vertsPerSide; x++)
+            {
+                int vertexIndex = z * vertsPerSide + x;
+                int worldCellX = tileX + x;
+                int worldCellY = tileY + z;
+
+                float height = 0f;
+                float? cached = sampleCachedHeight?.Invoke(worldCellX, worldCellY);
+                if (cached.HasValue)
+                {
+                    height = cached.Value;
+                    exactVertexCount++;
+                }
+                else
+                {
+                    fallbackVertexCount++;
+                    float? fallback = sampleFallbackHeight?.Invoke(worldCellX, worldCellY);
+                    if (fallback.HasValue)
+                    {
+                        height = fallback.Value;
+                    }
+                }
+
+                if (height < minHeight) minHeight = height;
+                if (height > maxHeight) maxHeight = height;
+
+                vertices[vertexIndex] = new UnityEngine.Vector3(
+                    tileX * tileSize + x * step,
+                    height,
+                    tileY * tileSize + z * step);
+
+                uvs[vertexIndex] = new UnityEngine.Vector2(
+                    (float)x / (vertsPerSide - 1),
+                    (float)z / (vertsPerSide - 1));
+
+                if (x == 0) leftEdgeHeights[z] = height;
+                if (x == vertsPerSide - 1) rightEdgeHeights[z] = height;
+                if (z == 0) bottomEdgeHeights[x] = height;
+                if (z == vertsPerSide - 1) topEdgeHeights[x] = height;
+            }
+        }
+
+        int tri = 0;
+        for (int z = 0; z < vertsPerSide - 1; z++)
+        {
+            for (int x = 0; x < vertsPerSide - 1; x++)
+            {
+                int topLeft = z * vertsPerSide + x;
+                int bottomLeft = (z + 1) * vertsPerSide + x;
+
+                triangles[tri++] = topLeft;
+                triangles[tri++] = bottomLeft;
+                triangles[tri++] = topLeft + 1;
+
+                triangles[tri++] = topLeft + 1;
+                triangles[tri++] = bottomLeft;
+                triangles[tri++] = bottomLeft + 1;
+            }
+        }
+
+        var mesh = new Mesh
+        {
+            vertices = vertices,
+            uv = uvs,
+            triangles = triangles,
+            name = $"VP_Terrain_{tileX}_{tileY}"
+        };
+
+        mesh.RecalculateNormals();
+
+        if (logTerrainEdges)
+        {
+            int leftRightMismatchSegments = CountEdgeMismatches(leftEdgeHeights, rightEdgeHeights);
+            int topBottomMismatchSegments = CountEdgeMismatches(bottomEdgeHeights, topEdgeHeights);
+
+            Debug.Log(
+                $"[VP Terrain] Tile ({tileX},{tileY}) exact={exactVertexCount} fallback={fallbackVertexCount} " +
+                $"minH={minHeight:F3} maxH={maxHeight:F3} lrMismatch={leftRightMismatchSegments} tbMismatch={topBottomMismatchSegments}");
+
+            if (drawEdgeLines)
+            {
+                if (leftRightMismatchSegments > 0)
+                {
+                    DrawTerrainEdge(vertices, vertsPerSide, 0, true, Color.magenta);
+                    DrawTerrainEdge(vertices, vertsPerSide, vertsPerSide - 1, true, Color.magenta);
+                }
+
+                if (topBottomMismatchSegments > 0)
+                {
+                    DrawTerrainEdge(vertices, vertsPerSide, 0, false, Color.cyan);
+                    DrawTerrainEdge(vertices, vertsPerSide, vertsPerSide - 1, false, Color.cyan);
+                }
+            }
+        }
+
+        return mesh;
+    }
+
+    private int CountEdgeMismatches(float[] edgeA, float[] edgeB, float epsilon = 0.001f)
+    {
+        if (edgeA == null || edgeB == null || edgeA.Length != edgeB.Length)
+            return 0;
+
+        int mismatches = 0;
+        for (int i = 0; i < edgeA.Length; i++)
+        {
+            if (Mathf.Abs(edgeA[i] - edgeB[i]) > epsilon)
+                mismatches++;
+        }
+
+        return mismatches;
+    }
+
+    private void DrawTerrainEdge(UnityEngine.Vector3[] vertices, int vertsPerSide, int fixedIndex, bool verticalEdge, Color color)
+    {
+        if (vertices == null || vertices.Length == 0)
+            return;
+
+        if (verticalEdge)
+        {
+            for (int z = 0; z < vertsPerSide - 1; z++)
+            {
+                int aIndex = z * vertsPerSide + fixedIndex;
+                int bIndex = (z + 1) * vertsPerSide + fixedIndex;
+                Debug.DrawLine(vertices[aIndex], vertices[bIndex], color, 2f);
+            }
+        }
+        else
+        {
+            int row = fixedIndex * vertsPerSide;
+            for (int x = 0; x < vertsPerSide - 1; x++)
+            {
+                Debug.DrawLine(vertices[row + x], vertices[row + x + 1], color, 2f);
+            }
+        }
+    }
+
     private IEnumerator WaitForTask(Task task)
     {
         while (!task.IsCompleted)
