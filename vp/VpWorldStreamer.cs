@@ -667,55 +667,67 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (cellSizeUnity <= 0f)
             cellSizeUnity = 1f;
 
+        bool TryGetCellHeight(int worldCX, int worldCZ, out float h)
+        {
+            if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
+            {
+                h = cachedCell.height;
+                return true;
+            }
+
+            int localCX = worldCX - tileX * tileSpan;
+            int localCZ = worldCZ - tileZ * tileSpan;
+            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
+            {
+                var c = cellData[localCX, localCZ];
+                if (c.hasData && !c.isHole)
+                {
+                    h = c.height;
+                    return true;
+                }
+            }
+
+            h = 0f;
+            return false;
+        }
+
         float[,] heightGrid = new float[tileSpan + 1, tileSpan + 1];
         for (int vx = 0; vx <= tileSpan; vx++)
         {
             for (int vz = 0; vz <= tileSpan; vz++)
             {
-                int cx = Mathf.Clamp(vx, 0, tileSpan - 1);
-                int cz = Mathf.Clamp(vz, 0, tileSpan - 1);
-                int worldCX = tileX * tileSpan + cx;
-                int worldCZ = tileZ * tileSpan + cz;
+                int worldCX0 = tileX * tileSpan + vx - 1;
+                int worldCZ0 = tileZ * tileSpan + vz - 1;
 
-                // Prefer cached world cell height to keep seams aligned across tiles
-                if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
-                {
-                    heightGrid[vx, vz] = cachedCell.height;
-                    continue;
-                }
+                float sum = 0f;
+                int count = 0;
 
-                var c = cellData[cx, cz];
-                if (c.hasData && !c.isHole)
+                void Acc(int wx, int wz)
                 {
-                    heightGrid[vx, vz] = c.height;
-                    continue;
-                }
-
-                // fallback to nearest valid neighbor inside tile
-                bool found = false;
-                for (int radius = 1; radius <= 2 && !found; radius++)
-                {
-                    for (int dz = -radius; dz <= radius && !found; dz++)
+                    if (wx < 0 || wz < 0) return;
+                    if (TryGetCellHeight(wx, wz, out float hh))
                     {
-                        for (int dx = -radius; dx <= radius && !found; dx++)
-                        {
-                            int nx = cx + dx;
-                            int nz = cz + dz;
-                            if (nx < 0 || nx >= tileSpan || nz < 0 || nz >= tileSpan)
-                                continue;
-
-                            var nc = cellData[nx, nz];
-                            if (nc.hasData && !nc.isHole)
-                            {
-                                heightGrid[vx, vz] = nc.height;
-                                found = true;
-                            }
-                        }
+                        sum += hh;
+                        count++;
                     }
                 }
 
-                if (!found)
-                    heightGrid[vx, vz] = 0f;
+                Acc(worldCX0, worldCZ0);
+                Acc(worldCX0 + 1, worldCZ0);
+                Acc(worldCX0, worldCZ0 + 1);
+                Acc(worldCX0 + 1, worldCZ0 + 1);
+
+                if (count == 0)
+                {
+                    if (TryGetCellHeight(worldCX0 + 1, worldCZ0 + 1, out float fallbackH))
+                        heightGrid[vx, vz] = fallbackH;
+                    else
+                        heightGrid[vx, vz] = 0f;
+                }
+                else
+                {
+                    heightGrid[vx, vz] = sum / count;
+                }
             }
         }
 
