@@ -1429,7 +1429,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         terrainDownloadsInFlight.Add(textureId);
 
-        string url = $"{basePath}terrain{textureId}.jpg";
+        string url = $"{basePath}textures/terrain{textureId}.jpg";
         using (var req = UnityWebRequestTexture.GetTexture(url))
         {
             yield return req.SendWebRequest();
