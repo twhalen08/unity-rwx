@@ -648,10 +648,50 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (cellSizeUnity <= 0f)
             cellSizeUnity = 1f;
 
-        var vertices = new List<UnityEngine.Vector3>();
-        var normals = new List<UnityEngine.Vector3>();
-        var uvs = new List<UnityEngine.Vector2>();
+        float[,] heightGrid = new float[tileSpan + 1, tileSpan + 1];
+        for (int vx = 0; vx <= tileSpan; vx++)
+        {
+            for (int vz = 0; vz <= tileSpan; vz++)
+            {
+                float sum = 0f;
+                int count = 0;
+
+                void Accumulate(int cx, int cz)
+                {
+                    if (cx < 0 || cx >= tileSpan || cz < 0 || cz >= tileSpan)
+                        return;
+
+                    var c = cellData[cx, cz];
+                    if (!c.hasData || c.isHole) return;
+                    sum += c.height;
+                    count++;
+                }
+
+                Accumulate(vx, vz);
+                Accumulate(vx - 1, vz);
+                Accumulate(vx, vz - 1);
+                Accumulate(vx - 1, vz - 1);
+
+                heightGrid[vx, vz] = count > 0 ? sum / count : 0f;
+            }
+        }
+
+        var vertices = new List<UnityEngine.Vector3>((tileSpan + 1) * (tileSpan + 1));
+        var uvs = new List<UnityEngine.Vector2>((tileSpan + 1) * (tileSpan + 1));
         var trianglesByTex = new Dictionary<ushort, List<int>>();
+
+        for (int vz = 0; vz <= tileSpan; vz++)
+        {
+            for (int vx = 0; vx <= tileSpan; vx++)
+            {
+                float unityX = (tileX * tileSpan + vx) * cellSizeUnity;
+                float unityZ = (tileZ * tileSpan + vz) * cellSizeUnity;
+                float unityY = heightGrid[vx, vz] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+
+                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ));
+                uvs.Add(new UnityEngine.Vector2(vx, vz));
+            }
+        }
 
         for (int z = 0; z < tileSpan; z++)
         {
@@ -661,32 +701,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (!cell.hasData || cell.isHole)
                     continue;
 
-                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
-                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
-                float unityY = cell.height / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
-
-                int vStart = vertices.Count;
-
-                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), unityY, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), unityY, unityZ + cellSizeUnity));
-                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ + cellSizeUnity));
-
-                normals.AddRange(new[]
-                {
-                    UnityEngine.Vector3.up,
-                    UnityEngine.Vector3.up,
-                    UnityEngine.Vector3.up,
-                    UnityEngine.Vector3.up
-                });
-
-                uvs.AddRange(new[]
-                {
-                    new UnityEngine.Vector2(0f, 0f),
-                    new UnityEngine.Vector2(1f, 0f),
-                    new UnityEngine.Vector2(1f, 1f),
-                    new UnityEngine.Vector2(0f, 1f)
-                });
+                int v00 = z * (tileSpan + 1) + x;
+                int v10 = v00 + 1;
+                int v01 = v00 + (tileSpan + 1);
+                int v11 = v01 + 1;
 
                 if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
                 {
@@ -696,8 +714,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                 tris.AddRange(new[]
                 {
-                    vStart, vStart + 2, vStart + 1,
-                    vStart, vStart + 3, vStart + 2
+                    v00, v10, v01,
+                    v10, v11, v01
                 });
             }
         }
@@ -712,7 +730,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         };
 
         mesh.SetVertices(vertices);
-        mesh.SetNormals(normals);
         mesh.SetUVs(0, uvs);
         mesh.subMeshCount = trianglesByTex.Count;
 
