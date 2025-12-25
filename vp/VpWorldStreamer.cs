@@ -148,6 +148,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly HashSet<ushort> terrainDownloadsInFlight = new();
     private readonly HashSet<(int tx, int tz)> desiredTerrainTiles = new();
     private readonly Dictionary<(int cx, int cz), TerrainCellCacheEntry> terrainCellCache = new();
+    private readonly Dictionary<(int tx, int tz), TerrainNode[]> terrainTileNodes = new();
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
 
@@ -577,7 +578,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         BuildTerrainTile(tileX, tileZ, terrainTask.Result);
     }
 
-    private void BuildTerrainTile(int tileX, int tileZ, TerrainNode[] nodes)
+    private void BuildTerrainTile(int tileX, int tileZ, TerrainNode[] nodes, bool rebuildNeighbors = true)
     {
         if (!streamTerrain)
             return;
@@ -586,6 +587,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             terrainRoot = new GameObject("VP Terrain Root");
 
         var key = (tileX, tileZ);
+        terrainTileNodes[key] = nodes;
 
         if (terrainTiles.TryGetValue(key, out var existing) && existing != null)
             Destroy(existing);
@@ -611,6 +613,26 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         terrainTiles[key] = go;
         loadedTerrainTiles.Add(key);
+
+        if (rebuildNeighbors)
+        {
+            RebuildNeighborTile(tileX - 1, tileZ);
+            RebuildNeighborTile(tileX + 1, tileZ);
+            RebuildNeighborTile(tileX, tileZ - 1);
+            RebuildNeighborTile(tileX, tileZ + 1);
+        }
+    }
+
+    private void RebuildNeighborTile(int tileX, int tileZ)
+    {
+        var key = (tileX, tileZ);
+        if (!terrainTileNodes.TryGetValue(key, out var nodes))
+            return;
+
+        if (!loadedTerrainTiles.Contains(key))
+            return;
+
+        BuildTerrainTile(tileX, tileZ, nodes, false);
     }
 
     private Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
@@ -1195,6 +1217,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             queuedTerrainTiles.Remove(tile);
             queryingTerrainTiles.Remove(tile);
             desiredTerrainTiles.Remove(tile);
+            terrainTileNodes.Remove(tile);
+
+            // Remove cached heights for this tile
+            int tileSpan = Mathf.Max(1, terrainTileCellSpan);
+            for (int cz = 0; cz < tileSpan; cz++)
+            {
+                for (int cx = 0; cx < tileSpan; cx++)
+                {
+                    terrainCellCache.Remove((tile.tx * tileSpan + cx, tile.tz * tileSpan + cz));
+                }
+            }
 
             if (terrainTiles.TryGetValue(tile, out var go) && go != null)
                 Destroy(go);
