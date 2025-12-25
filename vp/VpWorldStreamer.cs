@@ -723,8 +723,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 int ownerCX = worldCX - 1;
                 int ownerCZ = worldCZ - 1;
 
-                // Use a deterministic owner cell (lower-left of the vertex) to guarantee both tiles pick the same height
-                if (TryGetCellHeight(ownerCX, ownerCZ, out float hExact))
+                // Prefer deterministic owner first, then adjacent candidates around the corner
+                float hExact;
+                if (TryGetCellHeight(ownerCX, ownerCZ, out hExact) ||
+                    TryGetCellHeight(ownerCX + 1, ownerCZ, out hExact) ||
+                    TryGetCellHeight(ownerCX, ownerCZ + 1, out hExact) ||
+                    TryGetCellHeight(ownerCX + 1, ownerCZ + 1, out hExact))
                 {
                     heightGrid[vx, vz] = hExact;
                     continue;
