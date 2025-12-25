@@ -117,6 +117,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Optional material template for terrain. If null a Standard material is created.")]
     public Material terrainMaterialTemplate;
 
+    [Tooltip("Vertical offset applied to all generated terrain vertices (negative to lower).")]
+    public float terrainHeightOffset = -0.01f;
+
     [Tooltip("Maximum terrain tile queries in-flight at once.")]
     public int maxConcurrentTerrainQueries = 1;
 
@@ -196,6 +199,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public bool isHole;
         public float height;
         public ushort texture;
+        public byte rotation;
     }
 
     private struct TerrainCellCacheEntry
@@ -668,7 +672,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                         hasData = true,
                         height = node.Cells[idx].Height,
                         texture = node.Cells[idx].Texture,
-                        isHole = node.Cells[idx].IsHole
+                        isHole = node.Cells[idx].IsHole,
+                        rotation = ExtractTerrainRotation(node.Cells[idx])
                     };
 
                     cellData[cellX, cellZ] = cell;
@@ -759,22 +764,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         }
 
-        var vertices = new List<UnityEngine.Vector3>((tileSpan + 1) * (tileSpan + 1));
-        var uvs = new List<UnityEngine.Vector2>((tileSpan + 1) * (tileSpan + 1));
+        var vertices = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
+        var uvs = new List<UnityEngine.Vector2>(tileSpan * tileSpan * 4);
         var trianglesByTex = new Dictionary<ushort, List<int>>();
-
-        for (int vz = 0; vz <= tileSpan; vz++)
-        {
-            for (int vx = 0; vx <= tileSpan; vx++)
-            {
-                float unityX = (tileX * tileSpan + vx) * cellSizeUnity;
-                float unityZ = (tileZ * tileSpan + vz) * cellSizeUnity;
-                float unityY = heightGrid[vx, vz] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
-
-                vertices.Add(new UnityEngine.Vector3(-unityX, unityY, unityZ));
-                uvs.Add(new UnityEngine.Vector2(tileSpan - vx, tileSpan - vz));
-            }
-        }
 
         for (int z = 0; z < tileSpan; z++)
         {
@@ -784,10 +776,30 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (!cell.hasData || cell.isHole)
                     continue;
 
-                int v00 = z * (tileSpan + 1) + x;
-                int v10 = v00 + 1;
-                int v01 = v00 + (tileSpan + 1);
-                int v11 = v01 + 1;
+                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
+                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
+
+                float h00 = heightGrid[x, z] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
+                float h10 = heightGrid[x + 1, z] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
+                float h01 = heightGrid[x, z + 1] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
+                float h11 = heightGrid[x + 1, z + 1] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
+
+                int vStart = vertices.Count;
+                vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h10, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-unityX, h01, unityZ + cellSizeUnity));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h11, unityZ + cellSizeUnity));
+
+                var baseUvs = new[]
+                {
+                    new UnityEngine.Vector2(0f, 0f),
+                    new UnityEngine.Vector2(1f, 0f),
+                    new UnityEngine.Vector2(0f, 1f),
+                    new UnityEngine.Vector2(1f, 1f)
+                };
+
+                ApplyRotationToUvs(baseUvs, cell.rotation);
+                uvs.AddRange(baseUvs);
 
                 if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
                 {
@@ -797,8 +809,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                 tris.AddRange(new[]
                 {
-                    v00, v10, v01,
-                    v10, v11, v01
+                    vStart, vStart + 1, vStart + 2,
+                    vStart + 1, vStart + 3, vStart + 2
                 });
             }
         }
@@ -1494,6 +1506,40 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return Quaternion.Normalize(unityQ);
     }
 
+    private byte ExtractTerrainRotation(object cell)
+    {
+        if (cell == null) return 0;
+
+        var type = cell.GetType();
+        var rotProp = type.GetProperty("Rotation") ?? type.GetProperty("TextureRotation");
+        if (rotProp != null)
+        {
+            try
+            {
+                var val = rotProp.GetValue(cell);
+                if (val is byte b) return b;
+                if (val is int i) return (byte)i;
+            }
+            catch { }
+        }
+
+        return 0;
+    }
+
+    private void ApplyRotationToUvs(UnityEngine.Vector2[] uvArray, byte rotation)
+    {
+        int r = rotation % 4;
+        if (r == 0) return;
+
+        for (int i = 0; i < uvArray.Length; i++)
+        {
+            var uv = uvArray[i] - new UnityEngine.Vector2(0.5f, 0.5f);
+            for (int step = 0; step < r; step++)
+                uv = new UnityEngine.Vector2(uv.y, -uv.x); // 90° clockwise
+            uvArray[i] = uv + new UnityEngine.Vector2(0.5f, 0.5f);
+        }
+    }
+
     private Material GetTerrainMaterial(ushort textureId)
     {
         if (terrainMaterialCache.TryGetValue(textureId, out var cached) && cached != null)
@@ -1505,6 +1551,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         mat.name = $"Terrain_{textureId}";
         terrainMaterialCache[textureId] = mat;
+
+        // Force smoothness down to match VP terrain visuals
+        if (mat.HasProperty("_Glossiness"))
+            mat.SetFloat("_Glossiness", 0f);
+        if (mat.HasProperty("_Smoothness"))
+            mat.SetFloat("_Smoothness", 0f);
 
         if (!terrainDownloadsInFlight.Contains(textureId))
             StartCoroutine(DownloadTerrainTexture(textureId, mat));
