@@ -272,11 +272,17 @@ namespace RWXLoader
                 {
                     // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
                     // This prevents cross-contamination between different materials
-                    string rendererName = renderer.gameObject.name;
                     string expectedTextureName = rwxMaterial.texture ?? "default";
+                    string rendererName = renderer.gameObject.name;
+                    var rwxTag = renderer.GetComponent<RWXTag>();
+                    int rendererTag = rwxTag != null ? rwxTag.TagId : 0;
+                    string rendererTextureName = rwxTag != null ? (rwxTag.TextureName ?? rendererName) : rendererName;
+
+                    bool nameMatches = rendererTextureName == expectedTextureName;
+                    bool tagMatches = rendererTag == rwxMaterial.tag;
                     
-                    // Only update if the renderer name matches the texture name (this indicates it's the right material group)
-                    if (rendererName == expectedTextureName)
+                    // Only update if the renderer matches both texture and tag
+                    if (nameMatches && tagMatches)
                     {
                         // Update the renderer's material instance with the new texture
                         Material rendererMaterial = renderer.material;

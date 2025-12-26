@@ -18,6 +18,7 @@ namespace RWXLoader
         private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", DefaultRegexOptions);
         private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
+        private readonly Regex tagRegex = new Regex(@"^\s*tag\s+([0-9]+).*$", DefaultRegexOptions);
         private readonly Regex surfaceRegex = new Regex(@"^\s*(surface)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex ambientRegex = new Regex(@"^\s*(ambient)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
         private readonly Regex diffuseRegex = new Regex(@"^\s*(diffuse)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
@@ -90,7 +91,8 @@ namespace RWXLoader
                 { "jointtransformbegin", ProcessJointTransformBegin },
                 { "jointtransformend", ProcessJointTransformEnd },
                 { "identityjoint", ProcessIdentityJoint },
-                { "rotatejointtm", ProcessRotateJointTM }
+                { "rotatejointtm", ProcessRotateJointTM },
+                { "tag", ProcessTag }
             };
         }
 
@@ -164,6 +166,7 @@ namespace RWXLoader
             if (ProcessLightSampling(line, context)) return;
             if (ProcessGeometrySampling(line, context)) return;
             if (ProcessTextureModes(line, context)) return;
+            if (ProcessTag(line, context)) return;
             if (ProcessClumpBegin(line, context)) return;
             if (ProcessClumpEnd(line, context)) return;
             if (ProcessTransformBegin(line, context)) return;
@@ -560,6 +563,25 @@ namespace RWXLoader
                 if (modes.Contains("lit")) context.currentMaterial.textureModes.Add(TextureMode.Lit);
                 if (modes.Contains("foreshorten")) context.currentMaterial.textureModes.Add(TextureMode.Foreshorten);
                 if (modes.Contains("filter")) context.currentMaterial.textureModes.Add(TextureMode.Filter);
+            }
+
+            return true;
+        }
+
+        private bool ProcessTag(string line, RWXParseContext context)
+        {
+            var match = tagRegex.Match(line);
+            if (!match.Success) return false;
+
+            if (int.TryParse(match.Groups[1].Value, out int tagValue))
+            {
+                // If geometry is already being built with a different tag, start a new mesh
+                meshBuilder.CheckMaterialChange(context);
+
+                context.currentMaterial.tag = tagValue;
+                context.currentMeshMaterial = context.currentMaterial.Clone();
+
+                Debug.Log($"🏷️ TAG SET: {tagValue}");
             }
 
             return true;
