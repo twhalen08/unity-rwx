@@ -725,15 +725,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             {
                 int worldCX = tileX * tileSpan + vx;
                 int worldCZ = tileZ * tileSpan + vz;
-                int ownerCX = worldCX - 1;
-                int ownerCZ = worldCZ - 1;
+                int ownerCX = worldCX;
+                int ownerCZ = worldCZ;
 
-                // Prefer deterministic owner first, then adjacent candidates around the corner
+                // Prefer deterministic owner first, then the three adjacent corner cells
                 float hExact;
                 if (TryGetCellHeight(ownerCX, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX + 1, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX, ownerCZ + 1, out hExact) ||
-                    TryGetCellHeight(ownerCX + 1, ownerCZ + 1, out hExact))
+                    TryGetCellHeight(ownerCX - 1, ownerCZ, out hExact) ||
+                    TryGetCellHeight(ownerCX, ownerCZ - 1, out hExact) ||
+                    TryGetCellHeight(ownerCX - 1, ownerCZ - 1, out hExact))
                 {
                     heightGrid[vx, vz] = hExact;
                     continue;
