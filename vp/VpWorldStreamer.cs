@@ -1566,11 +1566,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         for (int i = 0; i < r; i++)
         {
-            // 90° clockwise rotation: (u,v) -> (v, 1-u)
-            uv0 = new UnityEngine.Vector2(uv0.y, 1f - uv0.x);
-            uv1 = new UnityEngine.Vector2(uv1.y, 1f - uv1.x);
-            uv2 = new UnityEngine.Vector2(uv2.y, 1f - uv2.x);
-            uv3 = new UnityEngine.Vector2(uv3.y, 1f - uv3.x);
+            // 90° counter‑clockwise rotation: (u,v) -> (1-v, u)
+            uv0 = new UnityEngine.Vector2(1f - uv0.y, uv0.x);
+            uv1 = new UnityEngine.Vector2(1f - uv1.y, uv1.x);
+            uv2 = new UnityEngine.Vector2(1f - uv2.y, uv2.x);
+            uv3 = new UnityEngine.Vector2(1f - uv3.y, uv3.x);
         }
     }
 
