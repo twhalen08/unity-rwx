@@ -1277,6 +1277,22 @@ namespace RWXLoader
             return token.Length > 0;
         }
 
+        private void ApplyTag(int tagValue, RWXParseContext context)
+        {
+            meshBuilder.CheckMaterialChange(context);
+
+            context.currentMaterial.tag = tagValue;
+            context.currentMeshMaterial = context.currentMaterial.Clone();
+
+            if (context.currentObject != null)
+            {
+                var rwxTag = context.currentObject.GetComponent<RWXTag>();
+                if (rwxTag == null) rwxTag = context.currentObject.AddComponent<RWXTag>();
+                rwxTag.TagId = tagValue;
+                rwxTag.TextureName = context.currentMaterial?.texture;
+            }
+        }
+
         private int? TryReadInlineTag(ReadOnlySpan<char> line, ref int index)
         {
             int scanIndex = index;
