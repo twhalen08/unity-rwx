@@ -12,9 +12,9 @@ namespace RWXLoader
 
         // Regex patterns for parsing RWX files
         private readonly Regex vertexRegex = new Regex(@"^\s*(vertex|vertexext)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3})\s*(uv((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){2}))?.*$", DefaultRegexOptions);
-        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
-        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
-        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s+([0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex triangleRegex = new Regex(@"^\s*(triangle|triangleext)((\s+([0-9]+)){3})(\s+tag\s+(?<tag>[0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex quadRegex = new Regex(@"^\s*(quad|quadext)((\s+([0-9]+)){4})(\s+tag\s+(?<tag>[0-9]+))?.*$", DefaultRegexOptions);
+        private readonly Regex polygonRegex = new Regex(@"^\s*(polygon|polygonext)(\s+[0-9]+)((\s+[0-9]+)+)(\s+tag\s+(?<tag>[0-9]+))?.*$", DefaultRegexOptions);
         private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", DefaultRegexOptions);
         private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
@@ -39,9 +39,11 @@ namespace RWXLoader
         private readonly Regex jointtransformEndRegex = new Regex(@"^\s*(jointtransformend).*$", DefaultRegexOptions);
         private readonly Regex identityJointRegex = new Regex(@"^\s*(identityjoint).*$", DefaultRegexOptions);
         private readonly Regex rotateJointTMRegex = new Regex(@"^\s*(rotatejointtm)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){4}).*$", DefaultRegexOptions);
+        private readonly Regex tagCommandRegex = new Regex(@"^\s*tag\s+(?<tag>[+-]?[0-9]+).*$", DefaultRegexOptions);
         private readonly Regex floatRegex = new Regex(@"([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+][0-9]+)?)", DefaultRegexOptions);
         private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", DefaultRegexOptions);
         private static readonly Regex textureAttributeRegex = new Regex(@"\b(mask|normal|specular)\s+([A-Za-z0-9_\-\/:.]+)", DefaultRegexOptions);
+        private static readonly Regex tagAttributeRegex = new Regex(@"\btag\s*=?\s*([0-9]+)", DefaultRegexOptions);
 
         internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
 
@@ -90,7 +92,8 @@ namespace RWXLoader
                 { "jointtransformbegin", ProcessJointTransformBegin },
                 { "jointtransformend", ProcessJointTransformEnd },
                 { "identityjoint", ProcessIdentityJoint },
-                { "rotatejointtm", ProcessRotateJointTM }
+                { "rotatejointtm", ProcessRotateJointTM },
+                { "tag", ProcessTag }
             };
         }
 
@@ -177,6 +180,21 @@ namespace RWXLoader
             if (ProcessJointTransformEnd(line, context)) return;
             if (ProcessIdentityJoint(line, context)) return;
             if (ProcessRotateJointTM(line, context)) return;
+            if (ProcessTag(line, context)) return;
+        }
+
+        private void ApplyGeometryWithOptionalTag(RWXParseContext context, int? tagOverride, Action geometryAction)
+        {
+            if (!tagOverride.HasValue)
+            {
+                geometryAction();
+                return;
+            }
+
+            int previousTag = context.currentMaterial.tag;
+            context.currentMaterial.tag = tagOverride.Value;
+            geometryAction();
+            context.currentMaterial.tag = previousTag;
         }
 
         private bool ProcessVertex(string line, RWXParseContext context)
@@ -272,9 +290,10 @@ namespace RWXLoader
             int a = int.Parse(intMatches[0].Value) - 1; // RWX uses 1-based indexing
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
+            int? tagOverride = match.Groups["tag"].Success ? int.Parse(match.Groups["tag"].Value) : (int?)null;
 
             // Use original triangle order since coordinate conversion is handled at matrix level
-            meshBuilder.CreateTriangle(context, a, b, c);
+            ApplyGeometryWithOptionalTag(context, tagOverride, () => meshBuilder.CreateTriangle(context, a, b, c));
             return true;
         }
 
@@ -295,9 +314,10 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
             int d = int.Parse(intMatches[3].Value) - 1;
+            int? tagOverride = match.Groups["tag"].Success ? int.Parse(match.Groups["tag"].Value) : (int?)null;
 
             // Use original quad order since we're handling coordinate conversion at root level
-            meshBuilder.CreateQuad(context, a, b, c, d);
+            ApplyGeometryWithOptionalTag(context, tagOverride, () => meshBuilder.CreateQuad(context, a, b, c, d));
             return true;
         }
 
@@ -322,9 +342,24 @@ namespace RWXLoader
                 indices.Add(int.Parse(intMatches[i].Value) - 1);
             }
 
+            int? tagOverride = match.Groups["tag"].Success ? int.Parse(match.Groups["tag"].Value) : (int?)null;
+
             // Use original polygon order since we're handling coordinate conversion at root level
             // indices.Reverse(); // Removed - no longer needed
-            meshBuilder.CreatePolygon(context, indices);
+            ApplyGeometryWithOptionalTag(context, tagOverride, () => meshBuilder.CreatePolygon(context, indices));
+            return true;
+        }
+
+        private bool ProcessTag(string line, RWXParseContext context)
+        {
+            var match = tagCommandRegex.Match(line);
+            if (!match.Success) return false;
+
+            if (int.TryParse(match.Groups["tag"].Value, out int tagValue))
+            {
+                context.currentMaterial.tag = tagValue;
+            }
+
             return true;
         }
 
@@ -374,6 +409,12 @@ namespace RWXLoader
                         context.currentMaterial.specularMap = value;
                         break;
                 }
+            }
+
+            var tagMatch = tagAttributeRegex.Match(rest);
+            if (tagMatch.Success && int.TryParse(tagMatch.Groups[1].Value, out int tagValue))
+            {
+                context.currentMaterial.tag = tagValue;
             }
 
             return true;
@@ -1331,6 +1372,9 @@ namespace RWXLoader
 
         private bool TryProcessTriangleFast(ReadOnlySpan<char> line, RWXParseContext context)
         {
+            if (line.ToString().IndexOf("tag", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
             if (!IsCommand(line, "triangle", "triangleext", out int index))
                 return false;
 
@@ -1347,6 +1391,9 @@ namespace RWXLoader
 
         private bool TryProcessQuadFast(ReadOnlySpan<char> line, RWXParseContext context)
         {
+            if (line.ToString().IndexOf("tag", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
             if (!IsCommand(line, "quad", "quadext", out int index))
                 return false;
 
@@ -1364,6 +1411,9 @@ namespace RWXLoader
 
         private bool TryProcessPolygonFast(ReadOnlySpan<char> line, RWXParseContext context)
         {
+            if (line.ToString().IndexOf("tag", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
             if (!IsCommand(line, "polygon", "polygonext", out int index))
                 return false;
 
@@ -1388,6 +1438,9 @@ namespace RWXLoader
 
         private bool TryProcessTextureFast(ReadOnlySpan<char> line, RWXParseContext context)
         {
+            if (line.ToString().IndexOf("tag", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
             if (!IsCommand(line, "texture", null, out int index))
                 return false;
 
