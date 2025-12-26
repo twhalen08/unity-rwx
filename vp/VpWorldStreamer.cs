@@ -141,6 +141,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly List<(int cx, int cy)> desiredCells = new();
     private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
     private NativeArray<DesiredCellData> desiredCellBuffer;
+    private readonly Dictionary<(int cx, int cy), int> cellPendingModels = new();
 
     private readonly Dictionary<(int tx, int tz), GameObject> terrainTiles = new();
     private readonly HashSet<(int tx, int tz)> loadedTerrainTiles = new();
@@ -525,6 +526,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         UnityEngine.Vector3 camPos = GetCameraWorldPos();
 
         var cell = cellTask.Result;
+        int modelsInCell = 0;
         foreach (var obj in cell.Objects)
         {
             if (string.IsNullOrEmpty(obj.Model))
@@ -548,6 +550,14 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             float pri = ComputeModelPriority(pos, camPos);
             modelHeap.Push(req, pri);
+            modelsInCell++;
+        }
+
+        if (modelsInCell > 0)
+        {
+            cellPendingModels[key] = modelsInCell;
+            root.SetActive(false);
+            SetRenderersEnabled(root, false);
         }
     }
 
@@ -903,6 +913,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (loadedObject == null)
         {
             Debug.LogError($"RWX load failed: {req.modelName} (normalized='{modelId}') → {errorMessage}");
+            CompleteCellModel(req.cell);
             yield break;
         }
 
@@ -910,6 +921,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
         loadedObject.transform.localScale = UnityEngine.Vector3.one;
+        SetRenderersEnabled(loadedObject, false);
 
         // Give Unity a frame before heavier work
         yield return null;
@@ -920,6 +932,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
             {
                 Destroy(loadedObject);
+                CompleteCellModel(req.cell);
                 yield break;
             }
         }
@@ -996,6 +1009,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
             }
         }
+
+        SetRenderersEnabled(loadedObject, true);
+        CompleteCellModel(req.cell);
     }
 
     // -------------------------
@@ -1059,6 +1075,28 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (targetCamera == null) targetCamera = Camera.main;
         if (targetCamera == null) return UnityEngine.Vector3.zero;
         return targetCamera.transform.position;
+    }
+
+    private void CompleteCellModel((int cx, int cy) cell)
+    {
+        if (!cellPendingModels.TryGetValue(cell, out var remaining))
+            return;
+
+        remaining = Mathf.Max(0, remaining - 1);
+
+        if (remaining <= 0)
+        {
+            cellPendingModels.Remove(cell);
+            if (cellRoots.TryGetValue(cell, out var root) && root != null)
+            {
+                root.SetActive(true);
+                SetRenderersEnabled(root, true);
+            }
+        }
+        else
+        {
+            cellPendingModels[cell] = remaining;
+        }
     }
 
     // -------------------------
@@ -1210,6 +1248,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Destroy(root);
 
             cellRoots.Remove(c);
+            cellPendingModels.Remove(c);
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
@@ -1528,6 +1567,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Utilities
     // -------------------------
+    private void SetRenderersEnabled(GameObject go, bool enabled)
+    {
+        if (go == null)
+            return;
+
+        var renderers = go.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+            renderers[i].enabled = enabled;
+    }
+
     private IEnumerator WaitForTask(Task task)
     {
         while (!task.IsCompleted)
