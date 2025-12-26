@@ -1086,6 +1086,42 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return (cx, cy);
     }
 
+    private UnityEngine.Vector2 GetCameraForwardCellDir()
+    {
+        if (targetCamera == null)
+            targetCamera = Camera.main;
+
+        UnityEngine.Vector3 forward = targetCamera != null ? targetCamera.transform.forward : UnityEngine.Vector3.forward;
+        var forwardCell = new UnityEngine.Vector2(-forward.x, forward.z);
+
+        if (forwardCell.sqrMagnitude < 1e-6f)
+            return UnityEngine.Vector2.up;
+
+        return forwardCell.normalized;
+    }
+
+    private float ComputeCellPriority((int cx, int cy) cell, int centerX, int centerY, UnityEngine.Vector2 forwardCellDir)
+    {
+        int dx = cell.cx - centerX;
+        int dz = cell.cy - centerY;
+
+        int chebyshev = Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dz));
+        int manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
+        float ringScore = chebyshev * 100 + manhattan;
+
+        UnityEngine.Vector2 offset = new UnityEngine.Vector2(dx, dz);
+        float forwardDot = UnityEngine.Vector2.Dot(offset, forwardCellDir);
+        UnityEngine.Vector2 rightCell = new UnityEngine.Vector2(forwardCellDir.y, -forwardCellDir.x);
+        float lateralDistance = Mathf.Abs(UnityEngine.Vector2.Dot(offset, rightCell));
+
+        bool inFront = forwardDot >= 0f;
+        float behindPenalty = inFront ? 0f : 500000f;
+
+        float directionalScore = (inFront ? forwardDot : Mathf.Abs(forwardDot)) * 50f + lateralDistance * 25f;
+
+        return ringScore * 1000f + behindPenalty + directionalScore;
+    }
+
     private void BuildDesiredCellsWithJob(int centerX, int centerY, int radius)
     {
         int clampedRadius = Mathf.Max(0, radius);
@@ -1095,11 +1131,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         desiredCells.Clear();
         queuedCellHeap.Clear();
 
+        UnityEngine.Vector2 forwardCellDir = GetCameraForwardCellDir();
+
         foreach (var queued in queuedCells)
         {
-            int dx = Mathf.Abs(queued.cx - centerX);
-            int dy = Mathf.Abs(queued.cy - centerY);
-            float score = Mathf.Max(dx, dy) * 100 + (dx + dy);
+            float score = ComputeCellPriority(queued, centerX, centerY, forwardCellDir);
             queuedCellHeap.Push(queued, score);
         }
 
@@ -1132,7 +1168,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             if (loadedCells.Contains(coord) || queuedCells.Contains(coord) || queryingCells.Contains(coord))
                 continue;
 
-            float score = cell.chebyshev * 100 + cell.manhattan;
+            float score = ComputeCellPriority(coord, centerX, centerY, forwardCellDir);
             queuedCells.Add(coord);
             queuedCellHeap.Push(coord, score);
         }
