@@ -274,7 +274,7 @@ namespace RWXLoader
                     // This prevents cross-contamination between different materials
                     string expectedTextureName = rwxMaterial.texture ?? "default";
                     string rendererName = renderer.gameObject.name;
-                    var rwxTag = renderer.GetComponent<RWXTag>();
+                    var rwxTag = renderer.GetComponentInParent<RWXTag>();
                     int rendererTag = rwxTag != null ? rwxTag.TagId : 0;
                     string rendererTextureName = rwxTag != null ? (rwxTag.TextureName ?? rendererName) : rendererName;
 

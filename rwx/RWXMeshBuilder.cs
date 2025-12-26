@@ -180,9 +180,10 @@ namespace RWXLoader
                 meshRenderer.material = materialManager.GetDefaultMaterial();
             }
 
+            var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
             var rwxTag = meshObject.AddComponent<RWXTag>();
-            rwxTag.TagId = context.currentMeshMaterial?.tag ?? 0;
-            rwxTag.TextureName = context.currentMeshMaterial?.texture;
+            rwxTag.TagId = sourceMaterial?.tag ?? 0;
+            rwxTag.TextureName = sourceMaterial?.texture;
 
             // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
             int triangleCount = context.currentTriangles.Count / 3;
@@ -257,9 +258,10 @@ namespace RWXLoader
                 meshRenderer.material = materialManager.GetDefaultMaterial();
             }
 
+            var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
             var rwxTag = meshObject.AddComponent<RWXTag>();
-            rwxTag.TagId = context.currentMeshMaterial?.tag ?? 0;
-            rwxTag.TextureName = context.currentMeshMaterial?.texture;
+            rwxTag.TagId = sourceMaterial?.tag ?? 0;
+            rwxTag.TextureName = sourceMaterial?.texture;
 
             Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
             Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
