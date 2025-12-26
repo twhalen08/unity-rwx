@@ -355,22 +355,21 @@ public static class VpActionExecutor
             block.Clear();
             r.GetPropertyBlock(block);
 
-            if (tagFilter.HasValue)
+            int rendererTag = block.GetInt(_RwxTagId);
+            if (rendererTag == 0 && RWXRendererTagStore.TryGetTag(r, out var storedTag))
             {
-                int rendererTag = block.GetInt(_RwxTagId);
-
-                // Fallback to RWXRendererTagStore so we don't rely on the shader containing _RWXTag
-                if (rendererTag == 0 && RWXRendererTagStore.TryGetTag(r, out var storedTag))
-                {
-                    rendererTag = storedTag;
-                }
-
-                if (rendererTag != tagFilter.Value)
-                    continue;
+                rendererTag = storedTag;
             }
+
+            if (tagFilter.HasValue && rendererTag != tagFilter.Value)
+                continue;
 
             block.SetTexture(_MainTexId, tex);
             block.SetTexture(_BaseMapId, tex);
+            if (rendererTag != 0)
+            {
+                block.SetInt(_RwxTagId, rendererTag);
+            }
 
             r.SetPropertyBlock(block);
         }
