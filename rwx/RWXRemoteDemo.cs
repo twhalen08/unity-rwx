@@ -2,6 +2,7 @@ using UnityEngine;
 using RWXLoader;
 using System.Linq;
 using System.IO;
+using System.Collections.Generic;
 
 /// <summary>
 /// Demo script showing how to load RWX models from remote object paths
@@ -28,6 +29,15 @@ public class RWXRemoteDemo : MonoBehaviour
     [Header("Debug")]
     [Tooltip("Enable detailed debug logging")]
     public bool enableDebugLogs = true;
+
+    [Header("VP Action Testing")]
+    [Tooltip("Optional VP action string to apply to the loaded model (supports create/activate parsing).")]
+    [TextArea(2, 5)]
+    public string action = "";
+    [Tooltip("Apply parsed actions automatically after the model is loaded.")]
+    public bool applyActionsOnLoad = true;
+    [Tooltip("Log parsed action details for troubleshooting.")]
+    public bool logActionDetails = true;
 
     private RWXLoaderAdvanced loader;
     private GameObject loadedModel;
@@ -58,6 +68,7 @@ public class RWXRemoteDemo : MonoBehaviour
         loader.enableDebugLogs = enableDebugLogs;
         loader.parentTransform = transform;
 
+        EnsureAssetManager();
     }
 
     [ContextMenu("Load Remote Model")]
@@ -98,6 +109,16 @@ public class RWXRemoteDemo : MonoBehaviour
             model.transform.position = transform.position;
             model.transform.rotation = transform.rotation;
             model.transform.localScale = Vector3.one * modelScale;
+
+            if (enableDebugLogs)
+            {
+                LogModelInfo(model);
+            }
+
+            if (applyActionsOnLoad)
+            {
+                ApplyActionsToLoadedModel();
+            }
             
         }
         else
@@ -186,6 +207,15 @@ public class RWXRemoteDemo : MonoBehaviour
         Debug.Log("==========================================");
     }
 
+    void EnsureAssetManager()
+    {
+        if (RWXAssetManager.Instance == null)
+        {
+            var manager = new GameObject("RWX Asset Manager");
+            manager.AddComponent<RWXAssetManager>();
+        }
+    }
+
     [ContextMenu("Clear Loaded Model")]
     public void ClearLoadedModel()
     {
@@ -232,6 +262,59 @@ public class RWXRemoteDemo : MonoBehaviour
     public void TestConnection()
     {
         StartCoroutine(TestConnectionCoroutine());
+    }
+
+    [ContextMenu("Apply Actions To Loaded Model")]
+    public void ApplyActionsToLoadedModel()
+    {
+        if (loadedModel == null)
+        {
+            Debug.LogWarning("No loaded model available to apply actions to.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            Debug.LogWarning("Action string is empty - nothing to parse.");
+            return;
+        }
+
+        VpActionParser.Parse(action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions);
+
+        if (createActions.Count == 0 && activateActions.Count == 0)
+        {
+            Debug.LogWarning("Parsed action string but found no create or activate commands.");
+            return;
+        }
+
+        if (logActionDetails)
+        {
+            Debug.Log($"[VP Action] Parsed actions for '{modelName}': create={createActions.Count}, activate={activateActions.Count}");
+
+            foreach (var c in createActions)
+            {
+                Debug.Log($"  CREATE -> {c}");
+            }
+
+            foreach (var a in activateActions)
+            {
+                Debug.Log($"  ACTIVATE -> {a}");
+            }
+        }
+
+        EnsureAssetManager();
+
+        foreach (var c in createActions)
+        {
+            VpActionExecutor.ExecuteCreate(loadedModel, c, objectPath, objectPathPassword, this);
+        }
+
+        if (activateActions.Count > 0)
+        {
+            var act = loadedModel.GetComponent<VpActivateActions>() ?? loadedModel.AddComponent<VpActivateActions>();
+            act.actions.Clear();
+            act.actions.AddRange(activateActions);
+        }
     }
 
     System.Collections.IEnumerator TestConnectionCoroutine()
@@ -373,11 +456,18 @@ public class RWXRemoteDemo : MonoBehaviour
     {
         if (!enableDebugLogs) return;
         
-        GUILayout.BeginArea(new Rect(10, 10, 400, 200));
+        GUILayout.BeginArea(new Rect(10, 10, 420, 360));
         GUILayout.Label("RWX Remote Demo", GUI.skin.box);
-        GUILayout.Label($"Object Path: {objectPath}");
-        GUILayout.Label($"Model: {modelName}");
         GUILayout.Label($"Status: {(loadedModel != null ? "Loaded" : "Not Loaded")}");
+
+        GUILayout.Label("Object Path:");
+        objectPath = GUILayout.TextField(objectPath ?? string.Empty);
+
+        GUILayout.Label("Model Name:");
+        modelName = GUILayout.TextField(modelName ?? string.Empty);
+
+        GUILayout.Label("Object Path Password:");
+        objectPathPassword = GUILayout.TextField(objectPathPassword ?? string.Empty);
         
         if (GUILayout.Button("Load Model"))
         {
@@ -392,6 +482,15 @@ public class RWXRemoteDemo : MonoBehaviour
         if (GUILayout.Button("Test Connection"))
         {
             TestConnection();
+        }
+        
+        GUILayout.Label("VP Action (optional):");
+        action = GUILayout.TextArea(action ?? string.Empty, GUILayout.Height(60));
+        applyActionsOnLoad = GUILayout.Toggle(applyActionsOnLoad, "Apply actions after load");
+        
+        if (GUILayout.Button("Apply Actions Now"))
+        {
+            ApplyActionsToLoadedModel();
         }
         
         GUILayout.EndArea();
