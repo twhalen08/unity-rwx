@@ -226,7 +226,7 @@ namespace RWXLoader
         /// <summary>
         /// Parses RWX content from memory and creates a GameObject
         /// </summary>
-        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
+        public GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
         {
             // Create root object
             GameObject rootObject = new GameObject(modelName);
@@ -321,6 +321,16 @@ namespace RWXLoader
             }
 
             return ParseRWXFromMemory(rwxContent, modelName, archive, null, objectPathPassword);
+        }
+
+        /// <summary>
+        /// Parses an RWX text blob directly without needing a ZIP archive. This is handy for local
+        /// troubleshooting scenes where the RWX file is already on disk.
+        /// </summary>
+        public GameObject LoadModelFromText(string rwxContent, string modelName)
+        {
+            // No archive or objectPath context available when using raw text
+            return ParseRWXFromMemory(rwxContent, modelName, null, null, objectPathPassword);
         }
 
         /// <summary>
