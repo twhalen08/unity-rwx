@@ -817,10 +817,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 normals.Add(normalsGrid[x, z + 1]);
                 normals.Add(normalsGrid[x + 1, z + 1]);
 
-                UnityEngine.Vector2 uv0 = new UnityEngine.Vector2(0f, 0f);
-                UnityEngine.Vector2 uv1 = new UnityEngine.Vector2(1f, 0f);
-                UnityEngine.Vector2 uv2 = new UnityEngine.Vector2(0f, 1f);
-                UnityEngine.Vector2 uv3 = new UnityEngine.Vector2(1f, 1f);
+                // VP terrain textures are flipped vertically relative to Unity by default
+                UnityEngine.Vector2 uv0 = new UnityEngine.Vector2(0f, 1f);
+                UnityEngine.Vector2 uv1 = new UnityEngine.Vector2(1f, 1f);
+                UnityEngine.Vector2 uv2 = new UnityEngine.Vector2(0f, 0f);
+                UnityEngine.Vector2 uv3 = new UnityEngine.Vector2(1f, 0f);
 
                 // Rotate in-place for quarter turns (VP uses 0-3)
                 RotateUvQuarter(ref uv0, ref uv1, ref uv2, ref uv3, cell.rotation);
