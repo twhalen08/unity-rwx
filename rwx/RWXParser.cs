@@ -557,9 +557,18 @@ namespace RWXLoader
             if (!match.Groups[4].Success) // Not NULL mode
             {
                 string modes = match.Groups[3].Value;
-                if (modes.Contains("lit")) context.currentMaterial.textureModes.Add(TextureMode.Lit);
-                if (modes.Contains("foreshorten")) context.currentMaterial.textureModes.Add(TextureMode.Foreshorten);
-                if (modes.Contains("filter")) context.currentMaterial.textureModes.Add(TextureMode.Filter);
+                if (modes.IndexOf("lit", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    context.currentMaterial.textureModes.Add(TextureMode.Lit);
+                }
+                if (modes.IndexOf("foreshorten", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    context.currentMaterial.textureModes.Add(TextureMode.Foreshorten);
+                }
+                if (modes.IndexOf("filter", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    context.currentMaterial.textureModes.Add(TextureMode.Filter);
+                }
             }
 
             return true;
