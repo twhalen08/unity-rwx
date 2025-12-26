@@ -864,7 +864,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
 
         mesh.RecalculateBounds();
-        mesh.RecalculateNormals();
         return mesh;
     }
 
