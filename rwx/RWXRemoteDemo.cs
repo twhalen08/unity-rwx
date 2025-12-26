@@ -456,11 +456,18 @@ public class RWXRemoteDemo : MonoBehaviour
     {
         if (!enableDebugLogs) return;
         
-        GUILayout.BeginArea(new Rect(10, 10, 400, 320));
+        GUILayout.BeginArea(new Rect(10, 10, 420, 360));
         GUILayout.Label("RWX Remote Demo", GUI.skin.box);
-        GUILayout.Label($"Object Path: {objectPath}");
-        GUILayout.Label($"Model: {modelName}");
         GUILayout.Label($"Status: {(loadedModel != null ? "Loaded" : "Not Loaded")}");
+
+        GUILayout.Label("Object Path:");
+        objectPath = GUILayout.TextField(objectPath ?? string.Empty);
+
+        GUILayout.Label("Model Name:");
+        modelName = GUILayout.TextField(modelName ?? string.Empty);
+
+        GUILayout.Label("Object Path Password:");
+        objectPathPassword = GUILayout.TextField(objectPathPassword ?? string.Empty);
         
         if (GUILayout.Button("Load Model"))
         {
