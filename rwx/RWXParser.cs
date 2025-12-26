@@ -276,6 +276,11 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
 
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
+            }
+
             // Use original triangle order since coordinate conversion is handled at matrix level
             meshBuilder.CreateTriangle(context, a, b, c);
             return true;
@@ -298,6 +303,11 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
             int d = int.Parse(intMatches[3].Value) - 1;
+
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
+            }
 
             // Use original quad order since we're handling coordinate conversion at root level
             meshBuilder.CreateQuad(context, a, b, c, d);
@@ -323,6 +333,11 @@ namespace RWXLoader
             for (int i = 1; i <= polyLen && i < intMatches.Count; i++)
             {
                 indices.Add(int.Parse(intMatches[i].Value) - 1);
+            }
+
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
             }
 
             // Use original polygon order since we're handling coordinate conversion at root level
@@ -1262,6 +1277,25 @@ namespace RWXLoader
             return token.Length > 0;
         }
 
+        private int? TryReadInlineTag(ReadOnlySpan<char> line, ref int index)
+        {
+            int scanIndex = index;
+            while (TryReadToken(line, ref scanIndex, out var token))
+            {
+                if (token.Equals("tag", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryReadInt(line, ref scanIndex, out int value))
+                    {
+                        index = scanIndex;
+                        return value;
+                    }
+                    break;
+                }
+            }
+
+            return null;
+        }
+
         private static bool TryReadFloat(ReadOnlySpan<char> line, ref int index, out float value)
         {
             if (!TryReadToken(line, ref index, out var token))
@@ -1363,6 +1397,12 @@ namespace RWXLoader
                 return false;
             }
 
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
+            }
+
             meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
             return true;
         }
@@ -1378,6 +1418,12 @@ namespace RWXLoader
                 !TryReadInt(line, ref index, out int d))
             {
                 return false;
+            }
+
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
             }
 
             meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
@@ -1402,6 +1448,12 @@ namespace RWXLoader
                 }
 
                 indices.Add(value - 1);
+            }
+
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
             }
 
             meshBuilder.CreatePolygon(context, indices);
