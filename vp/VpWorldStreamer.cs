@@ -817,16 +817,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 normals.Add(normalsGrid[x, z + 1]);
                 normals.Add(normalsGrid[x + 1, z + 1]);
 
-                var baseUvs = new[]
-                {
-                    new UnityEngine.Vector2(0f, 0f),
-                    new UnityEngine.Vector2(1f, 0f),
-                    new UnityEngine.Vector2(0f, 1f),
-                    new UnityEngine.Vector2(1f, 1f)
-                };
+                UnityEngine.Vector2 uv0 = new UnityEngine.Vector2(0f, 0f);
+                UnityEngine.Vector2 uv1 = new UnityEngine.Vector2(1f, 0f);
+                UnityEngine.Vector2 uv2 = new UnityEngine.Vector2(0f, 1f);
+                UnityEngine.Vector2 uv3 = new UnityEngine.Vector2(1f, 1f);
 
-                ApplyRotationToUvs(baseUvs, cell.rotation);
-                uvs.AddRange(baseUvs);
+                // Rotate in-place for quarter turns (VP uses 0-3)
+                RotateUvQuarter(ref uv0, ref uv1, ref uv2, ref uv3, cell.rotation);
+
+                uvs.Add(uv0);
+                uvs.Add(uv1);
+                uvs.Add(uv2);
+                uvs.Add(uv3);
 
                 if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
                 {
@@ -1553,17 +1555,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return 0;
     }
 
-    private void ApplyRotationToUvs(UnityEngine.Vector2[] uvArray, byte rotation)
+    private void RotateUvQuarter(ref UnityEngine.Vector2 uv0, ref UnityEngine.Vector2 uv1, ref UnityEngine.Vector2 uv2, ref UnityEngine.Vector2 uv3, byte rotation)
     {
         int r = rotation % 4;
         if (r == 0) return;
 
-        for (int i = 0; i < uvArray.Length; i++)
+        for (int i = 0; i < r; i++)
         {
-            var uv = uvArray[i] - new UnityEngine.Vector2(0.5f, 0.5f);
-            for (int step = 0; step < r; step++)
-                uv = new UnityEngine.Vector2(uv.y, -uv.x); // 90° clockwise
-            uvArray[i] = uv + new UnityEngine.Vector2(0.5f, 0.5f);
+            // 90° clockwise rotation: (u,v) -> (v, 1-u)
+            uv0 = new UnityEngine.Vector2(uv0.y, 1f - uv0.x);
+            uv1 = new UnityEngine.Vector2(uv1.y, 1f - uv1.x);
+            uv2 = new UnityEngine.Vector2(uv2.y, 1f - uv2.x);
+            uv3 = new UnityEngine.Vector2(uv3.y, 1f - uv3.x);
         }
     }
 
@@ -1581,9 +1584,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         // Force smoothness down to match VP terrain visuals
         if (mat.HasProperty("_Glossiness"))
-            mat.SetFloat("_Glossiness", 0.02f);
+            mat.SetFloat("_Glossiness", 0.0f);
         if (mat.HasProperty("_Smoothness"))
-            mat.SetFloat("_Smoothness", 0.02f);
+            mat.SetFloat("_Smoothness", 0.0f);
 
         if (!terrainDownloadsInFlight.Contains(textureId))
             StartCoroutine(DownloadTerrainTexture(textureId, mat));
