@@ -13,6 +13,7 @@ public static class VpActionExecutor
     private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
     private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
     private static readonly int _BaseMapId = Shader.PropertyToID("_BaseMap");
+    private static readonly int _RwxTagId = Shader.PropertyToID("_RWXTag");
 
     /// <summary>
     /// Convenience wrapper (optional) so older call sites can use Execute(...)
@@ -351,14 +352,15 @@ public static class VpActionExecutor
         {
             if (r == null) continue;
 
+            block.Clear();
+            r.GetPropertyBlock(block);
+
             if (tagFilter.HasValue)
             {
-                var metadata = r.GetComponent<RWXRendererMetadata>();
-                if (metadata == null || metadata.tag != tagFilter.Value)
+                int rendererTag = block.GetInt(_RwxTagId);
+                if (rendererTag != tagFilter.Value)
                     continue;
             }
-
-            r.GetPropertyBlock(block);
 
             block.SetTexture(_MainTexId, tex);
             block.SetTexture(_BaseMapId, tex);

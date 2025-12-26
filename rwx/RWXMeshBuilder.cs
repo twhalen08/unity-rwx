@@ -7,6 +7,7 @@ namespace RWXLoader
     public class RWXMeshBuilder
     {
         private RWXMaterialManager materialManager;
+        private static readonly int RwxTagId = Shader.PropertyToID("_RWXTag");
 
         public RWXMeshBuilder(RWXMaterialManager materialManager)
         {
@@ -168,6 +169,10 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            var block = new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(block);
+            block.SetInt(RwxTagId, context.currentMeshMaterial?.tag ?? 0);
+            meshRenderer.SetPropertyBlock(block);
             
             // Apply material
             if (context.currentMeshMaterial != null)
@@ -241,12 +246,10 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
-            var metadata = meshObject.AddComponent<RWXRendererMetadata>();
-            metadata.tag = context.currentMeshMaterial?.tag ?? 0;
-            metadata.textureName = materialName;
-            var metadata = meshObject.AddComponent<RWXRendererMetadata>();
-            metadata.tag = context.currentMeshMaterial?.tag ?? 0;
-            metadata.textureName = materialName;
+            var block = new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(block);
+            block.SetInt(RwxTagId, context.currentMeshMaterial?.tag ?? 0);
+            meshRenderer.SetPropertyBlock(block);
             
             // Apply material
             if (context.currentMeshMaterial != null)
