@@ -355,6 +355,20 @@ public static class VpActionExecutor
             block.SetTexture(_BaseMapId, tex);
 
             r.SetPropertyBlock(block);
+
+            // Also update the material instance to guarantee shader refresh
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+                if (m.HasProperty(_MainTexId))
+                {
+                    m.SetTexture(_MainTexId, tex);
+                }
+                if (m.HasProperty(_BaseMapId))
+                {
+                    m.SetTexture(_BaseMapId, tex);
+                }
+            }
         }
     }
 
@@ -623,7 +637,7 @@ public static class VpActionExecutor
         if (!targetTag.HasValue)
             return true;
 
-        var tagComponent = renderer.GetComponent<RWXLoader.RWXTag>();
+        var tagComponent = renderer.GetComponentInParent<RWXLoader.RWXTag>();
         int rendererTag = tagComponent != null ? tagComponent.TagId : 0;
 
         return rendererTag == targetTag.Value;
