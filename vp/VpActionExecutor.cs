@@ -360,6 +360,9 @@ public static class VpActionExecutor
             foreach (var m in r.materials)
             {
                 if (m == null) continue;
+                
+                // Set on the material to ensure immediate refresh on Standard and similar shaders
+                m.mainTexture = tex;
                 if (m.HasProperty(_MainTexId))
                 {
                     m.SetTexture(_MainTexId, tex);
