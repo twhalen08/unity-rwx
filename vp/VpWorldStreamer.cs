@@ -764,7 +764,29 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         }
 
+        float invUnits = Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+
+        // Smooth normals from height grid (shared heights, separate UVs)
+        var normalsGrid = new UnityEngine.Vector3[tileSpan + 1, tileSpan + 1];
+        for (int vx = 0; vx <= tileSpan; vx++)
+        {
+            for (int vz = 0; vz <= tileSpan; vz++)
+            {
+                float hC = heightGrid[vx, vz] / invUnits;
+                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] / invUnits;
+                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] / invUnits;
+                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] / invUnits;
+                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] / invUnits;
+
+                float dx = (hR - hL) * 0.5f / cellSizeUnity;
+                float dz = (hU - hD) * 0.5f / cellSizeUnity;
+
+                normalsGrid[vx, vz] = new UnityEngine.Vector3(-dx, 1f, dz).normalized;
+            }
+        }
+
         var vertices = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
+        var normals = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
         var uvs = new List<UnityEngine.Vector2>(tileSpan * tileSpan * 4);
         var trianglesByTex = new Dictionary<ushort, List<int>>();
 
@@ -779,16 +801,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 float unityX = (tileX * tileSpan + x) * cellSizeUnity;
                 float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
 
-                float h00 = heightGrid[x, z] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
-                float h10 = heightGrid[x + 1, z] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
-                float h01 = heightGrid[x, z + 1] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
-                float h11 = heightGrid[x + 1, z + 1] / Mathf.Max(0.0001f, vpUnitsPerUnityUnit) + terrainHeightOffset;
+                float h00 = heightGrid[x, z] / invUnits + terrainHeightOffset;
+                float h10 = heightGrid[x + 1, z] / invUnits + terrainHeightOffset;
+                float h01 = heightGrid[x, z + 1] / invUnits + terrainHeightOffset;
+                float h11 = heightGrid[x + 1, z + 1] / invUnits + terrainHeightOffset;
 
                 int vStart = vertices.Count;
                 vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
                 vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h10, unityZ));
                 vertices.Add(new UnityEngine.Vector3(-unityX, h01, unityZ + cellSizeUnity));
                 vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h11, unityZ + cellSizeUnity));
+
+                normals.Add(normalsGrid[x, z]);
+                normals.Add(normalsGrid[x + 1, z]);
+                normals.Add(normalsGrid[x, z + 1]);
+                normals.Add(normalsGrid[x + 1, z + 1]);
 
                 var baseUvs = new[]
                 {
@@ -825,6 +852,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         };
 
         mesh.SetVertices(vertices);
+        mesh.SetNormals(normals);
         mesh.SetUVs(0, uvs);
         mesh.subMeshCount = trianglesByTex.Count;
 
@@ -1554,9 +1582,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         // Force smoothness down to match VP terrain visuals
         if (mat.HasProperty("_Glossiness"))
-            mat.SetFloat("_Glossiness", 0f);
+            mat.SetFloat("_Glossiness", 0.02f);
         if (mat.HasProperty("_Smoothness"))
-            mat.SetFloat("_Smoothness", 0f);
+            mat.SetFloat("_Smoothness", 0.02f);
 
         if (!terrainDownloadsInFlight.Contains(textureId))
             StartCoroutine(DownloadTerrainTexture(textureId, mat));
