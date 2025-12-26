@@ -1548,6 +1548,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 var val = rotProp.GetValue(cell);
                 if (val is byte b) return b;
                 if (val is int i) return (byte)i;
+                if (val is short s) return (byte)s;
+                if (val is sbyte sb) return (byte)sb;
+                if (val is IConvertible conv)
+                    return (byte)conv.ToInt32(System.Globalization.CultureInfo.InvariantCulture);
             }
             catch { }
         }
