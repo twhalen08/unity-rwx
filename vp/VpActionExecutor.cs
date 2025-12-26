@@ -341,6 +341,7 @@ public static class VpActionExecutor
 
         var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
         var block = new MaterialPropertyBlock();
+        int appliedCount = 0;
 
         foreach (var r in renderers)
         {
@@ -363,15 +364,22 @@ public static class VpActionExecutor
                 
                 // Set on the material to ensure immediate refresh on Standard and similar shaders
                 m.mainTexture = tex;
-                if (m.HasProperty(_MainTexId))
-                {
-                    m.SetTexture(_MainTexId, tex);
-                }
                 if (m.HasProperty(_BaseMapId))
                 {
                     m.SetTexture(_BaseMapId, tex);
                 }
+                if (m.HasProperty(_MainTexId))
+                {
+                    m.SetTexture(_MainTexId, tex);
+                }
             }
+
+            appliedCount++;
+        }
+
+        if (targetTag.HasValue && appliedCount == 0)
+        {
+            Debug.LogWarning($"[VP] texture '{tex.name}' with tag '{targetTag.Value}' found no matching renderers under '{root.name}'");
         }
     }
 
