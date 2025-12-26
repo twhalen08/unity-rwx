@@ -105,9 +105,10 @@ public class SingleObjectTroubleshooter : MonoBehaviour
             VpActionExecutor.ExecuteCreate(currentInstance, cmd, loader.defaultObjectPath, loader.objectPathPassword, this);
         }
 
+        // No dedicated activate executor; reuse create path for activate-phase commands
         foreach (var cmd in activate)
         {
-            VpActionExecutor.ExecuteActivate(currentInstance, cmd, loader.defaultObjectPath, loader.objectPathPassword, this);
+            VpActionExecutor.ExecuteCreate(currentInstance, cmd, loader.defaultObjectPath, loader.objectPathPassword, this);
         }
     }
 
