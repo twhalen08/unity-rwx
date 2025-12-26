@@ -182,8 +182,8 @@ namespace RWXLoader
 
             var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
             var rwxTag = meshObject.AddComponent<RWXTag>();
-            rwxTag.TagId = sourceMaterial?.tag ?? 0;
-            rwxTag.TextureName = sourceMaterial?.texture;
+            rwxTag.TagId = ResolveTagId(meshObject.transform, sourceMaterial?.tag ?? 0);
+            rwxTag.TextureName = sourceMaterial?.texture ?? meshObject.name;
 
             // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
             int triangleCount = context.currentTriangles.Count / 3;
@@ -260,8 +260,8 @@ namespace RWXLoader
 
             var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
             var rwxTag = meshObject.AddComponent<RWXTag>();
-            rwxTag.TagId = sourceMaterial?.tag ?? 0;
-            rwxTag.TextureName = sourceMaterial?.texture;
+            rwxTag.TagId = ResolveTagId(meshObject.transform, sourceMaterial?.tag ?? 0);
+            rwxTag.TextureName = sourceMaterial?.texture ?? meshObject.name;
 
             Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
             Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
@@ -477,6 +477,17 @@ namespace RWXLoader
             }
 
             list.Add(normal);
+        }
+
+        private int ResolveTagId(Transform target, int materialTag)
+        {
+            if (materialTag != 0)
+            {
+                return materialTag;
+            }
+
+            var parentTag = target.GetComponentInParent<RWXTag>();
+            return parentTag != null ? parentTag.TagId : 0;
         }
 
     }
