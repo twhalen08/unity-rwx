@@ -358,6 +358,13 @@ public static class VpActionExecutor
             if (tagFilter.HasValue)
             {
                 int rendererTag = block.GetInt(_RwxTagId);
+
+                // Fallback to RWXRendererTagStore so we don't rely on the shader containing _RWXTag
+                if (rendererTag == 0 && RWXRendererTagStore.TryGetTag(r, out var storedTag))
+                {
+                    rendererTag = storedTag;
+                }
+
                 if (rendererTag != tagFilter.Value)
                     continue;
             }

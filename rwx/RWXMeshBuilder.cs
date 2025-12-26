@@ -173,6 +173,7 @@ namespace RWXLoader
             meshRenderer.GetPropertyBlock(block);
             block.SetInt(RwxTagId, context.currentMeshMaterial?.tag ?? 0);
             meshRenderer.SetPropertyBlock(block);
+            RWXRendererTagStore.SetTag(meshRenderer, context.currentMeshMaterial?.tag ?? 0);
             
             // Apply material
             if (context.currentMeshMaterial != null)
@@ -250,6 +251,7 @@ namespace RWXLoader
             meshRenderer.GetPropertyBlock(block);
             block.SetInt(RwxTagId, context.currentMeshMaterial?.tag ?? 0);
             meshRenderer.SetPropertyBlock(block);
+            RWXRendererTagStore.SetTag(meshRenderer, context.currentMeshMaterial?.tag ?? 0);
             
             // Apply material
             if (context.currentMeshMaterial != null)
