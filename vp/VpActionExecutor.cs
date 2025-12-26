@@ -160,6 +160,7 @@ public static class VpActionExecutor
         }
 
         string tex = null;
+        int? tagFilter = null;
 
         if (cmd.positional != null && cmd.positional.Count > 0)
             tex = cmd.positional[0];
@@ -172,16 +173,21 @@ public static class VpActionExecutor
                 tex = t;
         }
 
+        if (cmd.kv != null && tagFilter == null && cmd.kv.TryGetValue("tag", out var tagString) && int.TryParse(tagString, out var parsedTag))
+        {
+            tagFilter = parsedTag;
+        }
+
         if (string.IsNullOrWhiteSpace(tex))
         {
             Debug.LogWarning($"[VP] texture action missing texture name: {cmd.raw}");
             return;
         }
 
-        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host));
+        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host, tagFilter));
     }
 
-    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host)
+    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? tagFilter)
     {
         if (RWXAssetManager.Instance == null)
         {
@@ -200,7 +206,7 @@ public static class VpActionExecutor
         string cacheKey = MakeTextureCacheKey(objectPath, textureName);
         if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
         {
-            ApplyTextureToAllRenderers(target, cachedTex);
+            ApplyTextureToAllRenderers(target, cachedTex, tagFilter);
             yield break;
         }
 
@@ -296,7 +302,7 @@ public static class VpActionExecutor
 
         _textureCache[cacheKey] = tex;
 
-        ApplyTextureToAllRenderers(target, tex);
+        ApplyTextureToAllRenderers(target, tex, tagFilter);
 
         Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
     }
@@ -334,7 +340,7 @@ public static class VpActionExecutor
         return list;
     }
 
-    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex)
+    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex, int? tagFilter)
     {
         if (root == null || tex == null) return;
 
@@ -344,6 +350,13 @@ public static class VpActionExecutor
         foreach (var r in renderers)
         {
             if (r == null) continue;
+
+            if (tagFilter.HasValue)
+            {
+                var metadata = r.GetComponent<RWXRendererMetadata>();
+                if (metadata == null || metadata.tag != tagFilter.Value)
+                    continue;
+            }
 
             r.GetPropertyBlock(block);
 

@@ -241,6 +241,12 @@ namespace RWXLoader
             meshFilter.mesh = mesh;
 
             var meshRenderer = meshObject.AddComponent<MeshRenderer>();
+            var metadata = meshObject.AddComponent<RWXRendererMetadata>();
+            metadata.tag = context.currentMeshMaterial?.tag ?? 0;
+            metadata.textureName = materialName;
+            var metadata = meshObject.AddComponent<RWXRendererMetadata>();
+            metadata.tag = context.currentMeshMaterial?.tag ?? 0;
+            metadata.textureName = materialName;
             
             // Apply material
             if (context.currentMeshMaterial != null)
