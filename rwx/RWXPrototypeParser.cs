@@ -105,6 +105,11 @@ namespace RWXLoader
             // Create a new GameObject for this prototype instance
             var instanceObject = new GameObject($"Proto_{prototypeName}");
             instanceObject.transform.SetParent(context.currentObject.transform);
+            
+            // Propagate the current material tag so actions can target the entire prototype
+            var protoTag = instanceObject.AddComponent<RWXTag>();
+            protoTag.TagId = context.currentMaterial?.tag ?? 0;
+            protoTag.TextureName = context.currentMaterial?.texture;
 
             // Do **not** bake the current transform directly onto the instance here. The clump that owns this
             // instance will receive the accumulated transform at ClumpEnd, and applying it twice caused
