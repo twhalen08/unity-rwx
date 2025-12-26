@@ -1562,7 +1562,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     private void RotateUvQuarter(ref UnityEngine.Vector2 uv0, ref UnityEngine.Vector2 uv1, ref UnityEngine.Vector2 uv2, ref UnityEngine.Vector2 uv3, byte rotation)
     {
-        int r = rotation % 4;
+        // VP rotation increases clockwise; we flipped the UVs vertically earlier,
+        // so reverse the rotation direction here to stay aligned with VP (0-3).
+        int r = ((-rotation) % 4 + 4) % 4;
         if (r == 0) return;
 
         for (int i = 0; i < r; i++)
