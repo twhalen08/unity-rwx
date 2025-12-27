@@ -181,8 +181,8 @@ namespace RWXLoader
             }
 
             var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
-            int tagId = sourceMaterial?.tag ?? 0;
-            string textureName = sourceMaterial?.texture ?? meshObject.name;
+            int tagId = ResolveTag(meshObject.transform, sourceMaterial?.tag ?? 0);
+            string textureName = ResolveTexture(meshObject.transform, sourceMaterial?.texture, meshObject.name);
             RWXTagRegistry.Register(meshRenderer, tagId, textureName);
 
             // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
@@ -259,8 +259,8 @@ namespace RWXLoader
             }
 
             var sourceMaterial = context.currentMeshMaterial ?? context.currentMaterial;
-            int tagId = sourceMaterial?.tag ?? 0;
-            string textureName = sourceMaterial?.texture ?? meshObject.name;
+            int tagId = ResolveTag(meshObject.transform, sourceMaterial?.tag ?? 0);
+            string textureName = ResolveTexture(meshObject.transform, sourceMaterial?.texture, meshObject.name);
             RWXTagRegistry.Register(meshRenderer, tagId, textureName);
 
             Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
@@ -477,6 +477,46 @@ namespace RWXLoader
             }
 
             list.Add(normal);
+        }
+
+        private int ResolveTag(Transform target, int materialTag)
+        {
+            if (materialTag != 0)
+            {
+                return materialTag;
+            }
+
+            Transform current = target;
+            while (current != null)
+            {
+                if (RWXTagRegistry.TryGet(current.gameObject, out var tagData) && tagData.TagId != 0)
+                {
+                    return tagData.TagId;
+                }
+                current = current.parent;
+            }
+
+            return 0;
+        }
+
+        private string ResolveTexture(Transform target, string materialTexture, string fallbackName)
+        {
+            if (!string.IsNullOrEmpty(materialTexture))
+            {
+                return materialTexture;
+            }
+
+            Transform current = target;
+            while (current != null)
+            {
+                if (RWXTagRegistry.TryGet(current.gameObject, out var tagData) && !string.IsNullOrEmpty(tagData.TextureName))
+                {
+                    return tagData.TextureName;
+                }
+                current = current.parent;
+            }
+
+            return fallbackName;
         }
 
     }

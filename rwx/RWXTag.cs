@@ -15,11 +15,22 @@ namespace RWXLoader
     public static class RWXTagRegistry
     {
         private static readonly Dictionary<int, RWXTag> RendererTags = new Dictionary<int, RWXTag>();
+        private static readonly Dictionary<int, RWXTag> ObjectTags = new Dictionary<int, RWXTag>();
 
         public static void Register(Renderer renderer, int tagId, string textureName)
         {
             if (renderer == null) return;
             RendererTags[renderer.GetInstanceID()] = new RWXTag
+            {
+                TagId = tagId,
+                TextureName = textureName
+            };
+        }
+
+        public static void Register(GameObject obj, int tagId, string textureName)
+        {
+            if (obj == null) return;
+            ObjectTags[obj.GetInstanceID()] = new RWXTag
             {
                 TagId = tagId,
                 TextureName = textureName
@@ -37,9 +48,21 @@ namespace RWXLoader
             return false;
         }
 
+        public static bool TryGet(GameObject obj, out RWXTag tag)
+        {
+            if (obj != null && ObjectTags.TryGetValue(obj.GetInstanceID(), out tag))
+            {
+                return true;
+            }
+
+            tag = default;
+            return false;
+        }
+
         public static void Clear()
         {
             RendererTags.Clear();
+            ObjectTags.Clear();
         }
     }
 }
