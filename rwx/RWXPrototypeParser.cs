@@ -105,7 +105,8 @@ namespace RWXLoader
             // Create a new GameObject for this prototype instance
             var instanceObject = new GameObject($"Proto_{prototypeName}");
             instanceObject.transform.SetParent(context.currentObject.transform);
-            
+            RWXTagRegistry.Register(instanceObject, context.currentMaterial?.tag ?? 0, context.currentMaterial?.texture);
+
             // Do **not** bake the current transform directly onto the instance here. The clump that owns this
             // instance will receive the accumulated transform at ClumpEnd, and applying it twice caused
             // double translations (e.g., palm leaves floating above trunks). Keep the instance at identity and

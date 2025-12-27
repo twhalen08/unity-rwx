@@ -102,6 +102,7 @@ namespace RWXLoader
         public void Reset()
         {
             prototypeParser?.Reset();
+            RWXTagRegistry.Clear();
         }
 
         private static string ExtractCommandToken(string line)
