@@ -185,6 +185,7 @@ namespace RWXLoader
             string textureName = ResolveTexture(meshObject.transform, sourceMaterial?.texture, meshObject.name);
             RWXTagRegistry.Register(meshRenderer, tagId, textureName);
             RWXTagRegistry.Register(meshObject, tagId, textureName);
+            RWXTagRegistry.Register(meshObject, tagId, textureName);
 
             // Only log mesh creation for significant meshes (body parts likely have more than 10 triangles)
             int triangleCount = context.currentTriangles.Count / 3;
