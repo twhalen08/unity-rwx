@@ -24,6 +24,10 @@ public class VPWorldAreaLoader : MonoBehaviour
     [Tooltip("How many VP world units equal 1 Unity unit. Set to 0.5 to render each VP unit as 2 Unity units.")]
     public float vpUnitsPerUnityUnit = 0.5f;
 
+    [Header("Colliders")]
+    [Tooltip("Add MeshColliders to loaded models so they are solid.")]
+    public bool addModelColliders = true;
+
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
     public RWXLoaderAdvanced modelLoader;
@@ -218,6 +222,7 @@ public class VPWorldAreaLoader : MonoBehaviour
             loadedObject.transform.localPosition = request.position;
             loadedObject.transform.localRotation = request.rotation;
             ApplyModelBaseScale(loadedObject);
+            EnsureModelColliders(loadedObject);
 
             // Give the loader a frame to finish any late material/renderer setup
             yield return null;
@@ -349,6 +354,24 @@ public class VPWorldAreaLoader : MonoBehaviour
 
         scaleContext.baseScale = baseScale;
         target.transform.localScale = baseScale;
+    }
+
+    private void EnsureModelColliders(GameObject target)
+    {
+        if (!addModelColliders || target == null)
+            return;
+
+        foreach (var filter in target.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (filter == null || filter.sharedMesh == null)
+                continue;
+
+            if (filter.GetComponent<Collider>() != null)
+                continue;
+
+            var collider = filter.gameObject.AddComponent<MeshCollider>();
+            collider.sharedMesh = filter.sharedMesh;
+        }
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)

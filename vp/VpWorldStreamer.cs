@@ -61,6 +61,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
     public RWXLoaderAdvanced modelLoader;
 
+    [Header("Colliders")]
+    [Tooltip("Add MeshColliders to loaded models so they are solid.")]
+    public bool addModelColliders = true;
+
     [Header("VP Object Server")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
     public string objectPathPassword = "";
@@ -112,7 +116,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public int terrainNodeCellSpan = 8;
 
     [Tooltip("Add a MeshCollider to each generated terrain tile.")]
-    public bool addTerrainColliders = false;
+    public bool addTerrainColliders = true;
 
     [Tooltip("Optional material template for terrain. If null a Standard material is created.")]
     public Material terrainMaterialTemplate;
@@ -910,6 +914,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
         ApplyModelBaseScale(loadedObject);
+        EnsureModelColliders(loadedObject);
 
         // Give Unity a frame before heavier work
         yield return null;
@@ -1541,6 +1546,24 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         scaleContext.baseScale = baseScale;
         target.transform.localScale = baseScale;
+    }
+
+    private void EnsureModelColliders(GameObject target)
+    {
+        if (!addModelColliders || target == null)
+            return;
+
+        foreach (var filter in target.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (filter == null || filter.sharedMesh == null)
+                continue;
+
+            if (filter.GetComponent<Collider>() != null)
+                continue;
+
+            var collider = filter.gameObject.AddComponent<MeshCollider>();
+            collider.sharedMesh = filter.sharedMesh;
+        }
     }
 
     private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 axis, double angle, string modelName)
