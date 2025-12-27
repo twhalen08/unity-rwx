@@ -155,6 +155,7 @@ namespace RWXLoader
             // For double-sided materials, we don't need to disable culling since we duplicate triangles
             // Keep normal culling behavior
             material.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Back);
+            material.SetOverrideTag("RwxTag", rwxMaterial.tag.ToString());
 
             return material;
         }
@@ -270,6 +271,12 @@ namespace RWXLoader
             {
                 if (renderer.material != null)
                 {
+                    int rendererTag = GetMaterialTag(renderer.material);
+                    if (rendererTag != rwxMaterial.tag)
+                    {
+                        continue;
+                    }
+
                     // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
                     // This prevents cross-contamination between different materials
                     string rendererName = renderer.gameObject.name;
@@ -329,6 +336,22 @@ namespace RWXLoader
                 }
             }
             
+        }
+
+        private int GetMaterialTag(Material material)
+        {
+            if (material == null)
+            {
+                return 0;
+            }
+
+            string tagValue = material.GetTag("RwxTag", false, "0");
+            if (int.TryParse(tagValue, out int parsed))
+            {
+                return parsed;
+            }
+
+            return 0;
         }
 
         /// <summary>

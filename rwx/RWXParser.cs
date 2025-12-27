@@ -273,8 +273,17 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
 
+            int? tagOverride = null;
+            if (TryExtractTagFromLine(line, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
             // Use original triangle order since coordinate conversion is handled at matrix level
-            meshBuilder.CreateTriangle(context, a, b, c);
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreateTriangle(context, a, b, c);
+            });
             return true;
         }
 
@@ -296,8 +305,17 @@ namespace RWXLoader
             int c = int.Parse(intMatches[2].Value) - 1;
             int d = int.Parse(intMatches[3].Value) - 1;
 
+            int? tagOverride = null;
+            if (TryExtractTagFromLine(line, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
             // Use original quad order since we're handling coordinate conversion at root level
-            meshBuilder.CreateQuad(context, a, b, c, d);
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreateQuad(context, a, b, c, d);
+            });
             return true;
         }
 
@@ -324,7 +342,16 @@ namespace RWXLoader
 
             // Use original polygon order since we're handling coordinate conversion at root level
             // indices.Reverse(); // Removed - no longer needed
-            meshBuilder.CreatePolygon(context, indices);
+            int? tagOverride = null;
+            if (TryExtractTagFromLine(line, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreatePolygon(context, indices);
+            });
             return true;
         }
 
@@ -1253,6 +1280,49 @@ namespace RWXLoader
             return int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
         }
 
+        private static bool TryReadTag(ReadOnlySpan<char> line, ref int index, out int tag)
+        {
+            int savedIndex = index;
+            tag = 0;
+
+            if (TryReadToken(line, ref index, out var token) &&
+                token.Equals("tag", StringComparison.OrdinalIgnoreCase))
+            {
+                if (TryReadInt(line, ref index, out int parsedTag))
+                {
+                    tag = parsedTag;
+                    return true;
+                }
+            }
+
+            index = savedIndex;
+            return false;
+        }
+
+        private static void ApplyGeometryTag(RWXParseContext context, int? tagValue, Action geometryAction)
+        {
+            int previousTag = context.currentMaterial.tag;
+            int appliedTag = tagValue ?? previousTag;
+            context.currentMaterial.tag = appliedTag;
+
+            geometryAction?.Invoke();
+
+            context.currentMaterial.tag = previousTag;
+        }
+
+        private static bool TryExtractTagFromLine(string line, out int tagValue)
+        {
+            var tagMatch = Regex.Match(line, @"\btag\s+([0-9]+)", DefaultRegexOptions);
+            if (tagMatch.Success && int.TryParse(tagMatch.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedTag))
+            {
+                tagValue = parsedTag;
+                return true;
+            }
+
+            tagValue = 0;
+            return false;
+        }
+
         private static bool IsCommand(ReadOnlySpan<char> line, string command, string alternate, out int index)
         {
             index = 0;
@@ -1332,7 +1402,16 @@ namespace RWXLoader
                 return false;
             }
 
-            meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
+            int? tagOverride = null;
+            if (TryReadTag(line, ref index, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
+            });
             return true;
         }
 
@@ -1349,7 +1428,16 @@ namespace RWXLoader
                 return false;
             }
 
-            meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
+            int? tagOverride = null;
+            if (TryReadTag(line, ref index, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
+            });
             return true;
         }
 
@@ -1373,7 +1461,16 @@ namespace RWXLoader
                 indices.Add(value - 1);
             }
 
-            meshBuilder.CreatePolygon(context, indices);
+            int? tagOverride = null;
+            if (TryReadTag(line, ref index, out int parsedTag))
+            {
+                tagOverride = parsedTag;
+            }
+
+            ApplyGeometryTag(context, tagOverride, () =>
+            {
+                meshBuilder.CreatePolygon(context, indices);
+            });
             return true;
         }
 
