@@ -388,11 +388,12 @@ public static class VpActionExecutor
 
                 if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData))
                 {
-                    debugInfo.AppendLine($"   - {r.gameObject.name}: tag={tagData.TagId}, textureName='{tagData.TextureName ?? \"\"}'");
+                    string textureName = string.IsNullOrEmpty(tagData.TextureName) ? "" : tagData.TextureName;
+                    debugInfo.AppendLine(string.Format("   - {0}: tag={1}, textureName='{2}'", r.gameObject.name, tagData.TagId, textureName));
                 }
                 else
                 {
-                    debugInfo.AppendLine($"   - {r.gameObject.name}: <no tag data>");
+                    debugInfo.AppendLine(string.Format("   - {0}: <no tag data>", r.gameObject.name));
                 }
             }
 
