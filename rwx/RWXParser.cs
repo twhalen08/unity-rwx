@@ -22,6 +22,7 @@ namespace RWXLoader
         private readonly Regex ambientRegex = new Regex(@"^\s*(ambient)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
         private readonly Regex diffuseRegex = new Regex(@"^\s*(diffuse)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
         private readonly Regex specularRegex = new Regex(@"^\s*(specular)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
+        private readonly Regex tagCommandRegex = new Regex(@"^\s*tag\s+([+-]?[0-9]+).*$", DefaultRegexOptions);
         private readonly Regex materialModeRegex = new Regex(@"^\s*((add)?materialmode(s)?)\s+([A-Za-z0-9_\-]+).*$", DefaultRegexOptions);
         private readonly Regex lightSamplingRegex = new Regex(@"^\s*(lightsampling)\s+(facet|vertex).*$", DefaultRegexOptions);
         private readonly Regex geometrySamplingRegex = new Regex(@"^\s*(geometrysampling)\s+(pointcloud|wireframe|solid).*$", DefaultRegexOptions);
@@ -70,6 +71,7 @@ namespace RWXLoader
                 { "ambient", ProcessAmbient },
                 { "diffuse", ProcessDiffuse },
                 { "specular", ProcessSpecular },
+                { "tag", ProcessTag },
                 { "materialmode", ProcessMaterialMode },
                 { "materialmodes", ProcessMaterialMode },
                 { "addmaterialmode", ProcessMaterialMode },
@@ -511,6 +513,28 @@ namespace RWXLoader
 
             float specular = float.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
             context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
+            return true;
+        }
+
+        private bool ProcessTag(string line, RWXParseContext context)
+        {
+            if (TryProcessTagFast(line.AsSpan(), context))
+            {
+                return true;
+            }
+
+            var match = tagCommandRegex.Match(line);
+            if (!match.Success) return false;
+
+            // Commit any in-flight geometry before changing tags so meshes stay grouped correctly.
+            meshBuilder.CommitCurrentMesh(context);
+
+            if (int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedTag))
+            {
+                context.currentMaterial.tag = parsedTag;
+                context.currentMeshMaterial = context.currentMaterial.Clone();
+            }
+
             return true;
         }
 
@@ -1599,6 +1623,22 @@ namespace RWXLoader
                 return false;
 
             context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
+            return true;
+        }
+
+        private bool TryProcessTagFast(ReadOnlySpan<char> line, RWXParseContext context)
+        {
+            if (!IsCommand(line, "tag", null, out int index))
+                return false;
+
+            if (!TryReadInt(line, ref index, out int parsedTag))
+                return false;
+
+            // Finalize any geometry using the previous tag before switching
+            meshBuilder.CommitCurrentMesh(context);
+
+            context.currentMaterial.tag = parsedTag;
+            context.currentMeshMaterial = context.currentMaterial.Clone();
             return true;
         }
 
