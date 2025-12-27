@@ -379,7 +379,24 @@ public static class VpActionExecutor
 
         if (targetTag.HasValue && appliedCount == 0)
         {
-            Debug.LogWarning($"[VP] texture '{tex.name}' with tag '{targetTag.Value}' found no matching renderers under '{root.name}'");
+            var debugInfo = new System.Text.StringBuilder();
+            debugInfo.AppendLine($"[VP] texture '{tex.name}' with tag '{targetTag.Value}' found no matching renderers under '{root.name}'. Renderer tags seen:");
+
+            foreach (var r in renderers)
+            {
+                if (r == null) continue;
+
+                if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData))
+                {
+                    debugInfo.AppendLine($"   - {r.gameObject.name}: tag={tagData.TagId}, textureName='{tagData.TextureName ?? \"\"}'");
+                }
+                else
+                {
+                    debugInfo.AppendLine($"   - {r.gameObject.name}: <no tag data>");
+                }
+            }
+
+            Debug.LogWarning(debugInfo.ToString());
         }
     }
 
