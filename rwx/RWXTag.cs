@@ -27,6 +27,30 @@ namespace RWXLoader
             };
         }
 
+        /// <summary>
+        /// Look up tag data for a renderer, falling back to ancestor GameObjects that were tagged.
+        /// </summary>
+        public static bool TryGetWithParents(Renderer renderer, out RWXTag tag)
+        {
+            if (TryGet(renderer, out tag))
+            {
+                return true;
+            }
+
+            Transform current = renderer != null ? renderer.transform : null;
+            while (current != null)
+            {
+                if (TryGet(current.gameObject, out tag))
+                {
+                    return true;
+                }
+                current = current.parent;
+            }
+
+            tag = default;
+            return false;
+        }
+
         public static void Register(GameObject obj, int tagId, string textureName)
         {
             if (obj == null) return;
