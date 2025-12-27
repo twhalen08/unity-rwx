@@ -178,10 +178,12 @@ public static class VpActionExecutor
             return;
         }
 
-        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host));
+        int? tagOverride = TryExtractTag(cmd);
+
+        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host, tagOverride));
     }
 
-    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host)
+    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? tagOverride)
     {
         if (RWXAssetManager.Instance == null)
         {
@@ -200,7 +202,7 @@ public static class VpActionExecutor
         string cacheKey = MakeTextureCacheKey(objectPath, textureName);
         if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
         {
-            ApplyTextureToAllRenderers(target, cachedTex);
+            ApplyTextureToAllRenderers(target, cachedTex, tagOverride);
             yield break;
         }
 
@@ -296,7 +298,7 @@ public static class VpActionExecutor
 
         _textureCache[cacheKey] = tex;
 
-        ApplyTextureToAllRenderers(target, tex);
+        ApplyTextureToAllRenderers(target, tex, tagOverride);
 
         Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
     }
@@ -334,7 +336,73 @@ public static class VpActionExecutor
         return list;
     }
 
-    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex)
+    private static int ReadRendererTag(Renderer renderer)
+    {
+        if (renderer == null)
+            return 0;
+
+        Material material = renderer.sharedMaterial;
+        if (material == null && renderer.material != null)
+        {
+            material = renderer.material;
+        }
+
+        string tagValue = material?.GetTag("RwxTag", false, "0") ?? "0";
+        if (int.TryParse(tagValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+        {
+            return parsed;
+        }
+
+        return 0;
+    }
+
+    private static int? TryExtractTag(VpActionCommand cmd)
+    {
+        if (cmd == null || cmd.positional == null)
+            return null;
+
+        if (cmd.kv != null && cmd.kv.TryGetValue("tag", out var tagStr) &&
+            int.TryParse(tagStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+        {
+            return parsed;
+        }
+
+        for (int i = 0; i < cmd.positional.Count; i++)
+        {
+            string token = cmd.positional[i];
+            if (TryParseTagToken(token, out int parsedTag))
+            {
+                return parsedTag;
+            }
+
+            if (token.Equals("tag", StringComparison.OrdinalIgnoreCase) && i + 1 < cmd.positional.Count)
+            {
+                if (int.TryParse(cmd.positional[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int nextTag))
+                {
+                    return nextTag;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseTagToken(string token, out int tag)
+    {
+        tag = 0;
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        token = token.Trim();
+        if (token.StartsWith("tag=", StringComparison.OrdinalIgnoreCase))
+        {
+            return int.TryParse(token.Substring(4), NumberStyles.Integer, CultureInfo.InvariantCulture, out tag);
+        }
+
+        return false;
+    }
+
+    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex, int? requiredTag)
     {
         if (root == null || tex == null) return;
 
@@ -344,6 +412,11 @@ public static class VpActionExecutor
         foreach (var r in renderers)
         {
             if (r == null) continue;
+
+            if (requiredTag.HasValue && ReadRendererTag(r) != requiredTag.Value)
+            {
+                continue;
+            }
 
             r.GetPropertyBlock(block);
 
