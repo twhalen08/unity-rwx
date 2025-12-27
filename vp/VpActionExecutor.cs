@@ -347,7 +347,7 @@ public static class VpActionExecutor
         {
             if (r == null) continue;
 
-            if (!RendererMatchesTag(r, targetTag))
+            if (!RendererMatchesTag(r, targetTag, tex.name))
                 continue;
 
             r.GetPropertyBlock(block);
@@ -640,7 +640,7 @@ public static class VpActionExecutor
         return null;
     }
 
-    private static bool RendererMatchesTag(Renderer renderer, int? targetTag)
+    private static bool RendererMatchesTag(Renderer renderer, int? targetTag, string targetTextureName = null)
     {
         if (renderer == null)
             return false;
@@ -651,7 +651,23 @@ public static class VpActionExecutor
         RWXLoader.RWXTag tagData;
         int rendererTag = RWXLoader.RWXTagRegistry.TryGetWithParents(renderer, out tagData) ? tagData.TagId : 0;
 
-        return rendererTag == targetTag.Value;
+        if (rendererTag == targetTag.Value)
+            return true;
+
+        if (rendererTag == 0 && !string.IsNullOrEmpty(targetTextureName))
+        {
+            string storedName = System.IO.Path.GetFileNameWithoutExtension(tagData.TextureName ?? string.Empty);
+            string targetName = System.IO.Path.GetFileNameWithoutExtension(targetTextureName);
+
+            if (!string.IsNullOrEmpty(storedName) &&
+                !string.IsNullOrEmpty(targetName) &&
+                string.Equals(storedName, targetName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static Color ParseColor(string s, Color fallback)
