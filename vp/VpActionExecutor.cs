@@ -654,7 +654,7 @@ public static class VpActionExecutor
         if (rendererTag == targetTag.Value)
             return true;
 
-        if (rendererTag == 0 && !string.IsNullOrEmpty(targetTextureName))
+        if (!string.IsNullOrEmpty(targetTextureName))
         {
             string storedName = System.IO.Path.GetFileNameWithoutExtension(tagData.TextureName ?? string.Empty);
             string targetName = System.IO.Path.GetFileNameWithoutExtension(targetTextureName);
@@ -663,6 +663,8 @@ public static class VpActionExecutor
                 !string.IsNullOrEmpty(targetName) &&
                 string.Equals(storedName, targetName, StringComparison.OrdinalIgnoreCase))
             {
+                // Permit matching by texture name even when tag data is missing or mismatched,
+                // as some renderers may have lost their tag assignment during parsing.
                 return true;
             }
         }
