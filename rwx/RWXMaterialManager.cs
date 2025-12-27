@@ -274,9 +274,18 @@ namespace RWXLoader
                     // This prevents cross-contamination between different materials
                     string expectedTextureName = rwxMaterial.texture ?? "default";
                     string rendererName = renderer.gameObject.name;
-                    var rwxTag = renderer.GetComponentInParent<RWXTag>();
-                    int rendererTag = rwxTag != null ? rwxTag.TagId : 0;
-                    string rendererTextureName = rwxTag != null ? (rwxTag.TextureName ?? rendererName) : rendererName;
+                    RWXTag rendererTagData;
+                    int rendererTag = 0;
+                    string rendererTextureName = rendererName;
+
+                    if (RWXTagRegistry.TryGet(renderer, out rendererTagData))
+                    {
+                        rendererTag = rendererTagData.TagId;
+                        if (!string.IsNullOrEmpty(rendererTagData.TextureName))
+                        {
+                            rendererTextureName = rendererTagData.TextureName;
+                        }
+                    }
 
                     bool nameMatches = rendererTextureName == expectedTextureName;
                     bool tagMatches = rendererTag == rwxMaterial.tag;
@@ -357,6 +366,8 @@ namespace RWXLoader
             {
                 textureLoader.ClearCache();
             }
+
+            RWXTagRegistry.Clear();
         }
 
         private void OnDestroy()

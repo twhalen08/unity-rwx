@@ -648,8 +648,8 @@ public static class VpActionExecutor
         if (!targetTag.HasValue)
             return true;
 
-        var tagComponent = renderer.GetComponentInParent<RWXLoader.RWXTag>();
-        int rendererTag = tagComponent != null ? tagComponent.TagId : 0;
+        RWXLoader.RWXTag tagData;
+        int rendererTag = RWXLoader.RWXTagRegistry.TryGet(renderer, out tagData) ? tagData.TagId : 0;
 
         return rendererTag == targetTag.Value;
     }

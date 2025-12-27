@@ -1283,14 +1283,6 @@ namespace RWXLoader
 
             context.currentMaterial.tag = tagValue;
             context.currentMeshMaterial = context.currentMaterial.Clone();
-
-            if (context.currentObject != null)
-            {
-                var rwxTag = context.currentObject.GetComponent<RWXTag>();
-                if (rwxTag == null) rwxTag = context.currentObject.AddComponent<RWXTag>();
-                rwxTag.TagId = tagValue;
-                rwxTag.TextureName = context.currentMaterial?.texture;
-            }
         }
 
         private int? TryReadInlineTag(ReadOnlySpan<char> line, ref int index)
