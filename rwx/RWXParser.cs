@@ -590,21 +590,7 @@ namespace RWXLoader
 
             if (int.TryParse(match.Groups[1].Value, out int tagValue))
             {
-                // If geometry is already being built with a different tag, start a new mesh
-                meshBuilder.CheckMaterialChange(context);
-
-                context.currentMaterial.tag = tagValue;
-                context.currentMeshMaterial = context.currentMaterial.Clone();
-
-                // Also tag the current object so prototype instances inherit it via parent lookup
-                if (context.currentObject != null)
-                {
-                    var rwxTag = context.currentObject.GetComponent<RWXTag>();
-                    if (rwxTag == null) rwxTag = context.currentObject.AddComponent<RWXTag>();
-                    rwxTag.TagId = tagValue;
-                    rwxTag.TextureName = context.currentMaterial?.texture;
-                }
-
+                ApplyTag(tagValue, context);
                 Debug.Log($"🏷️ TAG SET: {tagValue}");
             }
 
