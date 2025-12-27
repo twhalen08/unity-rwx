@@ -342,12 +342,23 @@ public static class VpActionExecutor
         var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
         var block = new MaterialPropertyBlock();
         int appliedCount = 0;
+        bool anyTaggedRenderer = false;
+
+        foreach (var r in renderers)
+        {
+            if (r == null) continue;
+            if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData) && tagData.TagId != 0)
+            {
+                anyTaggedRenderer = true;
+                break;
+            }
+        }
 
         foreach (var r in renderers)
         {
             if (r == null) continue;
 
-            if (!RendererMatchesTag(r, targetTag, tex.name))
+            if (targetTag.HasValue && anyTaggedRenderer && !RendererMatchesTag(r, targetTag, tex.name))
                 continue;
 
             r.GetPropertyBlock(block);
@@ -501,9 +512,21 @@ public static class VpActionExecutor
 
     private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal, int? targetTag)
     {
+        bool anyTaggedRenderer = false;
+
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
-            if (!RendererMatchesTag(r, targetTag))
+            if (r == null) continue;
+            if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData) && tagData.TagId != 0)
+            {
+                anyTaggedRenderer = true;
+                break;
+            }
+        }
+
+        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+        {
+            if (targetTag.HasValue && anyTaggedRenderer && !RendererMatchesTag(r, targetTag))
                 continue;
 
             foreach (var m in r.materials)
