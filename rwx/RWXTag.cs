@@ -32,8 +32,12 @@ namespace RWXLoader
         /// </summary>
         public static bool TryGetWithParents(Renderer renderer, out RWXTag tag)
         {
-            if (TryGet(renderer, out tag))
+            RWXTag rendererTag;
+            bool hasRendererTag = TryGet(renderer, out rendererTag);
+
+            if (hasRendererTag && (rendererTag.TagId != 0 || !string.IsNullOrEmpty(rendererTag.TextureName)))
             {
+                tag = rendererTag;
                 return true;
             }
 
@@ -47,7 +51,7 @@ namespace RWXLoader
                 current = current.parent;
             }
 
-            tag = default;
+            tag = hasRendererTag ? rendererTag : default;
             return false;
         }
 
