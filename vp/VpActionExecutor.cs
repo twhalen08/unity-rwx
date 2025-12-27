@@ -649,7 +649,7 @@ public static class VpActionExecutor
             return true;
 
         RWXLoader.RWXTag tagData;
-        int rendererTag = RWXLoader.RWXTagRegistry.TryGet(renderer, out tagData) ? tagData.TagId : 0;
+        int rendererTag = RWXLoader.RWXTagRegistry.TryGetWithParents(renderer, out tagData) ? tagData.TagId : 0;
 
         return rendererTag == targetTag.Value;
     }

@@ -278,7 +278,7 @@ namespace RWXLoader
                     int rendererTag = 0;
                     string rendererTextureName = rendererName;
 
-                    if (RWXTagRegistry.TryGet(renderer, out rendererTagData))
+                    if (RWXTagRegistry.TryGetWithParents(renderer, out rendererTagData))
                     {
                         rendererTag = rendererTagData.TagId;
                         if (!string.IsNullOrEmpty(rendererTagData.TextureName))
