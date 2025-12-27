@@ -97,10 +97,15 @@ public static class VpActionExecutor
         if (target == null) return;
 
         const float MinScale = 0.1f;
+        Vector3 baseScale = Vector3.one;
+        var scaleContext = target.GetComponent<VpModelScaleContext>();
+        if (scaleContext != null)
+            baseScale = scaleContext.baseScale;
+
         target.transform.localScale = new Vector3(
-            Mathf.Max(MinScale, scale.x),
-            Mathf.Max(MinScale, scale.y),
-            Mathf.Max(MinScale, scale.z));
+            Mathf.Max(MinScale, scale.x * baseScale.x),
+            Mathf.Max(MinScale, scale.y * baseScale.y),
+            Mathf.Max(MinScale, scale.z * baseScale.z));
     }
 
     public static void ApplyShear(GameObject target, float zPlus, float xPlus, float yPlus, float yMinus, float zMinus, float xMinus)

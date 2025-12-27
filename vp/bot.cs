@@ -20,6 +20,10 @@ public class VPWorldAreaLoader : MonoBehaviour
     public int centerY = 0;
     public int radius = 1;
 
+    [Header("Scale")]
+    [Tooltip("How many VP world units equal 1 Unity unit. Set to 0.5 to render each VP unit as 2 Unity units.")]
+    public float vpUnitsPerUnityUnit = 0.5f;
+
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
     public RWXLoaderAdvanced modelLoader;
@@ -213,7 +217,7 @@ public class VPWorldAreaLoader : MonoBehaviour
 
             loadedObject.transform.localPosition = request.position;
             loadedObject.transform.localRotation = request.rotation;
-            loadedObject.transform.localScale = UnityEngine.Vector3.one;
+            ApplyModelBaseScale(loadedObject);
 
             // Give the loader a frame to finish any late material/renderer setup
             yield return null;
@@ -318,12 +322,42 @@ public class VPWorldAreaLoader : MonoBehaviour
                  float.IsInfinity(value.x) || float.IsInfinity(value.y) || float.IsInfinity(value.z) || float.IsInfinity(value.w));
     }
 
+    private float GetClampedVpUnitsPerUnityUnit()
+    {
+        return Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+    }
+
+    private float GetUnityUnitsPerVpUnit()
+    {
+        return 1f / GetClampedVpUnitsPerUnityUnit();
+    }
+
+    private UnityEngine.Vector3 GetBaseScaleVector()
+    {
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
+        return new UnityEngine.Vector3(unityUnitsPerVpUnit, unityUnitsPerVpUnit, unityUnitsPerVpUnit);
+    }
+
+    private void ApplyModelBaseScale(GameObject target)
+    {
+        if (target == null) return;
+
+        UnityEngine.Vector3 baseScale = GetBaseScaleVector();
+        var scaleContext = target.GetComponent<VpModelScaleContext>();
+        if (scaleContext == null)
+            scaleContext = target.AddComponent<VpModelScaleContext>();
+
+        scaleContext.baseScale = baseScale;
+        target.transform.localScale = baseScale;
+    }
+
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
         return new UnityEngine.Vector3(
-            -(float)vpPos.X,
-            (float)vpPos.Y,
-            (float)vpPos.Z
+            -(float)vpPos.X * unityUnitsPerVpUnit,
+            (float)vpPos.Y * unityUnitsPerVpUnit,
+            (float)vpPos.Z * unityUnitsPerVpUnit
         );
     }
 }
