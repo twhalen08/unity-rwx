@@ -160,6 +160,7 @@ public static class VpActionExecutor
         }
 
         string tex = null;
+        int? targetTag = TryGetTag(cmd);
 
         if (cmd.positional != null && cmd.positional.Count > 0)
             tex = cmd.positional[0];
@@ -178,10 +179,10 @@ public static class VpActionExecutor
             return;
         }
 
-        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host));
+        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host, targetTag));
     }
 
-    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host)
+    private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? targetTag)
     {
         if (RWXAssetManager.Instance == null)
         {
@@ -200,7 +201,7 @@ public static class VpActionExecutor
         string cacheKey = MakeTextureCacheKey(objectPath, textureName);
         if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
         {
-            ApplyTextureToAllRenderers(target, cachedTex);
+            ApplyTextureToAllRenderers(target, cachedTex, targetTag);
             yield break;
         }
 
@@ -296,7 +297,7 @@ public static class VpActionExecutor
 
         _textureCache[cacheKey] = tex;
 
-        ApplyTextureToAllRenderers(target, tex);
+        ApplyTextureToAllRenderers(target, tex, targetTag);
 
         Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
     }
@@ -334,16 +335,31 @@ public static class VpActionExecutor
         return list;
     }
 
-    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex)
+    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex, int? targetTag)
     {
         if (root == null || tex == null) return;
 
         var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
         var block = new MaterialPropertyBlock();
+        int appliedCount = 0;
+        bool anyTaggedRenderer = false;
 
         foreach (var r in renderers)
         {
             if (r == null) continue;
+            if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData) && tagData.TagId != 0)
+            {
+                anyTaggedRenderer = true;
+                break;
+            }
+        }
+
+        foreach (var r in renderers)
+        {
+            if (r == null) continue;
+
+            if (targetTag.HasValue && anyTaggedRenderer && !RendererMatchesTag(r, targetTag, tex.name))
+                continue;
 
             r.GetPropertyBlock(block);
 
@@ -351,6 +367,48 @@ public static class VpActionExecutor
             block.SetTexture(_BaseMapId, tex);
 
             r.SetPropertyBlock(block);
+
+            // Also update the material instance to guarantee shader refresh
+            foreach (var m in r.materials)
+            {
+                if (m == null) continue;
+                
+                // Set on the material to ensure immediate refresh on Standard and similar shaders
+                m.mainTexture = tex;
+                if (m.HasProperty(_BaseMapId))
+                {
+                    m.SetTexture(_BaseMapId, tex);
+                }
+                if (m.HasProperty(_MainTexId))
+                {
+                    m.SetTexture(_MainTexId, tex);
+                }
+            }
+
+            appliedCount++;
+        }
+
+        if (targetTag.HasValue && appliedCount == 0)
+        {
+            var debugInfo = new System.Text.StringBuilder();
+            debugInfo.AppendLine($"[VP] texture '{tex.name}' with tag '{targetTag.Value}' found no matching renderers under '{root.name}'. Renderer tags seen:");
+
+            foreach (var r in renderers)
+            {
+                if (r == null) continue;
+
+                if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData))
+                {
+                    string textureName = string.IsNullOrEmpty(tagData.TextureName) ? "" : tagData.TextureName;
+                    debugInfo.AppendLine(string.Format("   - {0}: tag={1}, textureName='{2}'", r.gameObject.name, tagData.TagId, textureName));
+                }
+                else
+                {
+                    debugInfo.AppendLine(string.Format("   - {0}: <no tag data>", r.gameObject.name));
+                }
+            }
+
+            Debug.LogWarning(debugInfo.ToString());
         }
     }
 
@@ -372,10 +430,11 @@ public static class VpActionExecutor
         }
 
         string normalName = cmd.positional[0];
-        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password, host));
+        int? targetTag = TryGetTag(cmd);
+        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password, host, targetTag));
     }
 
-    private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host)
+    private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? targetTag)
     {
         var assetMgr = RWXAssetManager.Instance;
         if (assetMgr == null)
@@ -448,13 +507,28 @@ public static class VpActionExecutor
         tex.name = Path.GetFileNameWithoutExtension(localPath);
         tex.Apply(true, false);
 
-        ApplyNormalMapToRenderers(target, tex);
+        ApplyNormalMapToRenderers(target, tex, targetTag);
     }
 
-    private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal)
+    private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal, int? targetTag)
     {
+        bool anyTaggedRenderer = false;
+
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
+            if (r == null) continue;
+            if (RWXLoader.RWXTagRegistry.TryGetWithParents(r, out var tagData) && tagData.TagId != 0)
+            {
+                anyTaggedRenderer = true;
+                break;
+            }
+        }
+
+        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+        {
+            if (targetTag.HasValue && anyTaggedRenderer && !RendererMatchesTag(r, targetTag))
+                continue;
+
             foreach (var m in r.materials)
             {
                 if (m == null) continue;
@@ -592,6 +666,51 @@ public static class VpActionExecutor
             return val;
 
         return null;
+    }
+
+    private static int? TryGetTag(VpActionCommand cmd)
+    {
+        if (cmd?.kv != null && cmd.kv.TryGetValue("tag", out var tagValue))
+        {
+            if (int.TryParse(tagValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool RendererMatchesTag(Renderer renderer, int? targetTag, string targetTextureName = null)
+    {
+        if (renderer == null)
+            return false;
+
+        if (!targetTag.HasValue)
+            return true;
+
+        RWXLoader.RWXTag tagData;
+        int rendererTag = RWXLoader.RWXTagRegistry.TryGetWithParents(renderer, out tagData) ? tagData.TagId : 0;
+
+        if (rendererTag == targetTag.Value)
+            return true;
+
+        if (!string.IsNullOrEmpty(targetTextureName))
+        {
+            string storedName = System.IO.Path.GetFileNameWithoutExtension(tagData.TextureName ?? string.Empty);
+            string targetName = System.IO.Path.GetFileNameWithoutExtension(targetTextureName);
+
+            if (!string.IsNullOrEmpty(storedName) &&
+                !string.IsNullOrEmpty(targetName) &&
+                string.Equals(storedName, targetName, StringComparison.OrdinalIgnoreCase))
+            {
+                // Permit matching by texture name even when tag data is missing or mismatched,
+                // as some renderers may have lost their tag assignment during parsing.
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static Color ParseColor(string s, Color fallback)

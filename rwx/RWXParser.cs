@@ -18,6 +18,7 @@ namespace RWXLoader
         private readonly Regex textureRegex = new Regex(@"^\s*texture\s+(?<texture>[A-Za-z0-9_\-\/:.]+)(?:\s+(?<rest>.*))?$", DefaultRegexOptions);
         private readonly Regex colorRegex = new Regex(@"^\s*(color)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex opacityRegex = new Regex(@"^\s*(opacity)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
+        private readonly Regex tagRegex = new Regex(@"^\s*tag\s+([0-9]+).*$", DefaultRegexOptions);
         private readonly Regex surfaceRegex = new Regex(@"^\s*(surface)((\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?){3}).*$", DefaultRegexOptions);
         private readonly Regex ambientRegex = new Regex(@"^\s*(ambient)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
         private readonly Regex diffuseRegex = new Regex(@"^\s*(diffuse)(\s+[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)(e[-+][0-9]+)?).*$", DefaultRegexOptions);
@@ -90,7 +91,8 @@ namespace RWXLoader
                 { "jointtransformbegin", ProcessJointTransformBegin },
                 { "jointtransformend", ProcessJointTransformEnd },
                 { "identityjoint", ProcessIdentityJoint },
-                { "rotatejointtm", ProcessRotateJointTM }
+                { "rotatejointtm", ProcessRotateJointTM },
+                { "tag", ProcessTag }
             };
         }
 
@@ -100,6 +102,7 @@ namespace RWXLoader
         public void Reset()
         {
             prototypeParser?.Reset();
+            RWXTagRegistry.Clear();
         }
 
         private static string ExtractCommandToken(string line)
@@ -164,6 +167,7 @@ namespace RWXLoader
             if (ProcessLightSampling(line, context)) return;
             if (ProcessGeometrySampling(line, context)) return;
             if (ProcessTextureModes(line, context)) return;
+            if (ProcessTag(line, context)) return;
             if (ProcessClumpBegin(line, context)) return;
             if (ProcessClumpEnd(line, context)) return;
             if (ProcessTransformBegin(line, context)) return;
@@ -273,6 +277,11 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
 
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
+            }
+
             // Use original triangle order since coordinate conversion is handled at matrix level
             meshBuilder.CreateTriangle(context, a, b, c);
             return true;
@@ -295,6 +304,11 @@ namespace RWXLoader
             int b = int.Parse(intMatches[1].Value) - 1;
             int c = int.Parse(intMatches[2].Value) - 1;
             int d = int.Parse(intMatches[3].Value) - 1;
+
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
+            }
 
             // Use original quad order since we're handling coordinate conversion at root level
             meshBuilder.CreateQuad(context, a, b, c, d);
@@ -320,6 +334,11 @@ namespace RWXLoader
             for (int i = 1; i <= polyLen && i < intMatches.Count; i++)
             {
                 indices.Add(int.Parse(intMatches[i].Value) - 1);
+            }
+
+            if (match.Groups[6].Success && int.TryParse(match.Groups[6].Value, out int inlineTag))
+            {
+                ApplyTag(inlineTag, context);
             }
 
             // Use original polygon order since we're handling coordinate conversion at root level
@@ -560,6 +579,20 @@ namespace RWXLoader
                 if (modes.Contains("lit")) context.currentMaterial.textureModes.Add(TextureMode.Lit);
                 if (modes.Contains("foreshorten")) context.currentMaterial.textureModes.Add(TextureMode.Foreshorten);
                 if (modes.Contains("filter")) context.currentMaterial.textureModes.Add(TextureMode.Filter);
+            }
+
+            return true;
+        }
+
+        private bool ProcessTag(string line, RWXParseContext context)
+        {
+            var match = tagRegex.Match(line);
+            if (!match.Success) return false;
+
+            if (int.TryParse(match.Groups[1].Value, out int tagValue))
+            {
+                ApplyTag(tagValue, context);
+                Debug.Log($"🏷️ TAG SET: {tagValue}");
             }
 
             return true;
@@ -1231,6 +1264,38 @@ namespace RWXLoader
             return token.Length > 0;
         }
 
+        private void ApplyTag(int tagValue, RWXParseContext context)
+        {
+            meshBuilder.CheckMaterialChange(context);
+
+            context.currentMaterial.tag = tagValue;
+            context.currentMeshMaterial = context.currentMaterial.Clone();
+            
+            if (context.currentObject != null)
+            {
+                RWXTagRegistry.Register(context.currentObject, tagValue, context.currentMaterial?.texture);
+            }
+        }
+
+        private int? TryReadInlineTag(ReadOnlySpan<char> line, ref int index)
+        {
+            int scanIndex = index;
+            while (TryReadToken(line, ref scanIndex, out var token))
+            {
+                if (token.Equals("tag", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryReadInt(line, ref scanIndex, out int value))
+                    {
+                        index = scanIndex;
+                        return value;
+                    }
+                    break;
+                }
+            }
+
+            return null;
+        }
+
         private static bool TryReadFloat(ReadOnlySpan<char> line, ref int index, out float value)
         {
             if (!TryReadToken(line, ref index, out var token))
@@ -1332,6 +1397,12 @@ namespace RWXLoader
                 return false;
             }
 
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
+            }
+
             meshBuilder.CreateTriangle(context, a - 1, b - 1, c - 1);
             return true;
         }
@@ -1347,6 +1418,12 @@ namespace RWXLoader
                 !TryReadInt(line, ref index, out int d))
             {
                 return false;
+            }
+
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
             }
 
             meshBuilder.CreateQuad(context, a - 1, b - 1, c - 1, d - 1);
@@ -1371,6 +1448,12 @@ namespace RWXLoader
                 }
 
                 indices.Add(value - 1);
+            }
+
+            int? tag = TryReadInlineTag(line, ref index);
+            if (tag.HasValue)
+            {
+                ApplyTag(tag.Value, context);
             }
 
             meshBuilder.CreatePolygon(context, indices);

@@ -272,11 +272,26 @@ namespace RWXLoader
                 {
                     // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
                     // This prevents cross-contamination between different materials
-                    string rendererName = renderer.gameObject.name;
                     string expectedTextureName = rwxMaterial.texture ?? "default";
+                    string rendererName = renderer.gameObject.name;
+                    RWXTag rendererTagData;
+                    int rendererTag = 0;
+                    string rendererTextureName = rendererName;
+
+                    if (RWXTagRegistry.TryGetWithParents(renderer, out rendererTagData))
+                    {
+                        rendererTag = rendererTagData.TagId;
+                        if (!string.IsNullOrEmpty(rendererTagData.TextureName))
+                        {
+                            rendererTextureName = rendererTagData.TextureName;
+                        }
+                    }
+
+                    bool nameMatches = rendererTextureName == expectedTextureName;
+                    bool tagMatches = rendererTag == rwxMaterial.tag;
                     
-                    // Only update if the renderer name matches the texture name (this indicates it's the right material group)
-                    if (rendererName == expectedTextureName)
+                    // Only update if the renderer matches both texture and tag
+                    if (nameMatches && tagMatches)
                     {
                         // Update the renderer's material instance with the new texture
                         Material rendererMaterial = renderer.material;
@@ -351,6 +366,8 @@ namespace RWXLoader
             {
                 textureLoader.ClearCache();
             }
+
+            RWXTagRegistry.Clear();
         }
 
         private void OnDestroy()
