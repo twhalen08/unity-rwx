@@ -35,23 +35,32 @@ namespace RWXLoader
             RWXTag rendererTag;
             bool hasRendererTag = TryGet(renderer, out rendererTag);
 
-            if (hasRendererTag && (rendererTag.TagId != 0 || !string.IsNullOrEmpty(rendererTag.TextureName)))
+            // If the renderer has a meaningful tag, use it
+            if (hasRendererTag && rendererTag.TagId != 0)
             {
                 tag = rendererTag;
                 return true;
             }
 
+            // Otherwise, walk parents to find an ancestor tag
             Transform current = renderer != null ? renderer.transform : null;
             while (current != null)
             {
-                if (TryGet(current.gameObject, out tag))
+                if (TryGet(current.gameObject, out tag) && tag.TagId != 0)
                 {
                     return true;
                 }
                 current = current.parent;
             }
 
-            tag = hasRendererTag ? rendererTag : default;
+            // Fall back to renderer's stored data (may include texture name) if no ancestor had a tag
+            if (hasRendererTag)
+            {
+                tag = rendererTag;
+                return tag.TagId != 0 || !string.IsNullOrEmpty(tag.TextureName);
+            }
+
+            tag = default;
             return false;
         }
 
