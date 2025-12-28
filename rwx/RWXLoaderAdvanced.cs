@@ -327,18 +327,18 @@ namespace RWXLoader
             materialManager.SetTextureSource(objectPath, password);
             parser?.Reset();
 
-            string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-
-            if (enableDebugLogs)
-                Debug.Log($"Parsing {lines.Length} lines of RWX content (yielding)");
-
-            const int yieldEvery = 200;
+            const int yieldEvery = 100;
             int processed = 0;
+            int totalLines = 0;
+            using var reader = new StringReader(rwxContent);
 
             Exception parseException = null;
 
-            foreach (string line in lines)
+            string line;
+            while ((line = reader.ReadLine()) != null)
             {
+                totalLines++;
+
                 try
                 {
                     parser.ProcessLine(line, context);
@@ -366,7 +366,10 @@ namespace RWXLoader
             meshBuilder.FinalCommit(context);
 
             if (enableDebugLogs)
-                Debug.Log($"Created model with {context.vertices.Count} vertices");
+                Debug.Log($"Created model with {context.vertices.Count} vertices after streaming {totalLines} lines");
+
+            // Give one last frame break before handing the built object back
+            yield return null;
 
             onParsed?.Invoke(rootObject);
         }
