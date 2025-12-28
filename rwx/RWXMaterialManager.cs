@@ -74,15 +74,27 @@ namespace RWXLoader
         public Material GetUnityMaterial(RWXMaterial rwxMaterial)
         {
             string signature = rwxMaterial.GetMaterialSignature();
+            Color effectiveColor = rwxMaterial.GetEffectiveColor();
+            float effectiveAlpha = rwxMaterial.opacity;
             
             if (materialCache.TryGetValue(signature, out Material cachedMaterial))
             {
+                // Ensure cached materials pick up the latest default color (white) when none is specified
+                ApplyColorToMaterial(cachedMaterial, effectiveColor, effectiveAlpha);
                 return cachedMaterial;
             }
 
             Material unityMaterial = CreateUnityMaterial(rwxMaterial);
             materialCache[signature] = unityMaterial;
             return unityMaterial;
+        }
+
+        private void ApplyColorToMaterial(Material material, Color baseColor, float alpha)
+        {
+            if (material == null) return;
+
+            var colorWithAlpha = new Color(baseColor.r, baseColor.g, baseColor.b, alpha);
+            material.color = colorWithAlpha;
         }
 
         private Material CreateUnityMaterial(RWXMaterial rwxMaterial)
@@ -96,7 +108,8 @@ namespace RWXLoader
                 material = new Material(Shader.Find("Standard"));
                 
                 // Set base color with proper alpha
-                Color materialColor = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                Color materialColor = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
                 material.color = materialColor;
                 
                 // Set metallic and smoothness based on surface properties
@@ -135,7 +148,8 @@ namespace RWXLoader
             else
             {
                 material = new Material(Shader.Find("Legacy Shaders/Diffuse"));
-                material.color = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
                 
                 // Handle transparency for legacy shader
                 bool hasMask = !string.IsNullOrEmpty(rwxMaterial.mask);
