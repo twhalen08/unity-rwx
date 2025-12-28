@@ -6,6 +6,10 @@ namespace RWXLoader
 {
     public class RWXMeshBuilder
     {
+        // Toggle prototype mesh logging to avoid main-thread stalls when instantiating large assets
+        private const bool LogPrototypeMeshSummary = false;
+        private const bool LogPrototypeMeshDetails = false;
+
         private RWXMaterialManager materialManager;
 
         public RWXMeshBuilder(RWXMaterialManager materialManager)
@@ -255,9 +259,19 @@ namespace RWXLoader
                 meshRenderer.material = materialManager.GetDefaultMaterial();
             }
 
-            Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
-            Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
-            Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+            int vertexCount = positions.Length;
+            int triangleCount = context.currentTriangles.Count / 3;
+
+            if (LogPrototypeMeshSummary)
+            {
+                Debug.Log($"Created prototype mesh '{materialName}' with {vertexCount} vertices and {triangleCount} triangles");
+            }
+
+            if (LogPrototypeMeshDetails)
+            {
+                Debug.Log($"Mesh vertex positions: {string.Join(\", \", positions)}");
+                Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+            }
 
             // Clear for next mesh
             context.currentTriangles.Clear();
