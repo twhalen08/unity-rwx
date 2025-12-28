@@ -1,5 +1,6 @@
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using UnityEngine;
 
 namespace RWXLoader
@@ -262,16 +263,8 @@ namespace RWXLoader
             int vertexCount = positions.Length;
             int triangleCount = context.currentTriangles.Count / 3;
 
-            if (LogPrototypeMeshSummary)
-            {
-                Debug.Log($"Created prototype mesh '{materialName}' with {vertexCount} vertices and {triangleCount} triangles");
-            }
-
-            if (LogPrototypeMeshDetails)
-            {
-                Debug.Log($"Mesh vertex positions: {string.Join(\", \", positions)}");
-                Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
-            }
+            LogPrototypeSummary(materialName, vertexCount, triangleCount);
+            LogPrototypeDetails(positions, meshObject);
 
             // Clear for next mesh
             context.currentTriangles.Clear();
@@ -467,5 +460,23 @@ namespace RWXLoader
             return accumulator + faceNormal;
         }
 
+        [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
+        private static void LogPrototypeSummary(string materialName, int vertexCount, int triangleCount)
+        {
+            if (LogPrototypeMeshSummary)
+            {
+                Debug.Log($"Created prototype mesh '{materialName}' with {vertexCount} vertices and {triangleCount} triangles");
+            }
+        }
+
+        [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
+        private static void LogPrototypeDetails(Vector3[] positions, GameObject meshObject)
+        {
+            if (LogPrototypeMeshDetails)
+            {
+                Debug.Log($"Mesh vertex positions: {string.Join(\", \", positions)}");
+                Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+            }
+        }
     }
 }
