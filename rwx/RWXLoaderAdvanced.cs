@@ -214,17 +214,23 @@ namespace RWXLoader
             if (enableDebugLogs)
                 Debug.Log($"Found RWX file: {rwxFileName} ({rwxContent.Length} characters)");
 
-            // Step 4: Parse RWX content and create GameObject
+            // Step 4: Parse RWX content and create GameObject (yielding to avoid long stalls)
             GameObject modelObject = null;
-            try
+            string parseError = null;
+
+            yield return ParseRWXFromMemoryCoroutine(
+                rwxContent,
+                modelName,
+                archive,
+                objectPath,
+                password,
+                go => modelObject = go,
+                err => parseError = err);
+
+            if (parseError != null)
             {
-                modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
-            }
-            catch (Exception e)
-            {
-                string error = $"Failed to parse RWX model: {e.Message}";
-                Debug.LogError(error);
-                onComplete?.Invoke(null, error);
+                Debug.LogError(parseError);
+                onComplete?.Invoke(null, parseError);
                 yield break;
             }
 
@@ -246,7 +252,7 @@ namespace RWXLoader
         }
 
         /// <summary>
-        /// Parses RWX content from memory and creates a GameObject
+        /// Parses RWX content from memory and creates a GameObject synchronously
         /// </summary>
         private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
         {
@@ -291,6 +297,69 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        /// <summary>
+        /// Coroutine version of ParseRWXFromMemory that periodically yields to reduce main-thread stalls
+        /// </summary>
+        private IEnumerator ParseRWXFromMemoryCoroutine(
+            string rwxContent,
+            string modelName,
+            ZipArchive archive,
+            string objectPath,
+            string password,
+            Action<GameObject> onParsed,
+            Action<string> onError)
+        {
+            GameObject rootObject = new GameObject(modelName);
+            var context = new RWXParseContext
+            {
+                rootObject = rootObject,
+                currentObject = rootObject
+            };
+
+            if (materialManager == null || meshBuilder == null || parser == null)
+            {
+                onError?.Invoke("Components not properly initialized");
+                yield break;
+            }
+
+            materialManager.SetTextureSource(objectPath, password);
+            parser?.Reset();
+
+            string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (enableDebugLogs)
+                Debug.Log($"Parsing {lines.Length} lines of RWX content (yielding)");
+
+            const int yieldEvery = 200;
+            int processed = 0;
+
+            try
+            {
+                foreach (string line in lines)
+                {
+                    parser.ProcessLine(line, context);
+                    processed++;
+
+                    if (processed % yieldEvery == 0)
+                    {
+                        yield return null; // Give control back to Unity to avoid long frame stalls
+                    }
+                }
+
+                meshBuilder.FinalCommit(context);
+
+                if (enableDebugLogs)
+                    Debug.Log($"Created model with {context.vertices.Count} vertices");
+
+                onParsed?.Invoke(rootObject);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"Failed to parse RWX model: {e.Message}");
+                yield break;
+            }
         }
 
         private string FindFirstRwxEntry(ZipArchive archive)
