@@ -269,7 +269,7 @@ namespace RWXLoader
 
             if (LogPrototypeMeshDetails)
             {
-                Debug.Log($"Mesh vertex positions: {string.Join(\", \", positions)}");
+                Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
                 Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
             }
 #endif
