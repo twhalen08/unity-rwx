@@ -147,7 +147,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -221,7 +222,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -280,8 +282,85 @@ namespace RWXLoader
             public Vector3[] normals;
         }
 
-        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
+        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles, bool isDoubleSided)
         {
+            if (isDoubleSided)
+            {
+                var doublePositions = new List<Vector3>(triangles.Length * 2);
+                var doubleUvs = new List<Vector2>(triangles.Length * 2);
+                var doubleNormals = new List<Vector3>(triangles.Length * 2);
+                var doubleTriangles = new List<int>(triangles.Length * 2);
+
+                for (int i = 0; i < triangles.Length; i += 3)
+                {
+                    int i0 = triangles[i];
+                    int i1 = triangles[i + 1];
+                    int i2 = triangles[i + 2];
+
+                    if (i0 < 0 || i0 >= positions.Length ||
+                        i1 < 0 || i1 >= positions.Length ||
+                        i2 < 0 || i2 >= positions.Length)
+                    {
+                        continue;
+                    }
+
+                    Vector3 p0 = positions[i0];
+                    Vector3 p1 = positions[i1];
+                    Vector3 p2 = positions[i2];
+
+                    Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
+                    if (faceNormal.sqrMagnitude < 1e-12f)
+                    {
+                        continue;
+                    }
+
+                    faceNormal.Normalize();
+
+                    int baseIndex = doublePositions.Count;
+                    doublePositions.Add(p0);
+                    doublePositions.Add(p1);
+                    doublePositions.Add(p2);
+
+                    doubleUvs.Add(uvs[i0]);
+                    doubleUvs.Add(uvs[i1]);
+                    doubleUvs.Add(uvs[i2]);
+
+                    doubleNormals.Add(faceNormal);
+                    doubleNormals.Add(faceNormal);
+                    doubleNormals.Add(faceNormal);
+
+                    doubleTriangles.Add(baseIndex);
+                    doubleTriangles.Add(baseIndex + 1);
+                    doubleTriangles.Add(baseIndex + 2);
+
+                    int reverseBase = doublePositions.Count;
+                    doublePositions.Add(p0);
+                    doublePositions.Add(p2);
+                    doublePositions.Add(p1);
+
+                    Vector3 flippedNormal = -faceNormal;
+                    doubleUvs.Add(uvs[i0]);
+                    doubleUvs.Add(uvs[i2]);
+                    doubleUvs.Add(uvs[i1]);
+
+                    doubleNormals.Add(flippedNormal);
+                    doubleNormals.Add(flippedNormal);
+                    doubleNormals.Add(flippedNormal);
+
+                    doubleTriangles.Add(reverseBase);
+                    doubleTriangles.Add(reverseBase + 1);
+                    doubleTriangles.Add(reverseBase + 2);
+                }
+
+                return new MeshData
+                {
+                    positions = doublePositions.ToArray(),
+                    uvs = doubleUvs.ToArray(),
+                    triangles = doubleTriangles.ToArray(),
+                    normals = doubleNormals.ToArray()
+                };
+            }
+
             // First pass: gather face normals per vertex to detect opposing directions
             var perVertexNormals = new List<Vector3>[positions.Length];
             var faceNormals = new Vector3[triangles.Length / 3];
