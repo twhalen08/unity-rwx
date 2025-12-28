@@ -335,31 +335,40 @@ namespace RWXLoader
             const int yieldEvery = 200;
             int processed = 0;
 
-            try
+            Exception parseException = null;
+
+            foreach (string line in lines)
             {
-                foreach (string line in lines)
+                try
                 {
                     parser.ProcessLine(line, context);
-                    processed++;
-
-                    if (processed % yieldEvery == 0)
-                    {
-                        yield return null; // Give control back to Unity to avoid long frame stalls
-                    }
+                }
+                catch (Exception e)
+                {
+                    parseException = e;
+                    break;
                 }
 
-                meshBuilder.FinalCommit(context);
+                processed++;
 
-                if (enableDebugLogs)
-                    Debug.Log($"Created model with {context.vertices.Count} vertices");
-
-                onParsed?.Invoke(rootObject);
+                if (processed % yieldEvery == 0)
+                {
+                    yield return null; // Give control back to Unity to avoid long frame stalls
+                }
             }
-            catch (Exception e)
+
+            if (parseException != null)
             {
-                onError?.Invoke($"Failed to parse RWX model: {e.Message}");
+                onError?.Invoke($"Failed to parse RWX model: {parseException.Message}");
                 yield break;
             }
+
+            meshBuilder.FinalCommit(context);
+
+            if (enableDebugLogs)
+                Debug.Log($"Created model with {context.vertices.Count} vertices");
+
+            onParsed?.Invoke(rootObject);
         }
 
         private string FindFirstRwxEntry(ZipArchive archive)
