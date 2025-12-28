@@ -152,7 +152,8 @@ namespace RWXLoader
             // Apply tint if enabled
             if (rwxMaterial.tint)
             {
-                material.color = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
             }
             else
             {
@@ -173,7 +174,8 @@ namespace RWXLoader
             // Apply tint if enabled
             if (rwxMaterial.tint)
             {
-                material.color = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
             }
             else
             {

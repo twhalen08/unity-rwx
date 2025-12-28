@@ -426,6 +426,7 @@ namespace RWXLoader
             float b = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
 
             context.currentMaterial.color = new Color(r, g, b, context.currentMaterial.color.a);
+            context.currentMaterial.hasExplicitColor = true;
             return true;
         }
 
@@ -1553,6 +1554,7 @@ namespace RWXLoader
             }
 
             context.currentMaterial.color = new Color(r, g, b, context.currentMaterial.color.a);
+            context.currentMaterial.hasExplicitColor = true;
             return true;
         }
 

@@ -96,7 +96,8 @@ namespace RWXLoader
                 material = new Material(Shader.Find("Standard"));
                 
                 // Set base color with proper alpha
-                Color materialColor = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                Color materialColor = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
                 material.color = materialColor;
                 
                 // Set metallic and smoothness based on surface properties
@@ -135,7 +136,8 @@ namespace RWXLoader
             else
             {
                 material = new Material(Shader.Find("Legacy Shaders/Diffuse"));
-                material.color = new Color(rwxMaterial.color.r, rwxMaterial.color.g, rwxMaterial.color.b, rwxMaterial.opacity);
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
                 
                 // Handle transparency for legacy shader
                 bool hasMask = !string.IsNullOrEmpty(rwxMaterial.mask);
