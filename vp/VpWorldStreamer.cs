@@ -884,6 +884,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         bool completed = false;
         GameObject loadedObject = null;
         string errorMessage = null;
+        List<VpActionCommand> createActions = null;
+        List<VpActionCommand> activateActions = null;
+
+        if (!string.IsNullOrWhiteSpace(req.action))
+        {
+            VpActionParser.Parse(req.action, out createActions, out activateActions);
+        }
+
+        createActions ??= new List<VpActionCommand>();
+        activateActions ??= new List<VpActionCommand>();
+
+        bool activateOnInstantiate = createActions.Count == 0;
 
         modelLoader.parentTransform = parent;
 
@@ -896,7 +908,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 errorMessage = errMsg;
                 completed = true;
             },
-            objectPathPassword
+            objectPathPassword,
+            activateOnInstantiate
         );
 
         while (!completed)
@@ -930,10 +943,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
 
         // Phase 2: apply actions (time-sliced)
-        if (!string.IsNullOrWhiteSpace(req.action))
+        if (createActions.Count > 0 || activateActions.Count > 0)
         {
-            VpActionParser.Parse(req.action, out var createActions, out var activateActions);
-
             if (logCreateActions && createActions.Count > 0)
                 Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
 
@@ -1000,6 +1011,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (logActivateActions)
                     Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
             }
+        }
+
+        if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
+        {
+            loadedObject.SetActive(true);
         }
     }
 
