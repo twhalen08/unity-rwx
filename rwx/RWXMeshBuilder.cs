@@ -7,10 +7,12 @@ namespace RWXLoader
     public class RWXMeshBuilder
     {
         private RWXMaterialManager materialManager;
+        private readonly bool enableMeshDebug;
 
-        public RWXMeshBuilder(RWXMaterialManager materialManager)
+        public RWXMeshBuilder(RWXMaterialManager materialManager, bool enableMeshDebug = false)
         {
             this.materialManager = materialManager;
+            this.enableMeshDebug = enableMeshDebug;
         }
 
         public void CreateTriangle(RWXParseContext context, int a, int b, int c)
@@ -253,9 +255,11 @@ namespace RWXLoader
                 meshRenderer.material = materialManager.GetDefaultMaterial();
             }
 
-            Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
-            Debug.Log($"Mesh vertex positions: {string.Join(", ", positions)}");
-            Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+            if (enableMeshDebug)
+            {
+                Debug.Log($"Created prototype mesh '{materialName}' with {positions.Length} vertices and {context.currentTriangles.Count / 3} triangles");
+                Debug.Log($"Mesh object localPos: {meshObject.transform.localPosition}, worldPos: {meshObject.transform.position}");
+            }
 
             // Clear for next mesh
             context.currentTriangles.Clear();

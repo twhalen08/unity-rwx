@@ -196,6 +196,18 @@ public class VPWorldAreaLoader : MonoBehaviour
             bool completed = false;
             GameObject loadedObject = null;
             string errorMessage = null;
+            List<VpActionCommand> createActions = null;
+            List<VpActionCommand> activateActions = null;
+
+            if (!string.IsNullOrWhiteSpace(request.action))
+            {
+                VpActionParser.Parse(request.action, out createActions, out activateActions);
+            }
+
+            createActions ??= new List<VpActionCommand>();
+            activateActions ??= new List<VpActionCommand>();
+
+            bool activateOnInstantiate = createActions.Count == 0;
 
             modelLoader.LoadModelFromRemote(
                 modelId,
@@ -206,7 +218,8 @@ public class VPWorldAreaLoader : MonoBehaviour
                     errorMessage = errMsg;
                     completed = true;
                 },
-                objectPathPassword
+                objectPathPassword,
+                activateOnInstantiate
             );
 
             while (!completed)
@@ -228,10 +241,8 @@ public class VPWorldAreaLoader : MonoBehaviour
             yield return null;
 
             // ✅ Apply VP action semantics (create actions ONCE)
-            if (!string.IsNullOrWhiteSpace(request.action))
+            if (createActions.Count > 0 || activateActions.Count > 0)
             {
-                VpActionParser.Parse(request.action, out var createActions, out var activateActions);
-
                 if (logCreateActions && createActions.Count > 0)
                     Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
 
@@ -247,6 +258,11 @@ public class VPWorldAreaLoader : MonoBehaviour
                     if (logActivateActions)
                         Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
                 }
+            }
+
+            if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
+            {
+                loadedObject.SetActive(true);
             }
 
             yield return null;
