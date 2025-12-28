@@ -7,6 +7,7 @@ namespace RWXLoader
     public class RWXMaterial
     {
         public Color color = Color.white;
+        public bool hasExplicitColor = false;
         public Vector3 surface = new Vector3(0.69f, 0.0f, 0.0f); // Ambience, Diffusion, Specularity
         public float opacity = 1.0f;
         public LightSampling lightSampling = LightSampling.Facet;
@@ -42,12 +43,19 @@ namespace RWXLoader
             cloned.collision = collision;
             cloned.tag = tag;
             cloned.ratio = ratio;
+            cloned.hasExplicitColor = hasExplicitColor;
             return cloned;
+        }
+
+        public Color GetEffectiveColor()
+        {
+            return hasExplicitColor ? color : Color.white;
         }
 
         public string GetMaterialSignature()
         {
-            var colorStr = $"{color.r:F3}{color.g:F3}{color.b:F3}";
+            var baseColor = GetEffectiveColor();
+            var colorStr = $"{baseColor.r:F3}{baseColor.g:F3}{baseColor.b:F3}";
             var surfaceStr = $"{surface.x:F3}{surface.y:F3}{surface.z:F3}";
             var opacityStr = opacity.ToString("F3");
             var lightSamplingStr = ((int)lightSampling).ToString();
