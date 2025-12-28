@@ -26,9 +26,11 @@ public static class VpActionExecutor
     {
         if (target == null) return;
 
-        // Ambient should not dim the albedo. Treat it as an emissive boost based on the
-        // material's base color so lower values don't crush brightness.
-        ambient = Mathf.Max(0f, ambient);
+        // Ambient should not dim the albedo. Treat it as a gentle emissive boost based on the
+        // material's base color so lower values don't crush brightness, while keeping higher
+        // values from blowing out highlights.
+        ambient = Mathf.Clamp01(ambient);
+        const float EmissionScale = 0.5f; // cap how much extra light ambient contributes
 
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
         {
@@ -46,7 +48,7 @@ public static class VpActionExecutor
 
                 if (m.HasProperty("_EmissionColor"))
                 {
-                    m.SetColor("_EmissionColor", baseColor * ambient);
+                    m.SetColor("_EmissionColor", baseColor * (ambient * EmissionScale));
                     if (ambient > 0f)
                     {
                         m.EnableKeyword("_EMISSION");
