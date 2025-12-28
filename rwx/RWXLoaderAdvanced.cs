@@ -15,7 +15,7 @@ namespace RWXLoader
         public Transform parentTransform;
         
         [Header("Debug")]
-        public bool enableDebugLogs = true;
+        public bool enableDebugLogs = false;
         
         private RWXParser parser;
         private RWXMeshBuilder meshBuilder;
@@ -41,7 +41,7 @@ namespace RWXLoader
             }
 
             meshBuilder = new RWXMeshBuilder(materialManager, enableDebugLogs);
-            parser = new RWXParser(meshBuilder);
+            parser = new RWXParser(meshBuilder, enableDebugLogs);
         }
 
         private void InitializeAssetManager()

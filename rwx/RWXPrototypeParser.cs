@@ -22,11 +22,21 @@ namespace RWXLoader
         
         private RWXParser mainParser;
         private RWXMeshBuilder meshBuilder;
+        private readonly bool enableDebugLogs;
         
-        public RWXPrototypeParser(RWXParser mainParser, RWXMeshBuilder meshBuilder)
+        public RWXPrototypeParser(RWXParser mainParser, RWXMeshBuilder meshBuilder, bool enableDebugLogs = false)
         {
             this.mainParser = mainParser;
             this.meshBuilder = meshBuilder;
+            this.enableDebugLogs = enableDebugLogs;
+        }
+
+        private void LogDebug(string message)
+        {
+            if (enableDebugLogs)
+            {
+                Debug.Log(message);
+            }
         }
         
         /// <summary>
@@ -60,7 +70,8 @@ namespace RWXLoader
             currentPrototypeLines = new List<string>();
             isInPrototype = true;
             
-            Debug.Log($"Starting prototype definition: {currentPrototypeName}");
+            if (enableDebugLogs)
+            LogDebug($"Starting prototype definition: {currentPrototypeName}");
             return true;
         }
         
@@ -72,7 +83,8 @@ namespace RWXLoader
             {
                 // Store the prototype
                 prototypes[currentPrototypeName] = new List<string>(currentPrototypeLines);
-                Debug.Log($"Stored prototype '{currentPrototypeName}' with {currentPrototypeLines.Count} lines");
+                if (enableDebugLogs)
+                    LogDebug($"Stored prototype '{currentPrototypeName}' with {currentPrototypeLines.Count} lines");
                 
                 // Reset state
                 currentPrototypeName = null;
@@ -96,8 +108,11 @@ namespace RWXLoader
                 return true;
             }
             
-            Debug.Log($"🌲 PROTOTYPE INSTANCE: {prototypeName}");
-            Debug.Log($"🌲 Current context transform: {context.currentTransform}");
+            if (enableDebugLogs)
+            {
+            LogDebug($"🌲 PROTOTYPE INSTANCE: {prototypeName}");
+            LogDebug($"🌲 Current context transform: {context.currentTransform}");
+            }
             
             // Commit current mesh before creating instance
             meshBuilder.CommitCurrentMesh(context);
@@ -138,7 +153,8 @@ namespace RWXLoader
                 }
             }
 
-            Debug.Log($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
+            if (enableDebugLogs)
+            LogDebug($"🌲 Prototype {prototypeName} created {context.vertices.Count} vertices and {context.currentTriangles.Count} triangles");
 
             // Decide how to position the prototype instance:
             // - If the prototype defines its own Transform matrix, use it directly.
@@ -204,7 +220,7 @@ namespace RWXLoader
         public void Reset()
         {
             ClearPrototypes();
-            Debug.Log("🔄 Prototype parser reset for new model");
+            LogDebug("🔄 Prototype parser reset for new model");
         }
         
         /// <summary>
@@ -323,7 +339,7 @@ namespace RWXLoader
             // Calculate relative offset from cube position
             float relativeOffset = coneZ - cubeZ;
             
-            Debug.Log($"🌲 Tree positioning: {prototypeName} - Cube Z: {cubeZ}, Cone Z: {coneZ}, Relative offset: {relativeOffset}");
+            LogDebug($"🌲 Tree positioning: {prototypeName} - Cube Z: {cubeZ}, Cone Z: {coneZ}, Relative offset: {relativeOffset}");
             
             // Create a translation matrix for the relative offset
             Matrix4x4 offsetTransform = Matrix4x4.Translate(new Vector3(0, 0, relativeOffset));
@@ -349,7 +365,7 @@ namespace RWXLoader
             // Generic spacing: 0.1 units per prototype number
             float zOffset = prototypeNumber * 0.1f;
             
-            Debug.Log($"🔧 Generic numbered prototype fix: {prototypeName} -> Z offset: {zOffset}");
+            LogDebug($"🔧 Generic numbered prototype fix: {prototypeName} -> Z offset: {zOffset}");
             
             // Create a translation matrix for the Z offset
             Matrix4x4 offsetTransform = Matrix4x4.Translate(new Vector3(0, 0, zOffset));
@@ -387,9 +403,9 @@ namespace RWXLoader
             // Force m33 to 1 if it's 0 (invalid for TRS)
             if (matrix.m33 == 0) matrix.m33 = 1.0f;
             
-            Debug.Log($"🛏️ PROTOTYPE MATRIX EXTRACTION:");
-            Debug.Log($"   RWX Row-Major Translation (column 3): ({values[3]:F6}, {values[7]:F6}, {values[11]:F6})");
-            Debug.Log($"   Unity Column-Major Translation: ({matrix.m03:F6}, {matrix.m13:F6}, {matrix.m23:F6})");
+            LogDebug($"🛏️ PROTOTYPE MATRIX EXTRACTION:");
+            LogDebug($"   RWX Row-Major Translation (column 3): ({values[3]:F6}, {values[7]:F6}, {values[11]:F6})");
+            LogDebug($"   Unity Column-Major Translation: ({matrix.m03:F6}, {matrix.m13:F6}, {matrix.m23:F6})");
             
             return matrix;
         }
@@ -459,7 +475,7 @@ namespace RWXLoader
                 instanceObject.transform.localRotation = rotation;
                 instanceObject.transform.localScale = scale;
                 
-                Debug.Log($"🛏️ Applied prototype transform - Position: {position:F6}, Rotation: {rotation}, Scale: {scale:F6}");
+                LogDebug($"🛏️ Applied prototype transform - Position: {position:F6}, Rotation: {rotation}, Scale: {scale:F6}");
             }
             else
             {
@@ -468,7 +484,7 @@ namespace RWXLoader
                 Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
                 
                 instanceObject.transform.localPosition = fallbackPosition;
-                Debug.Log($"🛏️ Applied fallback position: {fallbackPosition:F6}");
+                LogDebug($"🛏️ Applied fallback position: {fallbackPosition:F6}");
             }
         }
         
@@ -480,9 +496,9 @@ namespace RWXLoader
             // Reflect across X on both sides to convert the right-handed RWX matrix to Unity's left-handed space.
             Matrix4x4 unityMatrix = RWXParser.RwxToUnityReflection * rwxMatrix * RWXParser.RwxToUnityReflection;
 
-            Debug.Log($"🔄 PROTOTYPE MATRIX CONVERSION");
-            Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
-            Debug.Log($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
+            LogDebug($"🔄 PROTOTYPE MATRIX CONVERSION");
+            LogDebug($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
+            LogDebug($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
 
             return unityMatrix;
         }

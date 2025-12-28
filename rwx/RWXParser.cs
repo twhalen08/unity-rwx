@@ -48,12 +48,14 @@ namespace RWXLoader
 
         private RWXMeshBuilder meshBuilder;
         private RWXPrototypeParser prototypeParser;
+        private readonly bool enableDebugLogs;
         private readonly Dictionary<string, Func<string, RWXParseContext, bool>> commandHandlers;
 
-        public RWXParser(RWXMeshBuilder meshBuilder)
+        public RWXParser(RWXMeshBuilder meshBuilder, bool enableDebugLogs = false)
         {
             this.meshBuilder = meshBuilder;
-            this.prototypeParser = new RWXPrototypeParser(this, meshBuilder);
+            this.enableDebugLogs = enableDebugLogs;
+            this.prototypeParser = new RWXPrototypeParser(this, meshBuilder, enableDebugLogs);
             commandHandlers = new Dictionary<string, Func<string, RWXParseContext, bool>>(StringComparer.OrdinalIgnoreCase)
             {
                 { "vertex", ProcessVertex },
@@ -102,6 +104,14 @@ namespace RWXLoader
         public void Reset()
         {
             prototypeParser?.Reset();
+        }
+
+        private void LogDebug(string message)
+        {
+            if (enableDebugLogs)
+            {
+                Debug.Log(message);
+            }
         }
 
         private static string ExtractCommandToken(string line)
@@ -220,7 +230,7 @@ namespace RWXLoader
                     {
                         // For prototypes with rotation matrices that flip textures, apply additional correction
                         uv = new Vector2(uv.x, 1.0f - uv.y); // Double flip to correct orientation
-                        Debug.Log($"🎨 UV CORRECTION: Applied additional UV flip for prototype texture orientation");
+                        LogDebug($"🎨 UV CORRECTION: Applied additional UV flip for prototype texture orientation");
                     }
                 }
             }
@@ -643,9 +653,9 @@ namespace RWXLoader
             // Reset baked-prototype flag for this clump scope
             context.hasBakedPrototypeInstances = false;
 
-            Debug.Log($"🎯 CLUMP BEGIN - Depth: {depth}");
-            Debug.Log($"   📦 Created: '{clumpName}' - clump-local matrix will be derived from parent on clumpend");
-            Debug.Log($"   ═══════════════════════════════════════");
+            LogDebug($"🎯 CLUMP BEGIN - Depth: {depth}");
+            LogDebug($"   📦 Created: '{clumpName}' - clump-local matrix will be derived from parent on clumpend");
+            LogDebug($"   ═══════════════════════════════════════");
 
             return true;
         }
@@ -656,10 +666,10 @@ namespace RWXLoader
             Matrix4x4 unityMatrix = RwxToUnityReflection * rwxMatrix * RwxToUnityReflection;
 
             string hierarchyPath = GetHierarchyPath(context);
-            Debug.Log($"🔄 MATRIX CONVERSION | {hierarchyPath}");
-            Debug.Log($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
-            Debug.Log($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
-            Debug.Log($"   Stack Depth: {context.objectStack.Count}");
+            LogDebug($"🔄 MATRIX CONVERSION | {hierarchyPath}");
+            LogDebug($"   RWX Translation: ({rwxMatrix.m03:F6}, {rwxMatrix.m13:F6}, {rwxMatrix.m23:F6})");
+            LogDebug($"   Unity Translation: ({unityMatrix.m03:F6}, {unityMatrix.m13:F6}, {unityMatrix.m23:F6})");
+            LogDebug($"   Stack Depth: {context.objectStack.Count}");
 
             return unityMatrix;
         }
@@ -682,10 +692,10 @@ namespace RWXLoader
                 target.transform.localRotation = rotation;
                 target.transform.localScale = scale;
 
-                Debug.Log($"   🔄 Applied accumulated transform:");
-                Debug.Log($"   📍 Local Position: {position:F6}");
-                Debug.Log($"   🔄 Local Rotation: {rotation}");
-                Debug.Log($"   📏 Local Scale: {scale:F6}");
+                LogDebug($"   🔄 Applied accumulated transform:");
+                LogDebug($"   📍 Local Position: {position:F6}");
+                LogDebug($"   🔄 Local Rotation: {rotation}");
+                LogDebug($"   📏 Local Scale: {scale:F6}");
             }
             else
             {
@@ -693,7 +703,7 @@ namespace RWXLoader
                 Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
 
                 target.transform.localPosition = fallbackPosition;
-                Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
+                LogDebug($"   📍 Applied fallback position: {fallbackPosition:F6}");
             }
         }
 
@@ -872,8 +882,8 @@ namespace RWXLoader
             string currentName = context.currentObject != null ? context.currentObject.name : "NULL";
             int depth = context.objectStack.Count;
             
-            Debug.Log($"🏁 CLUMP END - Depth: {depth}");
-            Debug.Log($"   📦 Ending: '{currentName}'");
+            LogDebug($"🏁 CLUMP END - Depth: {depth}");
+            LogDebug($"   📦 Ending: '{currentName}'");
 
             // Apply the accumulated transform directly to this clump's GameObject unless
             // we've already baked the parent transform into prototype instances. In that
@@ -882,7 +892,7 @@ namespace RWXLoader
             {
                 if (context.hasBakedPrototypeInstances)
                 {
-                    Debug.Log("   ⏭️ Skipping clump transform (prototype instances already baked)");
+                    LogDebug("   ⏭️ Skipping clump transform (prototype instances already baked)");
                 }
                 else
                 {
@@ -901,7 +911,7 @@ namespace RWXLoader
             {
                 context.currentObject = context.objectStack.Pop();
                 string parentName = context.currentObject != null ? context.currentObject.name : "NULL";
-                Debug.Log($"   ⬆️ Returning to parent: '{parentName}'");
+                LogDebug($"   ⬆️ Returning to parent: '{parentName}'");
             }
 
             if (context.materialStack.Count > 0)
@@ -912,7 +922,7 @@ namespace RWXLoader
             // Clear baked prototype flag for future clumps
             context.hasBakedPrototypeInstances = false;
 
-            Debug.Log($"   ═══════════════════════════════════════");
+            LogDebug($"   ═══════════════════════════════════════");
 
             return true;
         }
@@ -923,13 +933,13 @@ namespace RWXLoader
 
             context.transformStack.Push(context.currentTransform);
             
-            Debug.Log($"🔄 TRANSFORM BEGIN - Stack depth: {context.transformStack.Count}");
-            Debug.Log($"   📋 Pushed current transform to stack");
-            Debug.Log($"   🎭 Current transform matrix:");
-            Debug.Log($"      [{context.currentTransform.m00:F3}, {context.currentTransform.m01:F3}, {context.currentTransform.m02:F3}, {context.currentTransform.m03:F3}]");
-            Debug.Log($"      [{context.currentTransform.m10:F3}, {context.currentTransform.m11:F3}, {context.currentTransform.m12:F3}, {context.currentTransform.m13:F3}]");
-            Debug.Log($"      [{context.currentTransform.m20:F3}, {context.currentTransform.m21:F3}, {context.currentTransform.m22:F3}, {context.currentTransform.m23:F3}]");
-            Debug.Log($"      [{context.currentTransform.m30:F3}, {context.currentTransform.m31:F3}, {context.currentTransform.m32:F3}, {context.currentTransform.m33:F3}]");
+            LogDebug($"🔄 TRANSFORM BEGIN - Stack depth: {context.transformStack.Count}");
+            LogDebug($"   📋 Pushed current transform to stack");
+            LogDebug($"   🎭 Current transform matrix:");
+            LogDebug($"      [{context.currentTransform.m00:F3}, {context.currentTransform.m01:F3}, {context.currentTransform.m02:F3}, {context.currentTransform.m03:F3}]");
+            LogDebug($"      [{context.currentTransform.m10:F3}, {context.currentTransform.m11:F3}, {context.currentTransform.m12:F3}, {context.currentTransform.m13:F3}]");
+            LogDebug($"      [{context.currentTransform.m20:F3}, {context.currentTransform.m21:F3}, {context.currentTransform.m22:F3}, {context.currentTransform.m23:F3}]");
+            LogDebug($"      [{context.currentTransform.m30:F3}, {context.currentTransform.m31:F3}, {context.currentTransform.m32:F3}, {context.currentTransform.m33:F3}]");
             
             return true;
         }
@@ -961,7 +971,7 @@ namespace RWXLoader
             context.currentTransform = context.currentTransform * translation;
             Vector3 newPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
 
-            Debug.Log($"🔄 TRANSLATE: ({translationVector.x:F6}, {translationVector.y:F6}, {translationVector.z:F6}) | Old pos: {oldPos:F6} → New pos: {newPos:F6}");
+            LogDebug($"🔄 TRANSLATE: ({translationVector.x:F6}, {translationVector.y:F6}, {translationVector.z:F6}) | Old pos: {oldPos:F6} → New pos: {newPos:F6}");
 
             return true;
         }
@@ -983,7 +993,7 @@ namespace RWXLoader
                 // Root-level orientation rotations: these are meant to orient the model correctly
                 // The common pattern "Rotate 0 1 0 180" + "Rotate 1 0 0 -90" should work as-is
                 unityAngle = angleDegrees; // Keep original angles for model orientation
-                Debug.Log($"🎯 ROOT-LEVEL ORIENTATION: Axis({axisX:F1}, {axisY:F1}, {axisZ:F1}) Angle({angleDegrees:F1}°) - keeping original");
+                LogDebug($"🎯 ROOT-LEVEL ORIENTATION: Axis({axisX:F1}, {axisY:F1}, {axisZ:F1}) Angle({angleDegrees:F1}°) - keeping original");
             }
             else
             {
@@ -991,17 +1001,17 @@ namespace RWXLoader
                 if (Mathf.Abs(axisX) > 0.9f) // Rotation around X axis
                 {
                     unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal X-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
+                    LogDebug($"🔄 Internal X-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
                 }
                 else if (Mathf.Abs(axisY) > 0.9f) // Rotation around Y axis
                 {
                     unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
+                    LogDebug($"🔄 Internal Y-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
                 }
                 else if (Mathf.Abs(axisZ) > 0.9f) // Rotation around Z axis
                 {
                     unityAngle = -angleDegrees;
-                    Debug.Log($"🔄 Internal Z-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
+                    LogDebug($"🔄 Internal Z-axis rotation: negating angle {angleDegrees}° → {unityAngle}°");
                 }
             }
             
@@ -1015,7 +1025,7 @@ namespace RWXLoader
             // Apply rotation to current transform
             context.currentTransform = context.currentTransform * rotationMatrix;
             
-            Debug.Log($"🔄 ROTATE RESULT: Axis({unityAxis.x:F1}, {unityAxis.y:F1}, {unityAxis.z:F1}) Angle({unityAngle:F1}°)");
+            LogDebug($"🔄 ROTATE RESULT: Axis({unityAxis.x:F1}, {unityAxis.y:F1}, {unityAxis.z:F1}) Angle({unityAngle:F1}°)");
 
             return true;
         }
@@ -1153,9 +1163,9 @@ namespace RWXLoader
                            matrix.m02 * (matrix.m10 * matrix.m21 - matrix.m11 * matrix.m20);
                 
                 string hierarchyPath = GetHierarchyPath(context);
-                Debug.Log($"🛏️ BED MATRIX | {hierarchyPath}");
-                Debug.Log($"   RWX: [{values[0]:F3}, {values[1]:F3}, {values[2]:F3}, {values[3]:F3}, {values[4]:F3}, {values[5]:F3}, {values[6]:F3}, {values[7]:F3}, {values[8]:F3}, {values[9]:F3}, {values[10]:F3}, {values[11]:F3}, {values[12]:F3}, {values[13]:F3}, {values[14]:F3}, {values[15]:F3}]");
-                Debug.Log($"   Unity: Det={det:F3}, Trans=({translation.x:F3}, {translation.y:F3}, {translation.z:F3})");
+                LogDebug($"🛏️ BED MATRIX | {hierarchyPath}");
+                LogDebug($"   RWX: [{values[0]:F3}, {values[1]:F3}, {values[2]:F3}, {values[3]:F3}, {values[4]:F3}, {values[5]:F3}, {values[6]:F3}, {values[7]:F3}, {values[8]:F3}, {values[9]:F3}, {values[10]:F3}, {values[11]:F3}, {values[12]:F3}, {values[13]:F3}, {values[14]:F3}, {values[15]:F3}]");
+                LogDebug($"   Unity: Det={det:F3}, Trans=({translation.x:F3}, {translation.y:F3}, {translation.z:F3})");
             }
 
             // Check if we're inside a prototype definition
@@ -1180,8 +1190,8 @@ namespace RWXLoader
             // Push current joint transform to stack
             context.jointTransformStack.Push(context.currentJointTransform);
             
-            Debug.Log($"� JOINT TRANSFORM BEGIN - Stack depth: {context.jointTransformStack.Count}");
-            Debug.Log($"   📋 Pushed current joint transform to stack");
+            LogDebug($"� JOINT TRANSFORM BEGIN - Stack depth: {context.jointTransformStack.Count}");
+            LogDebug($"   📋 Pushed current joint transform to stack");
             
             return true;
         }
@@ -1193,12 +1203,12 @@ namespace RWXLoader
             if (context.jointTransformStack.Count > 0)
             {
                 context.currentJointTransform = context.jointTransformStack.Pop();
-                Debug.Log($"� JOINT TRANSFORM END - Restored from stack, depth: {context.jointTransformStack.Count}");
+                LogDebug($"� JOINT TRANSFORM END - Restored from stack, depth: {context.jointTransformStack.Count}");
             }
             else
             {
                 context.currentJointTransform = Matrix4x4.identity;
-                Debug.Log($"🔗 JOINT TRANSFORM END - Reset to identity (stack empty)");
+                LogDebug($"🔗 JOINT TRANSFORM END - Reset to identity (stack empty)");
             }
             return true;
         }
@@ -1208,7 +1218,7 @@ namespace RWXLoader
             if (!identityJointRegex.IsMatch(line)) return false;
 
             context.currentJointTransform = Matrix4x4.identity;
-            Debug.Log($"🔗 IDENTITY JOINT - Reset joint transform to identity");
+            LogDebug($"🔗 IDENTITY JOINT - Reset joint transform to identity");
             return true;
         }
 
@@ -1232,7 +1242,7 @@ namespace RWXLoader
             
             context.currentJointTransform = context.currentJointTransform * rotationMatrix;
             
-            Debug.Log($"🔗 ROTATE JOINT TM - Axis: ({x:F3}, {y:F3}, {z:F3}), Angle: {angle:F1}°");
+            LogDebug($"🔗 ROTATE JOINT TM - Axis: ({x:F3}, {y:F3}, {z:F3}), Angle: {angle:F1}°");
 
             return true;
         }
@@ -1393,7 +1403,7 @@ namespace RWXLoader
                     if (prototypeParser.IsInPrototype && NeedsUVCorrection(context))
                     {
                         uv = new Vector2(uv.x, 1.0f - uv.y);
-                        Debug.Log($"🎨 UV CORRECTION: Applied additional UV flip for prototype texture orientation");
+                        LogDebug($"🎨 UV CORRECTION: Applied additional UV flip for prototype texture orientation");
                     }
                 }
                 else
