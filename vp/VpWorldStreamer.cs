@@ -55,11 +55,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public float vpUnitsPerCell = 2000f;
 
     [Tooltip("How many VP world units equal 1 Unity unit. If 1 Unity unit == 1 VP unit, set 1. If 1 Unity unit == 1 meter and VP is 100 units/m, set 100.")]
-    public float vpUnitsPerUnityUnit = 1f;
+    public float vpUnitsPerUnityUnit = 0.5f;
 
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
     public RWXLoaderAdvanced modelLoader;
+
+    [Header("Colliders")]
+    [Tooltip("Add MeshColliders to loaded models so they are solid.")]
+    public bool addModelColliders = true;
 
     [Header("VP Object Server")]
     public string objectPath = "http://objects.virtualparadise.org/vpbuild/";
@@ -112,7 +116,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public int terrainNodeCellSpan = 8;
 
     [Tooltip("Add a MeshCollider to each generated terrain tile.")]
-    public bool addTerrainColliders = false;
+    public bool addTerrainColliders = true;
 
     [Tooltip("Optional material template for terrain. If null a Standard material is created.")]
     public Material terrainMaterialTemplate;
@@ -764,7 +768,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         }
 
-        float invUnits = Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
 
         // Smooth normals from height grid (shared heights, separate UVs)
         var normalsGrid = new UnityEngine.Vector3[tileSpan + 1, tileSpan + 1];
@@ -772,11 +776,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             for (int vz = 0; vz <= tileSpan; vz++)
             {
-                float hC = heightGrid[vx, vz] / invUnits;
-                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] / invUnits;
-                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] / invUnits;
-                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] / invUnits;
-                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] / invUnits;
+                float hC = heightGrid[vx, vz] * unityUnitsPerVpUnit;
+                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] * unityUnitsPerVpUnit;
+                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] * unityUnitsPerVpUnit;
+                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] * unityUnitsPerVpUnit;
+                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] * unityUnitsPerVpUnit;
 
                 float dx = (hR - hL) * 0.5f / cellSizeUnity;
                 float dz = (hU - hD) * 0.5f / cellSizeUnity;
@@ -801,10 +805,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 float unityX = (tileX * tileSpan + x) * cellSizeUnity;
                 float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
 
-                float h00 = heightGrid[x, z] / invUnits + terrainHeightOffset;
-                float h10 = heightGrid[x + 1, z] / invUnits + terrainHeightOffset;
-                float h01 = heightGrid[x, z + 1] / invUnits + terrainHeightOffset;
-                float h11 = heightGrid[x + 1, z + 1] / invUnits + terrainHeightOffset;
+                float h00 = heightGrid[x, z] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h10 = heightGrid[x + 1, z] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h01 = heightGrid[x, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h11 = heightGrid[x + 1, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
 
                 int vStart = vertices.Count;
                 vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
@@ -909,7 +913,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         // Phase 1: cheap transform setup
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
-        loadedObject.transform.localScale = UnityEngine.Vector3.one;
+        ApplyModelBaseScale(loadedObject);
+        EnsureModelColliders(loadedObject);
 
         // Give Unity a frame before heavier work
         yield return null;
@@ -1075,8 +1080,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         UnityEngine.Vector3 u = targetCamera.transform.position;
         debugCamPos = u;
 
-        float vpX = (-u.x) * vpUnitsPerUnityUnit;
-        float vpZ = (u.z) * vpUnitsPerUnityUnit;
+        float vpUnitsPerUnity = GetClampedVpUnitsPerUnityUnit();
+        float vpX = (-u.x) * vpUnitsPerUnity;
+        float vpZ = (u.z) * vpUnitsPerUnity;
 
         float cellSize = Mathf.Max(1f, vpUnitsPerCell);
 
@@ -1498,18 +1504,66 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
     }
 
+    private float GetClampedVpUnitsPerUnityUnit()
+    {
+        return Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+    }
+
+    private float GetUnityUnitsPerVpUnit()
+    {
+        return 1f / GetClampedVpUnitsPerUnityUnit();
+    }
+
     private float GetUnityUnitsPerVpCell()
     {
-        return vpUnitsPerCell / Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+        return vpUnitsPerCell * GetUnityUnitsPerVpUnit();
     }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
         return new UnityEngine.Vector3(
-            -(float)vpPos.X,
-            (float)vpPos.Y,
-            (float)vpPos.Z
+            -(float)vpPos.X * unityUnitsPerVpUnit,
+            (float)vpPos.Y * unityUnitsPerVpUnit,
+            (float)vpPos.Z * unityUnitsPerVpUnit
         );
+    }
+
+    private UnityEngine.Vector3 GetBaseScaleVector()
+    {
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
+        return new UnityEngine.Vector3(unityUnitsPerVpUnit, unityUnitsPerVpUnit, unityUnitsPerVpUnit);
+    }
+
+    private void ApplyModelBaseScale(GameObject target)
+    {
+        if (target == null) return;
+
+        UnityEngine.Vector3 baseScale = GetBaseScaleVector();
+        var scaleContext = target.GetComponent<VpModelScaleContext>();
+        if (scaleContext == null)
+            scaleContext = target.AddComponent<VpModelScaleContext>();
+
+        scaleContext.baseScale = baseScale;
+        target.transform.localScale = baseScale;
+    }
+
+    private void EnsureModelColliders(GameObject target)
+    {
+        if (!addModelColliders || target == null)
+            return;
+
+        foreach (var filter in target.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (filter == null || filter.sharedMesh == null)
+                continue;
+
+            if (filter.GetComponent<Collider>() != null)
+                continue;
+
+            var collider = filter.gameObject.AddComponent<MeshCollider>();
+            collider.sharedMesh = filter.sharedMesh;
+        }
     }
 
     private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 axis, double angle, string modelName)
@@ -1658,7 +1712,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 32, 1600, 22), $"LoadedCells={loadedCells.Count} QueuedCells={queuedCells.Count} QueryingCells={queryingCells.Count}");
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
-        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
         if (streamTerrain)
             GUI.Label(new Rect(10, 120, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
     }
