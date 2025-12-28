@@ -147,7 +147,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -221,7 +222,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -280,10 +282,9 @@ namespace RWXLoader
             public Vector3[] normals;
         }
 
-        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
+        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles, bool isDoubleSided)
         {
-            // First pass: gather face normals per vertex to detect opposing directions
-            var perVertexNormals = new List<Vector3>[positions.Length];
+            // First pass: gather face normals per face for later reuse
             var faceNormals = new Vector3[triangles.Length / 3];
 
             for (int i = 0; i < triangles.Length; i += 3)
@@ -314,38 +315,14 @@ namespace RWXLoader
                 faceNormal.Normalize();
                 faceNormals[i / 3] = faceNormal;
 
-                AddNormal(perVertexNormals, i0, faceNormal);
-                AddNormal(perVertexNormals, i1, faceNormal);
-                AddNormal(perVertexNormals, i2, faceNormal);
             }
 
-            bool hasOpposingNormals = false;
-            for (int i = 0; i < perVertexNormals.Length; i++)
+            if (isDoubleSided)
             {
-                var list = perVertexNormals[i];
-                if (list == null || list.Count < 2)
-                    continue;
-
-                for (int a = 0; a < list.Count - 1 && !hasOpposingNormals; a++)
-                {
-                    for (int b = a + 1; b < list.Count; b++)
-                    {
-                        if (Vector3.Dot(list[a], list[b]) < -0.001f)
-                        {
-                            hasOpposingNormals = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // If opposing normals share vertices (double-sided plane), duplicate vertices per face
-            if (hasOpposingNormals)
-            {
-                var newPositions = new List<Vector3>(triangles.Length);
-                var newUvs = new List<Vector2>(triangles.Length);
-                var newNormals = new List<Vector3>(triangles.Length);
-                var newTriangles = new int[triangles.Length];
+                var newPositions = new List<Vector3>(triangles.Length * 2);
+                var newUvs = new List<Vector2>(triangles.Length * 2);
+                var newNormals = new List<Vector3>(triangles.Length * 2);
+                var newTriangles = new int[triangles.Length * 2];
 
                 for (int i = 0; i < triangles.Length; i += 3)
                 {
@@ -379,9 +356,28 @@ namespace RWXLoader
                     newNormals.Add(faceNormal);
                     newNormals.Add(faceNormal);
 
+                    // Duplicate triangle for back face with reversed winding and normal
+                    newPositions.Add(positions[i0]);
+                    newPositions.Add(positions[i2]);
+                    newPositions.Add(positions[i1]);
+
+                    newUvs.Add(uvs[i0]);
+                    newUvs.Add(uvs[i2]);
+                    newUvs.Add(uvs[i1]);
+
+                    newNormals.Add(-faceNormal);
+                    newNormals.Add(-faceNormal);
+                    newNormals.Add(-faceNormal);
+
                     newTriangles[i] = newBase;
                     newTriangles[i + 1] = newBase + 1;
                     newTriangles[i + 2] = newBase + 2;
+
+                    int backBase = newBase + 3;
+                    int backTriangle = triangles.Length + i;
+                    newTriangles[backTriangle] = backBase;
+                    newTriangles[backTriangle + 1] = backBase + 1;
+                    newTriangles[backTriangle + 2] = backBase + 2;
                 }
 
                 return new MeshData
@@ -455,18 +451,6 @@ namespace RWXLoader
             }
 
             return accumulator + faceNormal;
-        }
-
-        private static void AddNormal(List<Vector3>[] buckets, int index, Vector3 normal)
-        {
-            var list = buckets[index];
-            if (list == null)
-            {
-                list = new List<Vector3>(2);
-                buckets[index] = list;
-            }
-
-            list.Add(normal);
         }
 
     }
