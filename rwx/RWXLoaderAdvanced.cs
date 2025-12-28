@@ -193,7 +193,19 @@ namespace RWXLoader
 
             if (string.IsNullOrEmpty(rwxContent))
             {
-                string error = $"RWX file not found in ZIP: {rwxFileName}";
+                // Some zips contain differently named RWX files; fall back to first RWX entry
+                rwxFileName = FindFirstRwxEntry(archive);
+                if (!string.IsNullOrEmpty(rwxFileName))
+                {
+                    rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+                    if (enableDebugLogs && !string.IsNullOrEmpty(rwxContent))
+                        Debug.Log($"Fallback RWX file used: {rwxFileName}");
+                }
+            }
+
+            if (string.IsNullOrEmpty(rwxContent))
+            {
+                string error = $"RWX file not found in ZIP; attempted {modelName}.rwx and fallback entries";
                 Debug.LogError(error);
                 onComplete?.Invoke(null, error);
                 yield break;
@@ -279,6 +291,22 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        private string FindFirstRwxEntry(ZipArchive archive)
+        {
+            foreach (var entry in archive.Entries)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.FullName))
+                    continue;
+
+                if (entry.FullName.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry.FullName;
+                }
+            }
+
+            return null;
         }
 
         private void CachePrefab(string objectPath, string modelName, GameObject modelObject)
