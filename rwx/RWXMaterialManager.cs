@@ -90,7 +90,7 @@ namespace RWXLoader
             Material material;
             bool isDoubleSided = rwxMaterial.materialMode == MaterialMode.Double;
 
-            // For double-sided materials, use Standard shader since we handle double-sided via triangle duplication
+            // For double-sided materials, use Standard shader and disable back-face culling
             if (useStandardShader)
             {
                 material = new Material(Shader.Find("Standard"));
@@ -154,9 +154,13 @@ namespace RWXLoader
                 StartCoroutine(LoadTexturesForMaterial(material, rwxMaterial));
             }
 
-            // For double-sided materials, we don't need to disable culling since we duplicate triangles
-            // Keep normal culling behavior
-            material.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Back);
+            var cullMode = isDoubleSided ? UnityEngine.Rendering.CullMode.Off : UnityEngine.Rendering.CullMode.Back;
+            material.SetInt("_Cull", (int)cullMode);
+            if (material.HasProperty("_CullMode"))
+            {
+                material.SetInt("_CullMode", (int)cullMode);
+            }
+            material.doubleSidedGI = isDoubleSided;
             material.SetOverrideTag("RwxTag", rwxMaterial.tag.ToString());
 
             return material;

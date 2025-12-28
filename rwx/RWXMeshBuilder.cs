@@ -147,7 +147,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -221,7 +222,8 @@ namespace RWXLoader
                 triangles[i + 2] = context.currentTriangles[i + 1]; // to reverse winding
             }
 
-            var meshData = BuildMeshData(positions, uvs, triangles);
+            bool isDoubleSided = context.currentMeshMaterial?.materialMode == MaterialMode.Double;
+            var meshData = BuildMeshData(positions, uvs, triangles, isDoubleSided);
             mesh.vertices = meshData.positions;
             mesh.uv = meshData.uvs;
             mesh.triangles = meshData.triangles;
@@ -280,7 +282,7 @@ namespace RWXLoader
             public Vector3[] normals;
         }
 
-        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles)
+        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles, bool isDoubleSided)
         {
             // First pass: gather face normals per vertex to detect opposing directions
             var perVertexNormals = new List<Vector3>[positions.Length];
@@ -340,7 +342,7 @@ namespace RWXLoader
             }
 
             // If opposing normals share vertices (double-sided plane), duplicate vertices per face
-            if (hasOpposingNormals)
+            if (isDoubleSided && hasOpposingNormals)
             {
                 var newPositions = new List<Vector3>(triangles.Length);
                 var newUvs = new List<Vector2>(triangles.Length);
