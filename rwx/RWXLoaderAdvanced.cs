@@ -61,7 +61,12 @@ namespace RWXLoader
         /// <param name="modelName">Name of the model (without .rwx extension)</param>
         /// <param name="objectPath">Remote object server URL (optional, uses default if null)</param>
         /// <param name="onComplete">Callback when loading is complete</param>
-        public void LoadModelFromRemote(string modelName, string objectPath = null, System.Action<GameObject, string> onComplete = null, string password = null)
+        public void LoadModelFromRemote(
+            string modelName,
+            string objectPath = null,
+            System.Action<GameObject, string> onComplete = null,
+            string password = null,
+            bool activateOnInstantiate = true)
         {
             if (string.IsNullOrEmpty(objectPath))
             {
@@ -74,16 +79,16 @@ namespace RWXLoader
             }
 
             // Fast path: reuse a cached prefab instead of reparsing/downloading
-            if (TryInstantiateFromCache(objectPath, modelName, out GameObject cachedInstance))
+            if (TryInstantiateFromCache(objectPath, modelName, activateOnInstantiate, out GameObject cachedInstance))
             {
                 onComplete?.Invoke(cachedInstance, "Success (cached)");
                 return;
             }
 
-            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, onComplete));
+            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, onComplete, activateOnInstantiate));
         }
 
-        private bool TryInstantiateFromCache(string objectPath, string modelName, out GameObject instance)
+        private bool TryInstantiateFromCache(string objectPath, string modelName, bool activateOnInstantiate, out GameObject instance)
         {
             instance = null;
             string cacheKey = GetCacheKey(objectPath, modelName);
@@ -92,7 +97,7 @@ namespace RWXLoader
             {
                 instance = Instantiate(prefab, parentTransform);
                 instance.name = prefab.name;
-                instance.SetActive(true);
+                instance.SetActive(activateOnInstantiate);
                 return true;
             }
 
@@ -116,7 +121,12 @@ namespace RWXLoader
             return cacheContainer;
         }
 
-        private IEnumerator LoadModelFromRemoteCoroutine(string modelName, string objectPath, string password, System.Action<GameObject, string> onComplete)
+        private IEnumerator LoadModelFromRemoteCoroutine(
+            string modelName,
+            string objectPath,
+            string password,
+            System.Action<GameObject, string> onComplete,
+            bool activateOnInstantiate)
         {
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
@@ -183,7 +193,19 @@ namespace RWXLoader
 
             if (string.IsNullOrEmpty(rwxContent))
             {
-                string error = $"RWX file not found in ZIP: {rwxFileName}";
+                // Some zips contain differently named RWX files; fall back to first RWX entry
+                rwxFileName = FindFirstRwxEntry(archive);
+                if (!string.IsNullOrEmpty(rwxFileName))
+                {
+                    rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+                    if (enableDebugLogs && !string.IsNullOrEmpty(rwxContent))
+                        Debug.Log($"Fallback RWX file used: {rwxFileName}");
+                }
+            }
+
+            if (string.IsNullOrEmpty(rwxContent))
+            {
+                string error = $"RWX file not found in ZIP; attempted {modelName}.rwx and fallback entries";
                 Debug.LogError(error);
                 onComplete?.Invoke(null, error);
                 yield break;
@@ -214,7 +236,7 @@ namespace RWXLoader
                 // Instantiate a live copy for the caller
                 modelObject = Instantiate(modelObject, parentTransform);
                 modelObject.name = modelName;
-                modelObject.SetActive(true);
+                modelObject.SetActive(activateOnInstantiate);
             }
 
             if (enableDebugLogs)
@@ -269,6 +291,22 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        private string FindFirstRwxEntry(ZipArchive archive)
+        {
+            foreach (var entry in archive.Entries)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.FullName))
+                    continue;
+
+                if (entry.FullName.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry.FullName;
+                }
+            }
+
+            return null;
         }
 
         private void CachePrefab(string objectPath, string modelName, GameObject modelObject)
