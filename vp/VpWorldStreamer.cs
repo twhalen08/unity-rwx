@@ -50,6 +50,28 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Only recompute desired cells when camera crosses into a new cell")]
     public bool updateOnlyOnCellChange = true;
 
+    [Header("LOD & Instancing")]
+    [Tooltip("Cells within this radius instantiate full GameObjects.")]
+    public int fullDetailCellRadius = 1;
+
+    [Tooltip("Cells beyond full detail but within this radius render as GPU-instanced batches.")]
+    public int instancedCellRadius = 3;
+
+    [Tooltip("Cells beyond instancing but still loaded keep lightweight proxies/colliders for interaction.")]
+    public int proxyCellRadius = 4;
+
+    [Tooltip("Enable GPU instancing for mid-range objects.")]
+    public bool enableGpuInstancing = true;
+
+    [Tooltip("Optional override mesh for proxy renderers; if null, a box collider is used without rendering.")]
+    public Mesh proxyMesh;
+
+    [Tooltip("Optional material for proxy renderers when a proxy mesh is provided.")]
+    public Material proxyMaterial;
+
+    [Tooltip("Uniform scale applied to proxy meshes/colliders.")]
+    public float proxySize = 0.5f;
+
     [Header("Cell Mapping")]
     [Tooltip("VP cell size in VP world units (commonly 2000).")]
     public float vpUnitsPerCell = 2000f;
@@ -158,6 +180,59 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly Dictionary<(int tx, int tz), TerrainNode[]> terrainTileNodes = new();
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
+    private RWXLoaderAdvanced templateLoader;
+
+    private enum CellLodState
+    {
+        Full,
+        Instanced,
+        Proxy
+    }
+
+    private sealed class ModelInstance
+    {
+        public string modelName;
+        public UnityEngine.Vector3 position;
+        public Quaternion rotation;
+        public string action;
+    }
+
+    private sealed class RendererTemplate
+    {
+        public Mesh mesh;
+        public Material material;
+        public Matrix4x4 localToRoot;
+        public int subMeshIndex;
+    }
+
+    private sealed class ModelTemplate
+    {
+        public List<RendererTemplate> renderers = new();
+        public UnityEngine.Vector3 baseScale = UnityEngine.Vector3.one;
+    }
+
+    private sealed class InstancedBatch
+    {
+        public Mesh mesh;
+        public Material material;
+        public int subMeshIndex;
+        public List<Matrix4x4> matrices = new();
+    }
+
+    private sealed class CellContent
+    {
+        public GameObject root;
+        public (int cx, int cy) cell;
+        public List<ModelInstance> instances = new();
+        public List<GameObject> fullObjects = new();
+        public Dictionary<(Mesh mesh, Material mat, int subMesh), InstancedBatch> instancedBatches = new();
+        public List<GameObject> proxies = new();
+        public CellLodState lodState;
+    }
+
+    private readonly Dictionary<(int cx, int cy), CellContent> cellContents = new();
+    private readonly Dictionary<string, ModelTemplate> templateCache = new();
+    private readonly HashSet<string> templatesLoading = new();
 
     private struct DesiredCellData
     {
@@ -272,6 +347,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public ModelInstance instanceRef;
     }
 
     // Model priority heap: smallest priority loads first
@@ -332,6 +408,270 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (streamTerrain)
             StartCoroutine(TerrainStreamingLoop());
         StartCoroutine(ModelStreamingLoop());
+        StartCoroutine(LodUpdateLoop());
+    }
+
+    private IEnumerator LodUpdateLoop()
+    {
+        while (true)
+        {
+            UpdateCellLods();
+            yield return null;
+        }
+    }
+
+    private void UpdateCellLods()
+    {
+        var camCell = GetCameraCell();
+        foreach (var kvp in cellContents)
+        {
+            var cell = kvp.Key;
+            var content = kvp.Value;
+            if (content == null || content.root == null)
+                continue;
+
+            int dx = Mathf.Abs(cell.cx - camCell.cx);
+            int dy = Mathf.Abs(cell.cy - camCell.cy);
+            int cheb = Mathf.Max(dx, dy);
+
+            CellLodState target = CellLodState.Proxy;
+            if (cheb <= fullDetailCellRadius)
+                target = CellLodState.Full;
+            else if (cheb <= instancedCellRadius)
+                target = CellLodState.Instanced;
+            else if (cheb <= proxyCellRadius)
+                target = CellLodState.Proxy;
+            else
+                target = CellLodState.Proxy;
+
+            if (content.lodState == target)
+            {
+                // Instanced batches still need to be maintained/drawn each frame
+                if (target == CellLodState.Instanced)
+                {
+                    BuildInstancedBatches(content);
+                    RenderInstancedBatches(content);
+                }
+                continue;
+            }
+
+            ApplyLod(content, target);
+            content.lodState = target;
+        }
+    }
+
+    private void ApplyLod(CellContent content, CellLodState target)
+    {
+        CleanupCellContent(content);
+
+        switch (target)
+        {
+            case CellLodState.Full:
+                EnqueueFullLoads(content);
+                break;
+            case CellLodState.Instanced:
+                BuildInstancedBatches(content);
+                RenderInstancedBatches(content);
+                break;
+            case CellLodState.Proxy:
+                BuildProxies(content);
+                break;
+        }
+    }
+
+    private void EnqueueFullLoads(CellContent content)
+    {
+        if (content == null || content.root == null)
+            return;
+
+        UnityEngine.Vector3 camPos = GetCameraWorldPos();
+        foreach (var inst in content.instances)
+        {
+            float pri = ComputeModelPriority(inst.position, camPos);
+            modelHeap.Push(new PendingModelLoad
+            {
+                cell = GetCellKey(content),
+                modelName = inst.modelName,
+                position = inst.position,
+                rotation = inst.rotation,
+                action = inst.action,
+                instanceRef = inst
+            }, pri);
+        }
+    }
+
+    private (int cx, int cy) GetCellKey(CellContent content)
+    {
+        if (content == null)
+            return (0, 0);
+
+        return content.cell;
+    }
+
+    private void BuildInstancedBatches(CellContent content)
+    {
+        if (!enableGpuInstancing || content == null || content.root == null)
+            return;
+
+        content.instancedBatches.Clear();
+
+        foreach (var inst in content.instances)
+        {
+            var template = GetOrLoadTemplate(inst.modelName);
+            if (template == null)
+                continue;
+
+            foreach (var rt in template.renderers)
+            {
+                var key = (rt.mesh, rt.material, rt.subMeshIndex);
+                if (!content.instancedBatches.TryGetValue(key, out var batch))
+                {
+                    batch = new InstancedBatch { mesh = rt.mesh, material = rt.material, subMeshIndex = rt.subMeshIndex };
+                    content.instancedBatches[key] = batch;
+                }
+
+                Matrix4x4 trs = Matrix4x4.TRS(inst.position, inst.rotation, template.baseScale);
+                Matrix4x4 final = trs * rt.localToRoot;
+                batch.matrices.Add(final);
+            }
+        }
+
+        RenderInstancedBatches(content);
+    }
+
+    private void RenderInstancedBatches(CellContent content)
+    {
+        if (content == null)
+            return;
+
+        foreach (var batch in content.instancedBatches.Values)
+        {
+            if (batch.mesh == null || batch.material == null || batch.matrices.Count == 0)
+                continue;
+
+            int count = batch.matrices.Count;
+            int start = 0;
+            const int MaxBatch = 1023;
+            while (start < count)
+            {
+                int size = Mathf.Min(MaxBatch, count - start);
+                Graphics.DrawMeshInstanced(batch.mesh, batch.subMeshIndex, batch.material, batch.matrices.GetRange(start, size));
+                start += size;
+            }
+        }
+    }
+
+    private ModelTemplate GetOrLoadTemplate(string modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return null;
+
+        string key = modelName.ToLowerInvariant();
+        if (templateCache.TryGetValue(key, out var cached) && cached != null)
+            return cached;
+
+        if (templatesLoading.Contains(key))
+            return null;
+
+        templatesLoading.Add(key);
+        StartCoroutine(LoadTemplateCoroutine(modelName, key));
+        return null;
+    }
+
+    private IEnumerator LoadTemplateCoroutine(string modelName, string key)
+    {
+        bool done = false;
+        GameObject prefab = null;
+        var loader = templateLoader != null ? templateLoader : modelLoader;
+
+        loader.LoadModelFromRemote(
+            modelName,
+            loader.defaultObjectPath,
+            (go, err) =>
+            {
+                prefab = go;
+                done = true;
+            },
+            objectPathPassword,
+            false);
+
+        while (!done)
+            yield return null;
+
+        templatesLoading.Remove(key);
+
+        if (prefab == null)
+            yield break;
+
+        var template = BuildTemplateFromPrefab(prefab);
+        templateCache[key] = template;
+
+        // Cache prefab disabled instance so instancing stays lightweight
+        Destroy(prefab);
+    }
+
+    private ModelTemplate BuildTemplateFromPrefab(GameObject prefab)
+    {
+        var template = new ModelTemplate();
+        var scaleContext = prefab.GetComponent<VpModelScaleContext>();
+        template.baseScale = scaleContext != null ? scaleContext.baseScale : GetBaseScaleVector();
+
+        foreach (var mr in prefab.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            var mf = mr.GetComponent<MeshFilter>();
+            if (mf == null || mf.sharedMesh == null || mr.sharedMaterials == null)
+                continue;
+
+            for (int i = 0; i < mr.sharedMaterials.Length; i++)
+            {
+                var mat = mr.sharedMaterials[i];
+                if (mat == null)
+                    continue;
+
+                template.renderers.Add(new RendererTemplate
+                {
+                    mesh = mf.sharedMesh,
+                    material = mat,
+                    localToRoot = Matrix4x4.TRS(mr.transform.localPosition, mr.transform.localRotation, mr.transform.localScale),
+                    subMeshIndex = i
+                });
+            }
+        }
+
+        return template;
+    }
+
+    private void BuildProxies(CellContent content)
+    {
+        if (content == null || content.root == null)
+            return;
+
+        foreach (var inst in content.instances)
+        {
+            var proxy = new GameObject($"Proxy_{inst.modelName}");
+            proxy.transform.SetParent(content.root.transform, false);
+            proxy.transform.localPosition = inst.position;
+            proxy.transform.localRotation = inst.rotation;
+
+            Vector3 size = Vector3.one * proxySize;
+            var collider = proxy.AddComponent<BoxCollider>();
+            collider.size = size;
+
+            if (proxyMesh != null && proxyMaterial != null)
+            {
+                var mf = proxy.AddComponent<MeshFilter>();
+                mf.sharedMesh = proxyMesh;
+                var mr = proxy.AddComponent<MeshRenderer>();
+                mr.sharedMaterial = proxyMaterial;
+                proxy.transform.localScale = size;
+            }
+            else
+            {
+                proxy.transform.localScale = size;
+            }
+
+            content.proxies.Add(proxy);
+        }
     }
 
     private async Task ConnectAndLogin()
@@ -363,6 +703,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         modelLoader.objectPathPassword = objectPathPassword;
         modelLoader.enableDebugLogs = false;
         modelLoader.parentTransform = null;
+
+        if (templateLoader == null)
+        {
+            var templateGO = new GameObject("RWX Template Loader");
+            templateLoader = templateGO.AddComponent<RWXLoaderAdvanced>();
+        }
+
+        templateLoader.defaultObjectPath = modelLoader.defaultObjectPath;
+        templateLoader.objectPathPassword = modelLoader.objectPathPassword;
+        templateLoader.enableDebugLogs = false;
+        templateLoader.parentTransform = null;
 
         if (RWXAssetManager.Instance == null)
         {
@@ -439,6 +790,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
                         continue;
 
+                    if (cellContents.TryGetValue(req.cell, out var content) && content.lodState != CellLodState.Full)
+                        continue;
+
                     inFlightModelLoads++;
                     startedThisFrame++;
                     StartCoroutine(LoadOneModelBudgeted(req, cellRoot.transform));
@@ -448,6 +802,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     Transform parent = null;
                     if (cellRoots.TryGetValue(req.cell, out var cellRoot) && cellRoot != null)
                         parent = cellRoot.transform;
+
+                    if (cellContents.TryGetValue(req.cell, out var content) && content.lodState != CellLodState.Full)
+                        parent = null;
 
                     inFlightModelLoads++;
                     startedThisFrame++;
@@ -517,12 +874,28 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         var key = (cellX, cellY);
 
-        // Create / reuse cell root
+        // Create / reuse cell root + content record
         if (!cellRoots.TryGetValue(key, out var root) || root == null)
         {
             root = new GameObject($"VP_Cell_{cellX}_{cellY}");
             cellRoots[key] = root;
         }
+
+        if (!cellContents.TryGetValue(key, out var content) || content == null)
+        {
+            content = new CellContent { root = root, lodState = CellLodState.Full, cell = key };
+            cellContents[key] = content;
+        }
+        else
+        {
+            content.root = root;
+            content.cell = key;
+        }
+
+        content.instances.Clear();
+        content.instancedBatches.Clear();
+        content.proxies.Clear();
+        content.fullObjects.Clear();
 
         loadedCells.Add(key);
 
@@ -541,17 +914,26 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
             Quaternion rot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
 
-            var req = new PendingModelLoad
+            content.instances.Add(new ModelInstance
+            {
+                modelName = modelName,
+                position = pos,
+                rotation = rot,
+                action = obj.Action
+            });
+
+            float pri = ComputeModelPriority(pos, camPos);
+            var instance = content.instances[content.instances.Count - 1];
+
+            modelHeap.Push(new PendingModelLoad
             {
                 cell = key,
                 modelName = modelName,
                 position = pos,
                 rotation = rot,
-                action = obj.Action
-            };
-
-            float pri = ComputeModelPriority(pos, camPos);
-            modelHeap.Push(req, pri);
+                action = obj.Action,
+                instanceRef = instance
+            }, pri);
         }
     }
 
@@ -1017,6 +1399,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             loadedObject.SetActive(true);
         }
+
+        // Track as a fully instantiated object
+        if (cellContents.TryGetValue(req.cell, out var content) && content != null)
+            content.fullObjects.Add(loadedObject);
     }
 
     // -------------------------
@@ -1025,6 +1411,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private float ComputeModelPriority(UnityEngine.Vector3 objPos, UnityEngine.Vector3 camPos)
     {
         float pri = (objPos - camPos).sqrMagnitude;
+
+        // Encourage loading near objects sooner when LODs are tighter
+        float cellDistance = GetCellDistanceFromCamera(objPos);
+        if (cellDistance <= fullDetailCellRadius)
+            pri *= 0.5f;
+        else if (cellDistance <= instancedCellRadius)
+            pri *= 0.75f;
 
         if (prioritizeFrustum && IsInViewFrustum(objPos))
             pri -= frustumBonus; // smaller is earlier
@@ -1196,9 +1589,30 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Destroy(root);
 
             cellRoots.Remove(c);
+            if (cellContents.TryGetValue(c, out var content) && content != null)
+            {
+                CleanupCellContent(content);
+                cellContents.Remove(c);
+            }
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
+    }
+
+    private void CleanupCellContent(CellContent content)
+    {
+        if (content == null)
+            return;
+
+        foreach (var go in content.fullObjects)
+            if (go != null) Destroy(go);
+
+        foreach (var proxy in content.proxies)
+            if (proxy != null) Destroy(proxy);
+
+        content.fullObjects.Clear();
+        content.proxies.Clear();
+        content.instancedBatches.Clear();
     }
 
     private void EnsureDesiredCellBuffer(int cellCount)
@@ -1562,6 +1976,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         scaleContext.baseScale = baseScale;
         target.transform.localScale = baseScale;
+    }
+
+    private float GetCellDistanceFromCamera(UnityEngine.Vector3 worldPos)
+    {
+        float unityUnitsPerCell = GetUnityUnitsPerVpCell();
+        float distance = (worldPos - GetCameraWorldPos()).magnitude;
+        if (unityUnitsPerCell <= 0.0001f)
+            return 0f;
+        return distance / unityUnitsPerCell;
     }
 
     private void EnsureModelColliders(GameObject target)
