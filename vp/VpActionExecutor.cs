@@ -26,7 +26,9 @@ public static class VpActionExecutor
     {
         if (target == null) return;
 
-        ambient = Mathf.Clamp01(ambient);
+        // Ambient should not dim the albedo. Treat it as an emissive boost based on the
+        // material's base color so lower values don't crush brightness.
+        ambient = Mathf.Max(0f, ambient);
 
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
         {
@@ -34,15 +36,27 @@ public static class VpActionExecutor
             {
                 if (m == null) continue;
 
-                if (m.HasProperty("_Color"))
+                // Prefer SRP base color when available, otherwise fall back to legacy _Color.
+                bool hasBaseColor = m.HasProperty("_BaseColor");
+                bool hasColor = m.HasProperty("_Color");
+                if (!hasBaseColor && !hasColor)
+                    continue;
+
+                Color baseColor = hasBaseColor ? m.GetColor("_BaseColor") : m.color;
+
+                if (m.HasProperty("_EmissionColor"))
                 {
-                    Color c = m.color;
-                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
-                }
-                else if (m.HasProperty("_BaseColor"))
-                {
-                    Color c = m.GetColor("_BaseColor");
-                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
+                    m.SetColor("_EmissionColor", baseColor * ambient);
+                    if (ambient > 0f)
+                    {
+                        m.EnableKeyword("_EMISSION");
+                        m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+                    }
+                    else
+                    {
+                        m.DisableKeyword("_EMISSION");
+                        m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+                    }
                 }
             }
         }
