@@ -28,9 +28,9 @@ public static class VpActionExecutor
 
         // Ambient should not dim the albedo. Treat it as a gentle emissive boost based on the
         // material's base color so lower values don't crush brightness, while keeping higher
-        // values from blowing out highlights.
+        // values from blowing out highlights or washing to white.
         ambient = Mathf.Clamp01(ambient);
-        const float EmissionScale = 0.5f; // cap how much extra light ambient contributes
+        const float EmissionScale = 0.25f; // cap how much extra light ambient contributes
 
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
         {
@@ -48,7 +48,9 @@ public static class VpActionExecutor
 
                 if (m.HasProperty("_EmissionColor"))
                 {
-                    m.SetColor("_EmissionColor", baseColor * (ambient * EmissionScale));
+                    // Soften the response so higher ambient values don't turn the surface gray/white.
+                    float softenedAmbient = Mathf.Pow(ambient, 1.5f);
+                    m.SetColor("_EmissionColor", baseColor * (softenedAmbient * EmissionScale));
                     if (ambient > 0f)
                     {
                         m.EnableKeyword("_EMISSION");
