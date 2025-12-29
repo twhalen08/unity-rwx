@@ -184,10 +184,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public readonly List<InstancedSubmesh> submeshes = new();
     }
 
+    private struct InstancedActionData
+    {
+        public UnityEngine.Vector3 scale;
+        public bool hasScale;
+        public bool visible;
+    }
+
     private readonly Dictionary<(int cx, int cy), CellInfo> cellInfos = new();
     private readonly Dictionary<string, InstancedTemplate> instancedTemplates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<Matrix4x4>> instancedMatrices = new(StringComparer.OrdinalIgnoreCase);
     private readonly Matrix4x4[] instancingMatrixBuffer = new Matrix4x4[1023];
+    private readonly Dictionary<string, InstancedActionData> instancedActionCache = new(StringComparer.Ordinal);
 
     private readonly Dictionary<(int tx, int tz), GameObject> terrainTiles = new();
     private readonly HashSet<(int tx, int tz)> loadedTerrainTiles = new();
@@ -1654,13 +1662,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     continue;
                 }
 
+                var actionData = GetInstancedActionData(req.action);
+                if (!actionData.visible)
+                    continue;
+
                 if (!instancedMatrices.TryGetValue(modelKey, out var matrices))
                 {
                     matrices = new List<Matrix4x4>();
                     instancedMatrices[modelKey] = matrices;
                 }
 
-                Matrix4x4 mtx = Matrix4x4.TRS(req.position, req.rotation, GetBaseScaleVector());
+                UnityEngine.Vector3 scale = actionData.hasScale
+                    ? Vector3.Scale(GetBaseScaleVector(), actionData.scale)
+                    : GetBaseScaleVector();
+
+                Matrix4x4 mtx = Matrix4x4.TRS(req.position, req.rotation, scale);
                 matrices.Add(mtx);
             }
 
@@ -1801,6 +1817,68 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         string key = NormalizeModelName(modelName);
         instancedTemplates.TryGetValue(key, out var template);
         return template;
+    }
+
+    private InstancedActionData GetInstancedActionData(string action)
+    {
+        string key = action ?? string.Empty;
+        if (instancedActionCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var data = new InstancedActionData
+        {
+            scale = UnityEngine.Vector3.one,
+            visible = true,
+            hasScale = false
+        };
+
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            VpActionParser.Parse(action, out var createActions, out _);
+            if (createActions != null)
+            {
+                foreach (var cmd in createActions)
+                {
+                    if (cmd == null || string.IsNullOrWhiteSpace(cmd.verb))
+                        continue;
+
+                    string verb = cmd.verb.Trim().ToLowerInvariant();
+                    switch (verb)
+                    {
+                        case "scale":
+                            float x = 1f, y = 1f, z = 1f;
+                            if (cmd.positional != null && cmd.positional.Count > 0)
+                            {
+                                if (cmd.positional.Count == 1)
+                                {
+                                    float s = ParseFloat(cmd.positional[0], 1f);
+                                    x = y = z = s;
+                                }
+                                else if (cmd.positional.Count >= 3)
+                                {
+                                    x = ParseFloat(cmd.positional[0], 1f);
+                                    y = ParseFloat(cmd.positional[1], 1f);
+                                    z = ParseFloat(cmd.positional[2], 1f);
+                                }
+                            }
+
+                            data.scale = new UnityEngine.Vector3(x, y, z);
+                            data.hasScale = true;
+                            break;
+
+                        case "visible":
+                            if (cmd.positional != null && cmd.positional.Count > 0)
+                            {
+                                data.visible = ParseBool(cmd.positional[0]);
+                            }
+                            break;
+                    }
+                }
+            }
+        }
+
+        instancedActionCache[key] = data;
+        return data;
     }
 
     // -------------------------

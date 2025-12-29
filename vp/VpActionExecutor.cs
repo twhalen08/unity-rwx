@@ -531,8 +531,14 @@ public static class VpActionExecutor
 
     private static void ApplyNormalMapToRenderers(GameObject root, Texture2D normal)
     {
+        if (root == null || normal == null)
+            return;
+
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
+            if (r == null)
+                continue;
+
             foreach (var m in r.materials)
             {
                 if (m == null) continue;
