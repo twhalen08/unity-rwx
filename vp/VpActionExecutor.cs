@@ -807,6 +807,43 @@ public static class VpActionExecutor
 
         if (material.HasProperty(_BaseColorId))
             material.SetColor(_BaseColorId, color);
+
+        ApplyAlphaMode(material, color.a);
+    }
+
+    private static void ApplyAlphaMode(Material material, float alpha)
+    {
+        if (material == null)
+            return;
+
+        bool transparent = alpha < 0.999f;
+
+        if (material.HasProperty("_Mode"))
+            material.SetFloat("_Mode", transparent ? 3f : 0f);
+
+        if (material.HasProperty("_SrcBlend"))
+            material.SetInt("_SrcBlend", (int)(transparent ? UnityEngine.Rendering.BlendMode.SrcAlpha : UnityEngine.Rendering.BlendMode.One));
+
+        if (material.HasProperty("_DstBlend"))
+            material.SetInt("_DstBlend", (int)(transparent ? UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha : UnityEngine.Rendering.BlendMode.Zero));
+
+        if (material.HasProperty("_ZWrite"))
+            material.SetInt("_ZWrite", transparent ? 0 : 1);
+
+        if (transparent)
+        {
+            material.EnableKeyword("_ALPHABLEND_ON");
+            material.DisableKeyword("_ALPHATEST_ON");
+            material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            material.renderQueue = 3000;
+        }
+        else
+        {
+            material.DisableKeyword("_ALPHABLEND_ON");
+            material.DisableKeyword("_ALPHATEST_ON");
+            material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            material.renderQueue = -1;
+        }
     }
 
     private static VpColorState GetOrAddColorState(GameObject target)
