@@ -196,6 +196,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly Dictionary<string, List<Matrix4x4>> instancedMatrices = new(StringComparer.OrdinalIgnoreCase);
     private readonly Matrix4x4[] instancingMatrixBuffer = new Matrix4x4[1023];
     private readonly Dictionary<string, InstancedActionData> instancedActionCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> instancingSupportCache = new(StringComparer.Ordinal);
 
     private readonly Dictionary<(int tx, int tz), GameObject> terrainTiles = new();
     private readonly HashSet<(int tx, int tz)> loadedTerrainTiles = new();
@@ -490,13 +491,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 {
                     if (cellInfo.lodState == CellLodState.Instanced || cellInfo.lodState == CellLodState.Proxy)
                     {
-                        var template = TryGetInstancedTemplate(req.modelName);
-                        if (template != null && template.state == TemplateState.Ready)
+                        if (SupportsInstancing(req.action))
                         {
-                            continue;
-                        }
+                            var template = TryGetInstancedTemplate(req.modelName);
+                            if (template != null && template.state == TemplateState.Ready)
+                            {
+                                continue;
+                            }
 
-                        GetOrRequestInstancedTemplate(req.modelName);
+                            GetOrRequestInstancedTemplate(req.modelName);
+                        }
                     }
                 }
 
@@ -1654,6 +1658,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             bool allTemplatesReady = true;
             foreach (var req in modelList)
             {
+                if (!SupportsInstancing(req.action))
+                {
+                    allTemplatesReady = false;
+                    continue;
+                }
+
                 string modelKey = NormalizeModelName(req.modelName);
                 var template = GetOrRequestInstancedTemplate(req.modelName);
                 if (template == null || template.state != TemplateState.Ready)
@@ -1879,6 +1889,43 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         instancedActionCache[key] = data;
         return data;
+    }
+
+    private bool SupportsInstancing(string action)
+    {
+        string key = action ?? string.Empty;
+        if (instancingSupportCache.TryGetValue(key, out bool cached))
+            return cached;
+
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            instancingSupportCache[key] = true;
+            return true;
+        }
+
+        VpActionParser.Parse(action, out var createActions, out _);
+        if (createActions == null || createActions.Count == 0)
+        {
+            instancingSupportCache[key] = true;
+            return true;
+        }
+
+        foreach (var cmd in createActions)
+        {
+            if (cmd == null || string.IsNullOrWhiteSpace(cmd.verb))
+                continue;
+
+            string verb = cmd.verb.Trim().ToLowerInvariant();
+            if (verb == "scale" || verb == "visible")
+                continue;
+
+            // Any other create command relies on GameObjects (textures, normals, lights, etc.).
+            instancingSupportCache[key] = false;
+            return false;
+        }
+
+        instancingSupportCache[key] = true;
+        return true;
     }
 
     // -------------------------
