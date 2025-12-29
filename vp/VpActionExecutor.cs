@@ -652,16 +652,15 @@ public static class VpActionExecutor
         if (state == null)
             return;
 
-        if (state.hasColorOverride && state.tint)
+        if (state.hasColorOverride)
         {
-            ApplyColorState(target, state, colorActive: true, clearTextures: false);
+            // Re-apply the requested color. If it was a tint, keep textures; otherwise force textures off.
+            ApplyColorState(target, state, colorActive: true, clearTextures: !state.tint);
+            return;
         }
-        else
-        {
-            state.hasColorOverride = false;
-            if (state.hasAppliedColorBefore)
-                ApplyColorState(target, state, colorActive: false, clearTextures: false);
-        }
+
+        if (state.hasAppliedColorBefore)
+            ApplyColorState(target, state, colorActive: false, clearTextures: false);
     }
 
     private static void ApplyColorState(GameObject target, VpColorState state, bool colorActive, bool clearTextures)
