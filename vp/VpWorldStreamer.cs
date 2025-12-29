@@ -1760,10 +1760,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (mat == null)
                     continue;
 
+                Material instancingMat = mat;
+                if (!instancingMat.enableInstancing)
+                {
+                    instancingMat = new Material(mat);
+                    instancingMat.enableInstancing = true;
+                }
+                else
+                {
+                    instancingMat.enableInstancing = true;
+                }
+
                 template.submeshes.Add(new InstancedSubmesh
                 {
                     mesh = mesh,
-                    material = mat,
+                    material = instancingMat,
                     submeshIndex = i
                 });
             }
