@@ -694,7 +694,16 @@ public static class VpActionExecutor
             renderer.SetPropertyBlock(block);
 
             foreach (var material in materials)
+            {
+                if (clearTextures)
+                {
+                    material.SetTexture(_MainTexId, null);
+                    material.SetTexture(_BaseMapId, null);
+                    material.mainTexture = null;
+                }
+
                 ApplyColorToMaterial(material, targetColor);
+            }
         }
     }
 
