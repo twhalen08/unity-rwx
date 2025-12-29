@@ -492,15 +492,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 {
                     if (cellInfo.lodState == CellLodState.Instanced || cellInfo.lodState == CellLodState.Proxy)
                     {
-                        if (SupportsInstancing(req.action))
+                        bool instancingOk = SupportsInstancing(req.action);
+                        var template = instancingOk ? GetOrRequestInstancedTemplate(req.modelName) : null;
+                        if (instancingOk && template != null && template.state == TemplateState.Ready)
                         {
-                            var template = TryGetInstancedTemplate(req.modelName);
-                            if (template != null && template.state == TemplateState.Ready)
-                            {
-                                continue;
-                            }
-
-                            GetOrRequestInstancedTemplate(req.modelName);
+                            // Template exists; rely on instancing and skip GO load.
+                            continue;
                         }
                     }
                 }
