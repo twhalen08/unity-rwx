@@ -694,8 +694,8 @@ public static class VpActionExecutor
 
             if (clearTextures)
             {
-                block.SetTexture(_MainTexId, null);
-                block.SetTexture(_BaseMapId, null);
+                block.SetTexture(_MainTexId, Texture2D.whiteTexture);
+                block.SetTexture(_BaseMapId, Texture2D.whiteTexture);
             }
 
             block.SetColor(_ColorId, targetColor);
@@ -706,9 +706,9 @@ public static class VpActionExecutor
             {
                 if (clearTextures)
                 {
-                    material.SetTexture(_MainTexId, null);
-                    material.SetTexture(_BaseMapId, null);
-                    material.mainTexture = null;
+                    material.SetTexture(_MainTexId, Texture2D.whiteTexture);
+                    material.SetTexture(_BaseMapId, Texture2D.whiteTexture);
+                    material.mainTexture = Texture2D.whiteTexture;
                 }
 
                 ApplyColorToMaterial(material, targetColor);
