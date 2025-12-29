@@ -1760,20 +1760,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (mat == null)
                     continue;
 
-                Material instancingMat = mat;
-                if (!instancingMat.enableInstancing)
-                {
-                    instancingMat = new Material(mat);
-                    instancingMat.enableInstancing = true;
-                }
-                else
-                {
-                    instancingMat.enableInstancing = true;
-                }
+                // Clone resources so they survive the destruction of the source GameObject.
+                Mesh instancingMesh = Instantiate(mesh);
+                instancingMesh.name = $"{mesh.name}_Instanced";
+
+                Material instancingMat = Instantiate(mat);
+                instancingMat.name = $"{mat.name}_Instanced";
+                instancingMat.enableInstancing = true;
 
                 template.submeshes.Add(new InstancedSubmesh
                 {
-                    mesh = mesh,
+                    mesh = instancingMesh,
                     material = instancingMat,
                     submeshIndex = i
                 });
