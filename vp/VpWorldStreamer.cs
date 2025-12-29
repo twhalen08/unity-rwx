@@ -169,6 +169,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public Mesh mesh;
         public Material material;
         public int submeshIndex;
+        public Matrix4x4 localToRoot;
     }
 
     private enum TemplateState
@@ -1714,7 +1715,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 for (int i = 0; i < matrices.Count; i += instancingMatrixBuffer.Length)
                 {
                     int count = Math.Min(instancingMatrixBuffer.Length, matrices.Count - i);
-                    matrices.CopyTo(i, instancingMatrixBuffer, 0, count);
+                    for (int j = 0; j < count; j++)
+                        instancingMatrixBuffer[j] = matrices[i + j] * submesh.localToRoot;
                     Graphics.DrawMeshInstanced(submesh.mesh, submesh.submeshIndex, submesh.material, instancingMatrixBuffer, count);
                 }
             }
@@ -1779,6 +1781,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             Mesh mesh = filter.sharedMesh;
             var materials = renderer.sharedMaterials;
             int subMeshCount = mesh.subMeshCount;
+            Matrix4x4 localToRoot = loadedObject.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
 
             for (int i = 0; i < subMeshCount; i++)
             {
@@ -1798,7 +1801,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 {
                     mesh = instancingMesh,
                     material = instancingMat,
-                    submeshIndex = i
+                    submeshIndex = i,
+                    localToRoot = localToRoot
                 });
             }
         }
