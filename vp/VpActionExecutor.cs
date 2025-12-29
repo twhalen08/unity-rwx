@@ -137,6 +137,10 @@ public static class VpActionExecutor
                 ExecuteDiffuse(target, cmd);
                 break;
 
+            case "opacity":
+                ExecuteOpacity(target, cmd);
+                break;
+
             case "light":
                 ExecuteLight(target, cmd);
                 break;
@@ -573,6 +577,64 @@ public static class VpActionExecutor
         if (cmd.positional == null || cmd.positional.Count == 0) return;
         float diffuse = ParseFloat(cmd.positional[0], 1f);
         ApplyDiffuse(target, diffuse);
+    }
+
+    private static void ExecuteOpacity(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null) return;
+
+        float opacity = 1f;
+        if (cmd.positional != null && cmd.positional.Count > 0)
+            opacity = Mathf.Clamp01(ParseFloat(cmd.positional[0], 1f));
+
+        ApplyOpacity(target, opacity);
+    }
+
+    public static void ApplyOpacity(GameObject target, float opacity)
+    {
+        if (target == null) return;
+
+        var renderers = target.GetComponentsInChildren<Renderer>(true);
+        var block = new MaterialPropertyBlock();
+
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null)
+                continue;
+
+            renderer.GetPropertyBlock(block);
+
+            if (block.isEmpty || (!block.HasProperty(_ColorId) && !block.HasProperty(_BaseColorId)))
+            {
+                foreach (var m in renderer.materials)
+                {
+                    if (m == null)
+                        continue;
+
+                    Color c = ReadMaterialColor(new[] { m });
+                    Color withAlpha = new Color(c.r, c.g, c.b, opacity);
+                    ApplyColorToMaterial(m, withAlpha);
+                    block.SetColor(_ColorId, withAlpha);
+                    block.SetColor(_BaseColorId, withAlpha);
+                }
+            }
+            else
+            {
+                if (block.HasProperty(_ColorId))
+                {
+                    Color c = block.GetColor(_ColorId);
+                    block.SetColor(_ColorId, new Color(c.r, c.g, c.b, opacity));
+                }
+
+                if (block.HasProperty(_BaseColorId))
+                {
+                    Color c = block.GetColor(_BaseColorId);
+                    block.SetColor(_BaseColorId, new Color(c.r, c.g, c.b, opacity));
+                }
+            }
+
+            renderer.SetPropertyBlock(block);
+        }
     }
 
     // -------------------------
