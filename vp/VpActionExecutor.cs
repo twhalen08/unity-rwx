@@ -604,33 +604,18 @@ public static class VpActionExecutor
 
             renderer.GetPropertyBlock(block);
 
-            if (block.isEmpty || (!block.HasProperty(_ColorId) && !block.HasProperty(_BaseColorId)))
-            {
-                foreach (var m in renderer.materials)
-                {
-                    if (m == null)
-                        continue;
+            Color blockColor = block.HasProperty(_ColorId) ? block.GetColor(_ColorId) : ReadMaterialColor(renderer.materials);
+            Color withAlpha = new Color(blockColor.r, blockColor.g, blockColor.b, opacity);
 
-                    Color c = ReadMaterialColor(new[] { m });
-                    Color withAlpha = new Color(c.r, c.g, c.b, opacity);
-                    ApplyColorToMaterial(m, withAlpha);
-                    block.SetColor(_ColorId, withAlpha);
-                    block.SetColor(_BaseColorId, withAlpha);
-                }
-            }
-            else
-            {
-                if (block.HasProperty(_ColorId))
-                {
-                    Color c = block.GetColor(_ColorId);
-                    block.SetColor(_ColorId, new Color(c.r, c.g, c.b, opacity));
-                }
+            block.SetColor(_ColorId, withAlpha);
+            block.SetColor(_BaseColorId, withAlpha);
 
-                if (block.HasProperty(_BaseColorId))
-                {
-                    Color c = block.GetColor(_BaseColorId);
-                    block.SetColor(_BaseColorId, new Color(c.r, c.g, c.b, opacity));
-                }
+            foreach (var m in renderer.materials)
+            {
+                if (m == null)
+                    continue;
+
+                ApplyColorToMaterial(m, withAlpha);
             }
 
             renderer.SetPropertyBlock(block);
