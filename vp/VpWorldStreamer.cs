@@ -50,6 +50,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Only recompute desired cells when camera crosses into a new cell")]
     public bool updateOnlyOnCellChange = true;
 
+    [Header("Cell LODs")]
+    [Tooltip("Chebyshev distance (cells) for keeping full-detail content. Spawn cell is always treated as full detail.")]
+    public int fullDetailCellRadius = 1;
+
+    [Tooltip("Chebyshev distance (cells) for keeping instanced content.")]
+    public int instancedCellRadius = 2;
+
+    [Tooltip("Chebyshev distance (cells) for keeping proxy content.")]
+    public int proxyCellRadius = 3;
+
     [Header("Cell Mapping")]
     [Tooltip("VP cell size in VP world units (commonly 2000).")]
     public float vpUnitsPerCell = 2000f;
@@ -132,6 +142,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     [Header("Debug")]
     public bool logCellLoads = false;
+    public bool logLodChanges = false;
     public bool showDebugOverlay = true;
     public bool logCreateActions = false;
     public bool logActivateActions = false;
@@ -158,6 +169,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly Dictionary<(int tx, int tz), TerrainNode[]> terrainTileNodes = new();
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
+
+    private enum CellLodState
+    {
+        Unknown,
+        Full,
+        Instanced,
+        Proxy,
+        Unloaded
+    }
+
+    private readonly Dictionary<(int cx, int cy), CellLodState> cellLodStates = new();
+    private (int cx, int cy)? spawnCell;
+    private string lastCleanupReason = string.Empty;
 
     private struct DesiredCellData
     {
@@ -380,6 +404,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             var camCell = GetCameraCell();
             debugCamCell = camCell;
+            if (!spawnCell.HasValue)
+            {
+                spawnCell = camCell;
+                if (logLodChanges)
+                    Debug.Log($"[VP][LOD] Spawn cell set to ({camCell.cx},{camCell.cy})");
+            }
 
             bool cellChanged = camCell != lastCameraCell;
 
@@ -403,6 +433,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     }
                 }
             }
+
+            UpdateCellLods(camCell);
 
             // Start cell queries (closest-first)
             while (inFlightCellQueries < maxConcurrentCellQueries)
@@ -433,11 +465,26 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                    startedThisFrame < maxModelStartsPerFrame)
             {
                 var req = modelHeap.PopMin();
+                var lodState = GetCellLod(req.cell);
+                bool isSpawn = spawnCell.HasValue && spawnCell.Value == req.cell;
+                if (lodState != CellLodState.Full)
+                {
+                    if (isSpawn || logLodChanges)
+                    {
+                        Debug.LogWarning($"[VP][LOD] Model heap pop for cell ({req.cell.cx},{req.cell.cy}) with lodState={lodState} spawn={isSpawn}; continuing but expecting Full for spawn");
+                    }
+                }
 
                 if (dropModelsFromUnloadedCells)
                 {
                     if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
+                    {
+                        if (logLodChanges || isSpawn)
+                        {
+                            Debug.LogWarning($"[VP][LOD] Skipping model load for cell ({req.cell.cx},{req.cell.cy}) lodState={lodState} spawn={isSpawn} because cell root missing");
+                        }
                         continue;
+                    }
 
                     inFlightModelLoads++;
                     startedThisFrame++;
@@ -1190,13 +1237,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         foreach (var c in toUnload)
         {
-            loadedCells.Remove(c);
-
-            if (cellRoots.TryGetValue(c, out var root) && root != null)
-                Destroy(root);
-
-            cellRoots.Remove(c);
-
+            CleanupCellContent(c, $"Chebyshev>{radius}");
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
     }
@@ -1211,6 +1252,83 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (cellCount > 0)
             desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+    }
+
+    private void UpdateCellLods((int cx, int cy) camCell)
+    {
+        if (!spawnCell.HasValue)
+            spawnCell = camCell;
+
+        foreach (var coord in desiredCells)
+        {
+            int chebyshev = Mathf.Max(Mathf.Abs(coord.cx - camCell.cx), Mathf.Abs(coord.cy - camCell.cy));
+            bool isSpawn = spawnCell.HasValue && spawnCell.Value == coord;
+
+            var newState = ResolveLodState(chebyshev, isSpawn);
+            cellLodStates.TryGetValue(coord, out var prevState);
+            if (prevState != newState)
+            {
+                cellLodStates[coord] = newState;
+                ApplyLod(coord, newState, chebyshev, isSpawn);
+            }
+            else
+            {
+                cellLodStates[coord] = newState;
+            }
+        }
+    }
+
+    private CellLodState ResolveLodState(int chebyshev, bool isSpawnCell)
+    {
+        if (isSpawnCell)
+            return CellLodState.Full;
+
+        if (chebyshev <= Mathf.Max(0, fullDetailCellRadius))
+            return CellLodState.Full;
+        if (chebyshev <= Mathf.Max(fullDetailCellRadius, instancedCellRadius))
+            return CellLodState.Instanced;
+        if (chebyshev <= Mathf.Max(instancedCellRadius, proxyCellRadius))
+            return CellLodState.Proxy;
+
+        return CellLodState.Unloaded;
+    }
+
+    private CellLodState GetCellLod((int cx, int cy) cell)
+    {
+        if (cellLodStates.TryGetValue(cell, out var state))
+            return state;
+
+        bool isSpawn = spawnCell.HasValue && spawnCell.Value == cell;
+        var inferred = ResolveLodState(0, isSpawn);
+        cellLodStates[cell] = inferred;
+        return inferred;
+    }
+
+    private void ApplyLod((int cx, int cy) cell, CellLodState state, int chebyshev, bool isSpawnCell)
+    {
+        if (logLodChanges)
+        {
+            Debug.Log($"[VP][LOD] ApplyLod cell=({cell.cx},{cell.cy}) state={state} spawn={isSpawnCell} chebyshev={chebyshev} thresholds(full={fullDetailCellRadius},inst={instancedCellRadius},proxy={proxyCellRadius})");
+        }
+    }
+
+    private void CleanupCellContent((int cx, int cy) cell, string reason)
+    {
+        lastCleanupReason = reason ?? string.Empty;
+        bool isSpawn = spawnCell.HasValue && spawnCell.Value == cell;
+
+        if (logLodChanges || isSpawn)
+        {
+            Debug.LogWarning($"[VP][LOD] CleanupCellContent ({cell.cx},{cell.cy}) reason='{reason}' spawn={isSpawn} lodState={GetCellLod(cell)}");
+        }
+
+        loadedCells.Remove(cell);
+
+        if (cellRoots.TryGetValue(cell, out var root) && root != null)
+            Destroy(root);
+
+        cellRoots.Remove(cell);
+        cellLodStates[cell] = CellLodState.Unloaded;
     }
 
     private void BuildDesiredTerrainTiles(int centerCellX, int centerCellY, int radiusCells)
@@ -1729,8 +1847,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+        var spawnInfo = spawnCell.HasValue
+            ? $"{spawnCell.Value} state={GetCellLod(spawnCell.Value)}"
+            : "unset";
+        GUI.Label(new Rect(10, 120, 1600, 22), $"SpawnCell={spawnInfo} LastCleanupReason={lastCleanupReason}");
         if (streamTerrain)
-            GUI.Label(new Rect(10, 120, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
+            GUI.Label(new Rect(10, 142, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
     }
 
     private void OnDestroy()
