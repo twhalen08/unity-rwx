@@ -189,6 +189,10 @@ public static class VpActionExecutor
             return;
         }
 
+        var colorState = GetOrAddColorState(target);
+        colorState.sequence++;
+        colorState.lastTextureSeq = colorState.sequence;
+
         int? tagOverride = TryExtractTag(cmd);
 
         host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host, tagOverride));
@@ -595,6 +599,8 @@ public static class VpActionExecutor
         state.tint = tint;
         state.color = color;
         state.hasAppliedColorBefore = true;
+        state.sequence++;
+        state.lastColorSeq = state.sequence;
 
         ApplyColorState(target, state, colorActive: true, clearTextures: !tint);
     }
@@ -652,13 +658,16 @@ public static class VpActionExecutor
         if (state == null)
             return;
 
-        if (state.hasColorOverride)
+        bool colorWins = state.hasColorOverride && (state.tint || state.lastColorSeq >= state.lastTextureSeq);
+
+        if (colorWins)
         {
             // Re-apply the requested color. If it was a tint, keep textures; otherwise force textures off.
             ApplyColorState(target, state, colorActive: true, clearTextures: !state.tint);
             return;
         }
 
+        state.hasColorOverride = false;
         if (state.hasAppliedColorBefore)
             ApplyColorState(target, state, colorActive: false, clearTextures: false);
     }

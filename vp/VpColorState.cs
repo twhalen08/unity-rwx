@@ -9,4 +9,7 @@ public sealed class VpColorState : MonoBehaviour
     public Color color = Color.white;
     public bool hasAppliedColorBefore;
     public readonly Dictionary<int, Color> baseColors = new();
+    public int sequence;
+    public int lastColorSeq;
+    public int lastTextureSeq;
 }
