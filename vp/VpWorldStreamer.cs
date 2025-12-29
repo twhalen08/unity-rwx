@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Text;
 using Unity.Burst;
 using Unity.Collections;
 using UnityEngine;
@@ -60,6 +61,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
     public RWXLoaderAdvanced modelLoader;
+
+    [Header("Instancing")]
+    [Tooltip("If true, eligible models are GPU-instanced instead of instantiated as full GameObjects.")]
+    public bool enableInstancing = true;
 
     [Header("Colliders")]
     [Tooltip("Add MeshColliders to loaded models so they are solid.")]
@@ -213,6 +218,63 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public float height;
     }
 
+    private struct InstancedRendererData
+    {
+        public Mesh mesh;
+        public Material[] materials;
+        public Matrix4x4 localToRoot;
+    }
+
+    private class InstancedTemplate
+    {
+        public string modelName;
+        public readonly List<InstancedRendererData> renderers = new();
+    }
+
+    private struct InstancedRendererVariant
+    {
+        public Mesh mesh;
+        public Material[] materials;
+        public Matrix4x4 localToRoot;
+    }
+
+    private class InstancedTemplateVariant
+    {
+        public string key;
+        public InstancedTemplate baseTemplate;
+        public InstancedActionData actions;
+        public readonly List<InstancedRendererVariant> renderers = new();
+        public readonly List<InstancedInstanceEntry> instances = new();
+    }
+
+    private struct InstancedInstanceEntry
+    {
+        public Matrix4x4 matrix;
+        public (int cx, int cy) cell;
+    }
+
+    private struct InstancedActionData
+    {
+        public bool hasScale;
+        public UnityEngine.Vector3 scale;
+        public bool hasVisible;
+        public bool visible;
+        public bool hasTexture;
+        public string texture;
+        public int? textureTag;
+        public bool hasShear;
+        public float shearZPlus;
+        public float shearXPlus;
+        public float shearYPlus;
+        public float shearYMinus;
+        public float shearZMinus;
+        public float shearXMinus;
+        public bool hasAmbient;
+        public float ambient;
+        public bool hasDiffuse;
+        public float diffuse;
+    }
+
     [BurstCompile]
     private struct PreprocessActionJob : IJobParallelFor
     {
@@ -293,6 +355,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly List<VpPreprocessedAction> preprocessedActionResults = new();
     private readonly List<VpPreprocessActionInput> preprocessedActionInputs = new();
     private readonly List<ActionApplyStep> actionApplySteps = new();
+
+    // Instancing caches
+    private const int MaxInstancesPerBatch = 1023;
+    private readonly Dictionary<string, InstancedTemplate> instancedBaseTemplates = new();
+    private readonly Dictionary<string, InstancedTemplateVariant> instancedVariantCache = new();
+    private readonly List<InstancedTemplateVariant> instancedVariants = new();
+    private readonly Dictionary<(int cx, int cy), List<InstancedTemplateVariant>> instancedVariantsByCell = new();
+    private readonly Dictionary<string, Texture2D> instancedTextureCache = new();
+    private readonly List<Matrix4x4> instancedMatrixScratch = new(256);
 
     private void Start()
     {
@@ -923,6 +994,31 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield break;
         }
 
+        // Attempt instancing path if eligible
+        bool instancedHandled = false;
+        if (enableInstancing && activateActions.Count == 0)
+        {
+            if (SupportsInstancing(createActions, out var instancedActions, out var instancingReason))
+            {
+                bool done = false;
+                yield return TryHandleInstancedModel(req, loadedObject, instancedActions, success =>
+                {
+                    instancedHandled = success;
+                    done = true;
+                });
+
+                while (!done)
+                    yield return null;
+
+                if (instancedHandled)
+                    yield break;
+            }
+            else if (!string.IsNullOrEmpty(instancingReason))
+            {
+                Debug.Log($"[VP Instancing] Falling back for '{req.modelName}': {instancingReason}");
+            }
+        }
+
         // Phase 1: cheap transform setup
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
@@ -1196,6 +1292,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 Destroy(root);
 
             cellRoots.Remove(c);
+            RemoveInstancedInstancesForCell(c);
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
@@ -1508,6 +1605,745 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             case VpPreprocessedActionType.Shear:
                 VpActionExecutor.ApplyShear(target, action.data0.x, action.data0.y, action.data0.z, action.data1.x, action.data1.y, action.value0);
                 break;
+        }
+    }
+
+    // -------------------------
+    // Instancing helpers
+    // -------------------------
+    private bool SupportsInstancing(List<VpActionCommand> createActions, out InstancedActionData actionData, out string reason)
+    {
+        actionData = default;
+        actionData.visible = true;
+        actionData.scale = UnityEngine.Vector3.one;
+        reason = null;
+
+        if (createActions == null || createActions.Count == 0)
+            return true;
+
+        foreach (var cmd in createActions)
+        {
+            if (cmd == null || string.IsNullOrWhiteSpace(cmd.verb))
+                continue;
+
+            string verb = cmd.verb.Trim().ToLowerInvariant();
+
+            switch (verb)
+            {
+                case "scale":
+                    actionData.hasScale = true;
+                    actionData.scale = ParseScaleVector(cmd);
+                    break;
+
+                case "visible":
+                    actionData.hasVisible = true;
+                    actionData.visible = ParseVisible(cmd);
+                    break;
+
+                case "texture":
+                    if (TryParseTexture(cmd, out string textureName, out int? tagOverride))
+                    {
+                        actionData.hasTexture = true;
+                        actionData.texture = textureName;
+                        actionData.textureTag = tagOverride;
+                    }
+                    else
+                    {
+                        reason = "Texture command missing target texture";
+                        return false;
+                    }
+                    break;
+
+                case "shear":
+                    actionData.hasShear = true;
+                    ParseShear(cmd, ref actionData);
+                    break;
+
+                case "ambient":
+                    actionData.hasAmbient = true;
+                    actionData.ambient = math.clamp(GetPositionalFloat(cmd, 0, 1f), 0f, 1f);
+                    break;
+
+                case "diffuse":
+                    actionData.hasDiffuse = true;
+                    actionData.diffuse = math.max(0f, GetPositionalFloat(cmd, 0, 1f));
+                    break;
+
+                default:
+                    reason = $"Unsupported create action '{verb}' for instancing";
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    private UnityEngine.Vector3 ParseScaleVector(VpActionCommand cmd)
+    {
+        const float DefaultScale = 1f;
+
+        float x = DefaultScale;
+        float y = DefaultScale;
+        float z = DefaultScale;
+
+        if (cmd.positional != null)
+        {
+            if (cmd.positional.Count == 1)
+            {
+                float s = ParseFloat(cmd.positional[0], DefaultScale);
+                x = y = z = s;
+            }
+            else if (cmd.positional.Count >= 3)
+            {
+                x = ParseFloat(cmd.positional[0], DefaultScale);
+                y = ParseFloat(cmd.positional[1], DefaultScale);
+                z = ParseFloat(cmd.positional[2], DefaultScale);
+            }
+            else if (cmd.positional.Count >= 2)
+            {
+                x = ParseFloat(cmd.positional[0], DefaultScale);
+                y = ParseFloat(cmd.positional[1], DefaultScale);
+            }
+        }
+
+        return new UnityEngine.Vector3(x, y, z);
+    }
+
+    private bool ParseVisible(VpActionCommand cmd)
+    {
+        if (cmd.positional == null || cmd.positional.Count == 0)
+            return true;
+
+        string v = cmd.positional[0].Trim().ToLowerInvariant();
+        return v == "yes" || v == "true" || v == "1" || v == "on";
+    }
+
+    private bool TryParseTexture(VpActionCommand cmd, out string textureName, out int? tag)
+    {
+        textureName = null;
+        tag = null;
+
+        if (cmd.positional != null && cmd.positional.Count > 0)
+            textureName = cmd.positional[0];
+
+        if (string.IsNullOrWhiteSpace(textureName) && cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("name", out var n))
+                textureName = n;
+            else if (cmd.kv.TryGetValue("texture", out var t))
+                textureName = t;
+        }
+
+        if (string.IsNullOrWhiteSpace(textureName))
+            return false;
+
+        textureName = textureName.Trim();
+        tag = TryExtractTag(cmd);
+        return true;
+    }
+
+    private void ParseShear(VpActionCommand cmd, ref InstancedActionData data)
+    {
+        data.shearZPlus = GetPositionalFloat(cmd, 0, 0f);
+        data.shearXPlus = GetPositionalFloat(cmd, 1, 0f);
+        data.shearYPlus = GetPositionalFloat(cmd, 2, 0f);
+        data.shearYMinus = GetPositionalFloat(cmd, 3, 0f);
+        data.shearZMinus = GetPositionalFloat(cmd, 4, 0f);
+        data.shearXMinus = GetPositionalFloat(cmd, 5, 0f);
+    }
+
+    private IEnumerator TryHandleInstancedModel(
+        PendingModelLoad req,
+        GameObject loadedObject,
+        InstancedActionData actions,
+        Action<bool> onComplete)
+    {
+        onComplete ??= _ => { };
+
+        if (!enableInstancing)
+        {
+            onComplete(false);
+            yield break;
+        }
+
+        if (actions.hasVisible && !actions.visible)
+        {
+            Destroy(loadedObject);
+            onComplete(true);
+            yield break;
+        }
+
+        if (dropModelsFromUnloadedCells && (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null))
+        {
+            Destroy(loadedObject);
+            onComplete(true);
+            yield break;
+        }
+
+        var template = GetOrCreateInstancedTemplate(req.modelName, loadedObject);
+        if (template == null || template.renderers.Count == 0)
+        {
+            onComplete(false);
+            yield break;
+        }
+
+        InstancedTemplateVariant variant = null;
+        yield return EnsureInstancedVariant(req.modelName, template, actions, variantResult => variant = variantResult);
+
+        if (variant == null)
+        {
+            onComplete(false);
+            yield break;
+        }
+
+        Matrix4x4 instanceMatrix = BuildInstanceMatrix(req.position, req.rotation, actions);
+        AddInstancedInstance(req.cell, variant, instanceMatrix);
+
+        Destroy(loadedObject);
+        onComplete(true);
+    }
+
+    private Matrix4x4 BuildInstanceMatrix(UnityEngine.Vector3 position, Quaternion rotation, InstancedActionData actions)
+    {
+        UnityEngine.Vector3 baseScale = GetBaseScaleVector();
+
+        UnityEngine.Vector3 actionScale = actions.hasScale ? actions.scale : UnityEngine.Vector3.one;
+        UnityEngine.Vector3 finalScale = new UnityEngine.Vector3(
+            Mathf.Max(0.1f, baseScale.x * actionScale.x),
+            Mathf.Max(0.1f, baseScale.y * actionScale.y),
+            Mathf.Max(0.1f, baseScale.z * actionScale.z));
+
+        Matrix4x4 baseMatrix = Matrix4x4.TRS(position, rotation, finalScale);
+
+        if (actions.hasShear)
+            baseMatrix = baseMatrix * BuildShearMatrix(actions);
+
+        return baseMatrix;
+    }
+
+    private Matrix4x4 BuildShearMatrix(InstancedActionData actions)
+    {
+        // Matches VpActionExecutor.ApplyShearToMesh_VpMatrix_ObjectLocal projection logic
+        Matrix4x4 shear = Matrix4x4.identity;
+        shear.m01 = actions.shearXMinus;
+        shear.m02 = -actions.shearXPlus;
+        shear.m10 = -actions.shearYPlus;
+        shear.m12 = -actions.shearYMinus;
+        shear.m20 = actions.shearZMinus;
+        shear.m21 = actions.shearZPlus;
+        return shear;
+    }
+
+    private void AddInstancedInstance((int cx, int cy) cell, InstancedTemplateVariant variant, Matrix4x4 matrix)
+    {
+        if (variant == null)
+            return;
+
+        variant.instances.Add(new InstancedInstanceEntry
+        {
+            cell = cell,
+            matrix = matrix
+        });
+
+        if (!instancedVariants.Contains(variant))
+            instancedVariants.Add(variant);
+
+        if (!instancedVariantsByCell.TryGetValue(cell, out var list))
+        {
+            list = new List<InstancedTemplateVariant>();
+            instancedVariantsByCell[cell] = list;
+        }
+
+        if (!list.Contains(variant))
+            list.Add(variant);
+    }
+
+    private void RemoveInstancedInstancesForCell((int cx, int cy) cell)
+    {
+        if (!instancedVariantsByCell.TryGetValue(cell, out var list) || list == null)
+            return;
+
+        for (int i = 0; i < list.Count; i++)
+        {
+            var variant = list[i];
+            variant.instances.RemoveAll(inst => inst.cell == cell);
+            if (variant.instances.Count == 0)
+            {
+                instancedVariants.Remove(variant);
+            }
+        }
+
+        instancedVariantsByCell.Remove(cell);
+    }
+
+    private InstancedTemplate GetOrCreateInstancedTemplate(string modelName, GameObject root)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return null;
+
+        string key = modelName.ToLowerInvariant();
+
+        if (instancedBaseTemplates.TryGetValue(key, out var cached) && cached != null)
+            return cached;
+
+        if (root == null)
+            return null;
+
+        var template = new InstancedTemplate
+        {
+            modelName = modelName
+        };
+
+        var renderers = root.GetComponentsInChildren<MeshRenderer>(true);
+        var cloneMap = new Dictionary<Material, Material>();
+
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            var renderer = renderers[i];
+            if (renderer == null)
+                continue;
+
+            MeshFilter mf = renderer.GetComponent<MeshFilter>();
+            Mesh mesh = mf != null ? mf.sharedMesh : null;
+            if (mesh == null)
+                continue;
+
+            var mats = renderer.sharedMaterials ?? Array.Empty<Material>();
+            var clonedMats = new Material[mats.Length];
+            for (int m = 0; m < mats.Length; m++)
+            {
+                if (mats[m] == null)
+                    continue;
+
+                if (!cloneMap.TryGetValue(mats[m], out var clone))
+                {
+                    clone = new Material(mats[m]) { hideFlags = HideFlags.DontUnloadUnusedAsset };
+                    cloneMap[mats[m]] = clone;
+                }
+
+                clonedMats[m] = clone;
+            }
+
+            Mesh meshClone = UnityEngine.Object.Instantiate(mesh);
+            meshClone.hideFlags = HideFlags.DontUnloadUnusedAsset;
+
+            Matrix4x4 localToRoot = root.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
+
+            template.renderers.Add(new InstancedRendererData
+            {
+                mesh = meshClone,
+                materials = clonedMats,
+                localToRoot = localToRoot
+            });
+        }
+
+        instancedBaseTemplates[key] = template;
+        return template;
+    }
+
+    private IEnumerator EnsureInstancedVariant(
+        string modelName,
+        InstancedTemplate template,
+        InstancedActionData actions,
+        Action<InstancedTemplateVariant> onComplete)
+    {
+        onComplete ??= _ => { };
+
+        string key = BuildInstancedVariantKey(modelName, actions);
+
+        if (instancedVariantCache.TryGetValue(key, out var cached) && cached != null)
+        {
+            onComplete(cached);
+            yield break;
+        }
+
+        var variant = new InstancedTemplateVariant
+        {
+            key = key,
+            baseTemplate = template,
+            actions = actions
+        };
+
+        Texture2D textureOverride = null;
+        if (actions.hasTexture)
+        {
+            bool textureDone = false;
+            yield return EnsureInstancedTexture(actions.texture, objectPath, objectPathPassword, tex =>
+            {
+                textureOverride = tex;
+                textureDone = true;
+            }, modelLoader.defaultObjectPath);
+
+            if (!textureDone && textureOverride == null)
+            {
+                onComplete(null);
+                yield break;
+            }
+        }
+
+        for (int r = 0; r < template.renderers.Count; r++)
+        {
+            var renderer = template.renderers[r];
+            var mats = CloneMaterials(renderer.materials);
+
+            if (actions.hasAmbient || actions.hasDiffuse)
+                ApplyAmbientDiffuseToMaterials(mats, actions);
+
+            if (textureOverride != null)
+                ApplyTextureToMaterials(mats, textureOverride, actions.textureTag);
+
+            variant.renderers.Add(new InstancedRendererVariant
+            {
+                mesh = renderer.mesh,
+                materials = mats,
+                localToRoot = renderer.localToRoot
+            });
+        }
+
+        instancedVariantCache[key] = variant;
+        onComplete(variant);
+    }
+
+    private Material[] CloneMaterials(Material[] source)
+    {
+        if (source == null || source.Length == 0)
+            return Array.Empty<Material>();
+
+        var result = new Material[source.Length];
+        for (int i = 0; i < source.Length; i++)
+        {
+            if (source[i] == null)
+                continue;
+
+            result[i] = new Material(source[i])
+            {
+                hideFlags = HideFlags.DontUnloadUnusedAsset
+            };
+        }
+
+        return result;
+    }
+
+    private void ApplyAmbientDiffuseToMaterials(Material[] materials, InstancedActionData actions)
+    {
+        if (materials == null)
+            return;
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            var m = materials[i];
+            if (m == null)
+                continue;
+
+            if (actions.hasAmbient)
+            {
+                float ambient = Mathf.Clamp01(actions.ambient);
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
+                }
+            }
+
+            if (actions.hasDiffuse)
+            {
+                float diffuse = Mathf.Max(0f, actions.diffuse);
+
+                if (m.HasProperty("_Color"))
+                {
+                    Color c = m.color;
+                    m.color = new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a);
+                }
+                else if (m.HasProperty("_BaseColor"))
+                {
+                    Color c = m.GetColor("_BaseColor");
+                    m.SetColor("_BaseColor", new Color(
+                        Mathf.Clamp01(c.r * diffuse),
+                        Mathf.Clamp01(c.g * diffuse),
+                        Mathf.Clamp01(c.b * diffuse),
+                        c.a));
+                }
+            }
+        }
+    }
+
+    private void ApplyTextureToMaterials(Material[] materials, Texture2D tex, int? requiredTag)
+    {
+        if (materials == null || tex == null)
+            return;
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            var m = materials[i];
+            if (m == null)
+                continue;
+
+            if (requiredTag.HasValue && ReadMaterialTag(m) != requiredTag.Value)
+                continue;
+
+            if (m.HasProperty("_MainTex"))
+                m.SetTexture("_MainTex", tex);
+            if (m.HasProperty("_BaseMap"))
+                m.SetTexture("_BaseMap", tex);
+        }
+    }
+
+    private int ReadMaterialTag(Material material)
+    {
+        if (material == null)
+            return 0;
+
+        string tagValue = material.GetTag("RwxTag", false, "0");
+        if (int.TryParse(tagValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int parsed))
+            return parsed;
+
+        return 0;
+    }
+
+    private IEnumerator EnsureInstancedTexture(string textureName, string objectPathOverride, string password, Action<Texture2D> onComplete, string defaultObjectPathOverride = null)
+    {
+        onComplete ??= _ => { };
+
+        string op = string.IsNullOrWhiteSpace(objectPathOverride) ? defaultObjectPathOverride : objectPathOverride;
+        op = op ?? modelLoader?.defaultObjectPath ?? objectPath ?? string.Empty;
+        op = op.TrimEnd('/') + "/";
+
+        string cacheKey = MakeTextureCacheKey(op, textureName);
+        if (instancedTextureCache.TryGetValue(cacheKey, out var cached) && cached != null)
+        {
+            onComplete(cached);
+            yield break;
+        }
+
+        if (RWXAssetManager.Instance == null)
+        {
+            var mgrGO = new GameObject("RWX Asset Manager");
+            mgrGO.AddComponent<RWXAssetManager>();
+        }
+
+        var assetMgr = RWXAssetManager.Instance;
+
+        var candidates = BuildInstancedTextureCandidates(textureName);
+
+        Texture2D texFound = null;
+        for (int i = 0; i < candidates.Count && texFound == null; i++)
+        {
+            string candidate = candidates[i];
+            bool done = false;
+            bool success = false;
+            string localPath = null;
+
+            yield return assetMgr.DownloadTexture(op, candidate, (ok, result) =>
+            {
+                success = ok;
+                localPath = result;
+                done = true;
+            }, password);
+
+            while (!done)
+                yield return null;
+
+            if (!success || string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+                continue;
+
+            byte[] bytes;
+            try
+            {
+                bytes = File.ReadAllBytes(localPath);
+            }
+            catch
+            {
+                continue;
+            }
+
+            var loader = GetComponent<RWXTextureLoader>() ?? gameObject.AddComponent<RWXTextureLoader>();
+            texFound = loader.LoadTextureFromBytes(bytes, Path.GetFileName(localPath), false);
+
+            if (texFound != null)
+            {
+                texFound.wrapMode = TextureWrapMode.Repeat;
+                texFound.filterMode = FilterMode.Bilinear;
+                texFound.hideFlags = HideFlags.DontUnloadUnusedAsset;
+                texFound.name = Path.GetFileNameWithoutExtension(localPath);
+                instancedTextureCache[cacheKey] = texFound;
+            }
+        }
+
+        onComplete(texFound);
+    }
+
+    private string MakeTextureCacheKey(string objectPath, string textureName)
+    {
+        string op = (objectPath ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
+        string tn = (textureName ?? string.Empty).Trim().ToLowerInvariant();
+        return op + "||" + tn;
+    }
+
+    private List<string> BuildInstancedTextureCandidates(string textureName)
+    {
+        var list = new List<string>();
+
+        void Add(string s)
+        {
+            if (!string.IsNullOrWhiteSpace(s) && !list.Contains(s))
+                list.Add(s);
+        }
+
+        string t = textureName.Trim();
+        Add(t);
+
+        string ext = Path.GetExtension(t);
+        if (string.IsNullOrEmpty(ext))
+        {
+            Add(t + ".jpg");
+            Add(t + ".jpeg");
+            Add(t + ".png");
+            Add(t + ".bmp");
+            Add(t + ".dds");
+            Add(t + ".dds.gz");
+            Add(t + ".JPG");
+            Add(t + ".PNG");
+            Add(t + ".DDS");
+            Add(t + ".DDS.GZ");
+        }
+
+        return list;
+    }
+
+    private string BuildInstancedVariantKey(string modelName, InstancedActionData actions)
+    {
+        var sb = new StringBuilder();
+        sb.Append((modelName ?? string.Empty).ToLowerInvariant());
+
+        if (actions.hasScale)
+            sb.Append($"|s:{actions.scale.x:F3},{actions.scale.y:F3},{actions.scale.z:F3}");
+
+        if (actions.hasVisible)
+            sb.Append($"|v:{actions.visible}");
+
+        if (actions.hasTexture)
+            sb.Append($"|t:{actions.texture?.ToLowerInvariant()}|tag:{actions.textureTag?.ToString() ?? "-"}");
+
+        if (actions.hasShear)
+            sb.Append($"|sh:{actions.shearZPlus:F3},{actions.shearXPlus:F3},{actions.shearYPlus:F3},{actions.shearYMinus:F3},{actions.shearZMinus:F3},{actions.shearXMinus:F3}");
+
+        if (actions.hasAmbient)
+            sb.Append($"|a:{actions.ambient:F3}");
+
+        if (actions.hasDiffuse)
+            sb.Append($"|d:{actions.diffuse:F3}");
+
+        return sb.ToString();
+    }
+
+    private int? TryExtractTag(VpActionCommand cmd)
+    {
+        if (cmd == null)
+            return null;
+
+        if (cmd.kv != null && cmd.kv.TryGetValue("tag", out var tagStr) &&
+            int.TryParse(tagStr, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int parsed))
+        {
+            return parsed;
+        }
+
+        if (cmd.positional != null)
+        {
+            for (int i = 0; i < cmd.positional.Count; i++)
+            {
+                string token = cmd.positional[i];
+                if (TryParseTagToken(token, out int parsedTag))
+                    return parsedTag;
+
+                if (token.Equals("tag", StringComparison.OrdinalIgnoreCase) && i + 1 < cmd.positional.Count)
+                {
+                    if (int.TryParse(cmd.positional[i + 1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int nextTag))
+                        return nextTag;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private bool TryParseTagToken(string token, out int tag)
+    {
+        tag = 0;
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        token = token.Trim();
+        if (token.StartsWith("tag=", StringComparison.OrdinalIgnoreCase))
+            return int.TryParse(token.Substring(4), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out tag);
+
+        return false;
+    }
+
+    private void LateUpdate()
+    {
+        if (!enableInstancing || instancedVariants.Count == 0 || !SystemInfo.supportsInstancing)
+            return;
+
+        for (int i = 0; i < instancedVariants.Count; i++)
+            DrawInstancedVariant(instancedVariants[i]);
+    }
+
+    private void DrawInstancedVariant(InstancedTemplateVariant variant)
+    {
+        if (variant == null || variant.instances.Count == 0)
+            return;
+
+        for (int r = 0; r < variant.renderers.Count; r++)
+        {
+            var renderer = variant.renderers[r];
+            if (renderer.mesh == null || renderer.materials == null || renderer.materials.Length == 0)
+                continue;
+
+            instancedMatrixScratch.Clear();
+
+            for (int i = 0; i < variant.instances.Count; i++)
+            {
+                instancedMatrixScratch.Add(variant.instances[i].matrix * renderer.localToRoot);
+
+                if (instancedMatrixScratch.Count == MaxInstancesPerBatch)
+                {
+                    DrawInstancedBatch(renderer, instancedMatrixScratch);
+                    instancedMatrixScratch.Clear();
+                }
+            }
+
+            if (instancedMatrixScratch.Count > 0)
+            {
+                DrawInstancedBatch(renderer, instancedMatrixScratch);
+                instancedMatrixScratch.Clear();
+            }
+        }
+    }
+
+    private void DrawInstancedBatch(InstancedRendererVariant renderer, List<Matrix4x4> matrices)
+    {
+        if (renderer.mesh == null || renderer.materials == null)
+            return;
+
+        int subMeshCount = Math.Min(renderer.mesh.subMeshCount, renderer.materials.Length);
+
+        for (int sm = 0; sm < subMeshCount; sm++)
+        {
+            var mat = renderer.materials[sm];
+            if (mat == null)
+                continue;
+
+            Graphics.DrawMeshInstanced(renderer.mesh, sm, mat, matrices);
         }
     }
 
