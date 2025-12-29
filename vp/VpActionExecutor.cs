@@ -13,6 +13,8 @@ public static class VpActionExecutor
     private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
     private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
     private static readonly int _BaseMapId = Shader.PropertyToID("_BaseMap");
+    private static readonly int _ColorId = Shader.PropertyToID("_Color");
+    private static readonly int _BaseColorId = Shader.PropertyToID("_BaseColor");
 
     /// <summary>
     /// Convenience wrapper (optional) so older call sites can use Execute(...)
@@ -150,6 +152,10 @@ public static class VpActionExecutor
             case "shear":
                 ExecuteShear(target, cmd);
                 break;
+
+            case "color":
+                ExecuteColor(target, cmd);
+                break;
         }
     }
 
@@ -208,6 +214,7 @@ public static class VpActionExecutor
         if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
         {
             ApplyTextureToAllRenderers(target, cachedTex, tagOverride);
+            ApplyColorStateAfterTexture(target);
             yield break;
         }
 
@@ -304,6 +311,7 @@ public static class VpActionExecutor
         _textureCache[cacheKey] = tex;
 
         ApplyTextureToAllRenderers(target, tex, tagOverride);
+        ApplyColorStateAfterTexture(target);
 
         Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
     }
@@ -561,6 +569,188 @@ public static class VpActionExecutor
         if (cmd.positional == null || cmd.positional.Count == 0) return;
         float diffuse = ParseFloat(cmd.positional[0], 1f);
         ApplyDiffuse(target, diffuse);
+    }
+
+    // -------------------------
+    // COLOR
+    // -------------------------
+    private static void ExecuteColor(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null)
+            return;
+
+        bool tint = false;
+        string colorStr = ExtractColorString(cmd, ref tint);
+
+        if (string.IsNullOrWhiteSpace(colorStr))
+        {
+            Debug.LogWarning($"[VP] color action missing color value: {cmd.raw}");
+            return;
+        }
+
+        Color color = ParseColor(colorStr, Color.white);
+
+        var state = GetOrAddColorState(target);
+        state.hasColorOverride = true;
+        state.tint = tint;
+        state.color = color;
+        state.hasAppliedColorBefore = true;
+
+        ApplyColorState(target, state, colorActive: true, clearTextures: !tint);
+    }
+
+    private static string ExtractColorString(VpActionCommand cmd, ref bool tint)
+    {
+        string colorStr = null;
+
+        if (cmd.positional != null)
+        {
+            foreach (var token in cmd.positional)
+            {
+                if (string.IsNullOrWhiteSpace(token))
+                    continue;
+
+                string trimmed = token.Trim();
+
+                if (trimmed.Equals("tint", StringComparison.OrdinalIgnoreCase))
+                {
+                    tint = true;
+                    continue;
+                }
+
+                if (trimmed.StartsWith("tint=", StringComparison.OrdinalIgnoreCase))
+                {
+                    tint = true;
+                    if (trimmed.Length > 5)
+                        colorStr ??= trimmed.Substring(5);
+                    continue;
+                }
+
+                colorStr ??= trimmed;
+            }
+        }
+
+        if (cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("tint", out var tintVal))
+            {
+                tint = true;
+                if (string.IsNullOrWhiteSpace(colorStr))
+                    colorStr = tintVal;
+            }
+
+            if (string.IsNullOrWhiteSpace(colorStr) && cmd.kv.TryGetValue("color", out var kvColor))
+                colorStr = kvColor;
+        }
+
+        return colorStr;
+    }
+
+    private static void ApplyColorStateAfterTexture(GameObject target)
+    {
+        var state = target == null ? null : target.GetComponent<VpColorState>();
+        if (state == null)
+            return;
+
+        if (state.hasColorOverride && state.tint)
+        {
+            ApplyColorState(target, state, colorActive: true, clearTextures: false);
+        }
+        else
+        {
+            state.hasColorOverride = false;
+            if (state.hasAppliedColorBefore)
+                ApplyColorState(target, state, colorActive: false, clearTextures: false);
+        }
+    }
+
+    private static void ApplyColorState(GameObject target, VpColorState state, bool colorActive, bool clearTextures)
+    {
+        if (target == null || state == null)
+            return;
+
+        var renderers = target.GetComponentsInChildren<Renderer>(includeInactive: true);
+        var block = new MaterialPropertyBlock();
+
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null)
+                continue;
+
+            var materials = renderer.materials;
+
+            Color baseColor = GetOrStoreBaseColor(renderer, materials, state);
+            Color targetColor = colorActive ? state.color : baseColor;
+
+            renderer.GetPropertyBlock(block);
+
+            if (clearTextures)
+            {
+                block.SetTexture(_MainTexId, null);
+                block.SetTexture(_BaseMapId, null);
+            }
+
+            block.SetColor(_ColorId, targetColor);
+            block.SetColor(_BaseColorId, targetColor);
+            renderer.SetPropertyBlock(block);
+
+            foreach (var material in materials)
+                ApplyColorToMaterial(material, targetColor);
+        }
+    }
+
+    private static Color GetOrStoreBaseColor(Renderer renderer, Material[] materials, VpColorState state)
+    {
+        if (renderer == null || state == null)
+            return Color.white;
+
+        int id = renderer.GetInstanceID();
+        if (state.baseColors.TryGetValue(id, out var baseColor))
+            return baseColor;
+
+        baseColor = ReadMaterialColor(materials);
+        state.baseColors[id] = baseColor;
+        return baseColor;
+    }
+
+    private static Color ReadMaterialColor(Material[] materials)
+    {
+        if (materials == null || materials.Length == 0)
+            return Color.white;
+
+        foreach (var material in materials)
+        {
+            if (material == null)
+                continue;
+
+            if (material.HasProperty(_ColorId))
+                return material.GetColor(_ColorId);
+
+            if (material.HasProperty(_BaseColorId))
+                return material.GetColor(_BaseColorId);
+        }
+
+        return Color.white;
+    }
+
+    private static void ApplyColorToMaterial(Material material, Color color)
+    {
+        if (material == null)
+            return;
+
+        if (material.HasProperty(_ColorId))
+            material.SetColor(_ColorId, color);
+
+        if (material.HasProperty(_BaseColorId))
+            material.SetColor(_BaseColorId, color);
+    }
+
+    private static VpColorState GetOrAddColorState(GameObject target)
+    {
+        var state = target.GetComponent<VpColorState>();
+        if (state == null)
+            state = target.AddComponent<VpColorState>();
+        return state;
     }
 
     // -------------------------
