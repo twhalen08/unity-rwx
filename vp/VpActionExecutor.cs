@@ -594,6 +594,11 @@ public static class VpActionExecutor
     {
         if (target == null) return;
 
+        var state = GetOrAddColorState(target);
+        state.hasOpacityOverride = true;
+        state.opacity = opacity;
+        state.hasAppliedColorBefore = true;
+
         var renderers = target.GetComponentsInChildren<Renderer>(true);
         var block = new MaterialPropertyBlock();
 
@@ -715,7 +720,7 @@ public static class VpActionExecutor
         }
 
         state.hasColorOverride = false;
-        if (state.hasAppliedColorBefore)
+        if (state.hasAppliedColorBefore || state.hasOpacityOverride)
             ApplyColorState(target, state, colorActive: false, clearTextures: false);
     }
 
@@ -736,6 +741,8 @@ public static class VpActionExecutor
 
             Color baseColor = GetOrStoreBaseColor(renderer, materials, state);
             Color targetColor = colorActive ? state.color : baseColor;
+            float alpha = state.hasOpacityOverride ? state.opacity : targetColor.a;
+            targetColor = new Color(targetColor.r, targetColor.g, targetColor.b, alpha);
 
             renderer.GetPropertyBlock(block);
 
