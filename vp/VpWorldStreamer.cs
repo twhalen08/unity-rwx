@@ -47,6 +47,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Cells beyond this radius will be unloaded (set to -1 to disable unloading)")]
     public int unloadRadius = 4;
 
+    [Tooltip("Cells within this radius are kept as full GameObjects; beyond this we switch to instancing.")]
+    public int fullDetailCellRadius = 1;
+
     [Tooltip("Only recompute desired cells when camera crosses into a new cell")]
     public bool updateOnlyOnCellChange = true;
 
@@ -135,6 +138,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public bool showDebugOverlay = true;
     public bool logCreateActions = false;
     public bool logActivateActions = false;
+    public bool logLodTransitions = false;
+    public bool logInstancing = false;
 
     private VirtualParadiseClient vpClient;
 
@@ -145,6 +150,44 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly List<(int cx, int cy)> desiredCells = new();
     private readonly MinHeap<(int cx, int cy)> queuedCellHeap = new MinHeap<(int cx, int cy)>();
     private NativeArray<DesiredCellData> desiredCellBuffer;
+
+    private enum CellLodState
+    {
+        FullDetail,
+        Instanced,
+        Proxy
+    }
+
+    private sealed class CellInfo
+    {
+        public CellLodState lodState = CellLodState.FullDetail;
+        public readonly List<PendingModelLoad> models = new();
+    }
+
+    private sealed class InstancedSubmesh
+    {
+        public Mesh mesh;
+        public Material material;
+        public int submeshIndex;
+    }
+
+    private enum TemplateState
+    {
+        Loading,
+        Ready,
+        Failed
+    }
+
+    private sealed class InstancedTemplate
+    {
+        public TemplateState state;
+        public readonly List<InstancedSubmesh> submeshes = new();
+    }
+
+    private readonly Dictionary<(int cx, int cy), CellInfo> cellInfos = new();
+    private readonly Dictionary<string, InstancedTemplate> instancedTemplates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Matrix4x4>> instancedMatrices = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Matrix4x4[] instancingMatrixBuffer = new Matrix4x4[1023];
 
     private readonly Dictionary<(int tx, int tz), GameObject> terrainTiles = new();
     private readonly HashSet<(int tx, int tz)> loadedTerrainTiles = new();
@@ -404,6 +447,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 }
             }
 
+            UpdateCellLods(camCell);
+
             // Start cell queries (closest-first)
             while (inFlightCellQueries < maxConcurrentCellQueries)
             {
@@ -433,6 +478,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                    startedThisFrame < maxModelStartsPerFrame)
             {
                 var req = modelHeap.PopMin();
+                if (cellInfos.TryGetValue(req.cell, out var cellInfo))
+                {
+                    if (cellInfo.lodState == CellLodState.Instanced || cellInfo.lodState == CellLodState.Proxy)
+                    {
+                        var template = TryGetInstancedTemplate(req.modelName);
+                        if (template != null && template.state == TemplateState.Ready)
+                        {
+                            continue;
+                        }
+
+                        GetOrRequestInstancedTemplate(req.modelName);
+                    }
+                }
 
                 if (dropModelsFromUnloadedCells)
                 {
@@ -528,6 +586,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         UnityEngine.Vector3 camPos = GetCameraWorldPos();
 
+        var cellInfo = GetOrCreateCellInfo(key);
+        cellInfo.models.Clear();
+
         var cell = cellTask.Result;
         foreach (var obj in cell.Objects)
         {
@@ -552,7 +613,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             float pri = ComputeModelPriority(pos, camPos);
             modelHeap.Push(req, pri);
+            cellInfo.models.Add(req);
         }
+
     }
 
     // -------------------------
@@ -1082,6 +1145,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return targetCamera.transform.position;
     }
 
+    private CellInfo GetOrCreateCellInfo((int cx, int cy) cell)
+    {
+        if (!cellInfos.TryGetValue(cell, out var info))
+        {
+            info = new CellInfo();
+            cellInfos[cell] = info;
+        }
+
+        return info;
+    }
+
     // -------------------------
     // Cell math / prioritization
     // -------------------------
@@ -1106,6 +1180,33 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         int cy = Mathf.FloorToInt(vpZ / cellSize);
 
         return (cx, cy);
+    }
+
+    private void UpdateCellLods((int cx, int cy) camCell)
+    {
+        foreach (var cell in loadedCells)
+        {
+            var info = GetOrCreateCellInfo(cell);
+
+            int dx = Mathf.Abs(cell.cx - camCell.cx);
+            int dy = Mathf.Abs(cell.cy - camCell.cy);
+            int distance = Mathf.Max(dx, dy);
+
+            var desired = distance > Mathf.Max(0, fullDetailCellRadius)
+                ? CellLodState.Instanced
+                : CellLodState.FullDetail;
+
+            if (info.lodState == CellLodState.Instanced)
+                desired = CellLodState.Instanced;
+
+            if (info.lodState == desired)
+                continue;
+
+            info.lodState = desired;
+
+            if (logLodTransitions)
+                Debug.Log($"[VP LOD] Cell ({cell.cx},{cell.cy}) -> {desired}");
+        }
     }
 
     private void BuildDesiredCellsWithJob(int centerX, int centerY, int radius)
@@ -1192,13 +1293,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             loadedCells.Remove(c);
 
-            if (cellRoots.TryGetValue(c, out var root) && root != null)
-                Destroy(root);
-
-            cellRoots.Remove(c);
+            DestroyCellRoot(c);
+            cellInfos.Remove(c);
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
         }
+    }
+
+    private void DestroyCellRoot((int cx, int cy) cell)
+    {
+        if (cellRoots.TryGetValue(cell, out var root) && root != null)
+            Destroy(root);
+
+        cellRoots.Remove(cell);
     }
 
     private void EnsureDesiredCellBuffer(int cellCount)
@@ -1512,6 +1619,183 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     }
 
     // -------------------------
+    // Instanced rendering
+    // -------------------------
+    private void LateUpdate()
+    {
+        BuildInstancedBatches();
+        RenderInstancedBatches();
+    }
+
+    private void BuildInstancedBatches()
+    {
+        instancedMatrices.Clear();
+
+        foreach (var kvp in cellInfos)
+        {
+            var cellKey = kvp.Key;
+            var info = kvp.Value;
+
+            if (info.lodState != CellLodState.Instanced)
+                continue;
+
+            var modelList = info.models;
+            if (modelList == null || modelList.Count == 0)
+                continue;
+
+            bool allTemplatesReady = true;
+            foreach (var req in modelList)
+            {
+                string modelKey = NormalizeModelName(req.modelName);
+                var template = GetOrRequestInstancedTemplate(req.modelName);
+                if (template == null || template.state != TemplateState.Ready)
+                {
+                    allTemplatesReady = false;
+                    continue;
+                }
+
+                if (!instancedMatrices.TryGetValue(modelKey, out var matrices))
+                {
+                    matrices = new List<Matrix4x4>();
+                    instancedMatrices[modelKey] = matrices;
+                }
+
+                Matrix4x4 mtx = Matrix4x4.TRS(req.position, req.rotation, GetBaseScaleVector());
+                matrices.Add(mtx);
+            }
+
+            if (allTemplatesReady)
+                DestroyCellRoot(cellKey);
+        }
+    }
+
+    private void RenderInstancedBatches()
+    {
+        foreach (var kvp in instancedMatrices)
+        {
+            if (!instancedTemplates.TryGetValue(kvp.Key, out var template))
+                continue;
+
+            if (template.state != TemplateState.Ready)
+                continue;
+
+            var matrices = kvp.Value;
+            if (matrices == null || matrices.Count == 0)
+                continue;
+
+            foreach (var submesh in template.submeshes)
+            {
+                for (int i = 0; i < matrices.Count; i += instancingMatrixBuffer.Length)
+                {
+                    int count = Math.Min(instancingMatrixBuffer.Length, matrices.Count - i);
+                    matrices.CopyTo(i, instancingMatrixBuffer, 0, count);
+                    Graphics.DrawMeshInstanced(submesh.mesh, submesh.submeshIndex, submesh.material, instancingMatrixBuffer, count);
+                }
+            }
+        }
+    }
+
+    private InstancedTemplate GetOrRequestInstancedTemplate(string modelName)
+    {
+        string key = NormalizeModelName(modelName);
+        if (instancedTemplates.TryGetValue(key, out var existing))
+        {
+            if (logInstancing && existing.state == TemplateState.Ready)
+                Debug.Log($"[VP Instancing] Cache hit for template '{modelName}'");
+            return existing;
+        }
+
+        if (logInstancing)
+            Debug.Log($"[VP Instancing] Cache miss for template '{modelName}', requesting template build");
+
+        var template = new InstancedTemplate { state = TemplateState.Loading };
+        instancedTemplates[key] = template;
+        StartCoroutine(LoadInstancedTemplateCoroutine(modelName, key, template));
+        return template;
+    }
+
+    private IEnumerator LoadInstancedTemplateCoroutine(string modelName, string key, InstancedTemplate template)
+    {
+        bool completed = false;
+        GameObject loadedObject = null;
+        string errorMessage = null;
+
+        modelLoader.LoadModelFromRemote(
+            modelName,
+            modelLoader.defaultObjectPath,
+            (go, errMsg) =>
+            {
+                loadedObject = go;
+                errorMessage = errMsg;
+                completed = true;
+            },
+            objectPathPassword,
+            false);
+
+        while (!completed)
+            yield return null;
+
+        if (loadedObject == null)
+        {
+            template.state = TemplateState.Failed;
+            if (logInstancing)
+                Debug.LogWarning($"[VP Instancing] Failed to load instancing template '{modelName}': {errorMessage}");
+            yield break;
+        }
+
+        template.submeshes.Clear();
+        foreach (var renderer in loadedObject.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            var filter = renderer.GetComponent<MeshFilter>();
+            if (filter == null || filter.sharedMesh == null)
+                continue;
+
+            Mesh mesh = filter.sharedMesh;
+            var materials = renderer.sharedMaterials;
+            int subMeshCount = mesh.subMeshCount;
+
+            for (int i = 0; i < subMeshCount; i++)
+            {
+                Material mat = i < materials.Length ? materials[i] : renderer.sharedMaterial;
+                if (mat == null)
+                    continue;
+
+                template.submeshes.Add(new InstancedSubmesh
+                {
+                    mesh = mesh,
+                    material = mat,
+                    submeshIndex = i
+                });
+            }
+        }
+
+        template.state = template.submeshes.Count > 0 ? TemplateState.Ready : TemplateState.Failed;
+
+        if (logInstancing)
+        {
+            string result = template.state == TemplateState.Ready ? "ready" : "failed";
+            Debug.Log($"[VP Instancing] Template '{modelName}' {result} (submeshes={template.submeshes.Count})");
+        }
+
+        Destroy(loadedObject);
+    }
+
+    private string NormalizeModelName(string modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return string.Empty;
+
+        return modelName.Trim().ToLowerInvariant();
+    }
+
+    private InstancedTemplate TryGetInstancedTemplate(string modelName)
+    {
+        string key = NormalizeModelName(modelName);
+        instancedTemplates.TryGetValue(key, out var template);
+        return template;
+    }
+
+    // -------------------------
     // Utilities
     // -------------------------
     private IEnumerator WaitForTask(Task task)
@@ -1731,6 +2015,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
         if (streamTerrain)
             GUI.Label(new Rect(10, 120, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
+
+        int instancedCount = cellInfos.Values.Count(ci => ci.lodState == CellLodState.Instanced);
+        if (instancedCount > 0)
+        {
+            GUI.Label(new Rect(10, 142, 1600, 22), $"Instanced Cells={instancedCount}");
+        }
     }
 
     private void OnDestroy()
