@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using RWXLoader;
 using UnityEngine;
+using ColorUtility = UnityEngine.ColorUtility;
 
 /// <summary>
 /// VpActionExecutor
