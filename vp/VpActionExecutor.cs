@@ -469,6 +469,9 @@ public static class VpActionExecutor
         public string targetName;
         public Font font;
         public float aspect;
+        public Vector2 scale;
+        public TextAnchor anchor;
+        public bool shadow;
     }
 
     private static void ExecuteSign(GameObject target, VpActionCommand cmd)
@@ -522,7 +525,10 @@ public static class VpActionExecutor
             global = false,
             targetName = null,
             text = null,
-            aspect = 1f
+            aspect = 1f,
+            scale = Vector2.one,
+            anchor = TextAnchor.MiddleCenter,
+            shadow = false
         };
 
         // Text from first positional token
@@ -562,6 +568,14 @@ public static class VpActionExecutor
                     p.mipmaps = true;
                 else if (lower == "global")
                     p.global = true;
+                else if (lower == "shadow")
+                    p.shadow = true;
+                else if (lower.StartsWith("align=", StringComparison.OrdinalIgnoreCase))
+                    p.anchor = ParseAnchor(lower.Substring(6), p.anchor);
+                else if (lower == "align" && i + 1 < cmd.positional.Count)
+                    p.anchor = ParseAnchor(cmd.positional[++i], p.anchor);
+                else if (lower == "scale" && i + 1 < cmd.positional.Count)
+                    p.scale = ParseScale(cmd.positional, ref i, p.scale);
             }
         }
 
@@ -575,6 +589,9 @@ public static class VpActionExecutor
             if (cmd.kv.TryGetValue("i", out var italicVal)) p.italic = ParseBoolToken(italicVal, true);
             if (cmd.kv.TryGetValue("mip", out var mipVal)) p.mipmaps = ParseBoolToken(mipVal, true);
             if (cmd.kv.TryGetValue("global", out var globalVal)) p.global = ParseBoolToken(globalVal, true);
+            if (cmd.kv.TryGetValue("align", out var alignVal)) p.anchor = ParseAnchor(alignVal, p.anchor);
+            if (cmd.kv.TryGetValue("shadow", out var shadowVal)) p.shadow = ParseBoolToken(shadowVal, true);
+            if (cmd.kv.TryGetValue("scale", out var scaleVal)) p.scale = ParseScale(scaleVal, p.scale);
         }
 
         p.quality = ClampQuality(p.quality);
@@ -644,8 +661,8 @@ public static class VpActionExecutor
         var textMesh = textGO.AddComponent<TextMesh>();
         textMesh.font = p.font;
         textMesh.text = p.text;
-        textMesh.anchor = TextAnchor.MiddleCenter;
-        textMesh.alignment = TextAlignment.Center;
+        textMesh.anchor = p.anchor;
+        textMesh.alignment = AnchorToAlignment(p.anchor);
         textMesh.fontSize = Mathf.Max(12, (int)(Mathf.Max(width, height) * 0.6f));
         textMesh.fontStyle = p.italic ? FontStyle.Italic : FontStyle.Normal;
         textMesh.color = p.textColor;
@@ -658,11 +675,29 @@ public static class VpActionExecutor
         p.font.RequestCharactersInTexture(p.text, textMesh.fontSize, textMesh.fontStyle);
 
         var bounds = mr.bounds;
-        float maxDim = Mathf.Max(bounds.size.x, bounds.size.y);
-        if (maxDim > 0.0001f)
+        float maxBounds = Mathf.Max(bounds.size.x, bounds.size.y);
+        if (maxBounds > 0.0001f)
         {
-            float scale = 0.8f / maxDim;
-            textGO.transform.localScale = new Vector3(scale, scale, scale);
+            float fitScale = 0.8f / maxBounds;
+            textGO.transform.localScale = new Vector3(fitScale * p.scale.x, fitScale * p.scale.y, 1f);
+        }
+
+        if (p.shadow)
+        {
+            var shadowGO = UnityEngine.Object.Instantiate(textGO, textGO.transform.parent);
+            shadowGO.name = "vp-sign-shadow";
+            shadowGO.transform.localPosition += new Vector3(0.01f, -0.01f, 0f);
+            shadowGO.transform.localScale = textGO.transform.localScale;
+
+            var shadowMesh = shadowGO.GetComponent<TextMesh>();
+            shadowMesh.color = new Color(0f, 0f, 0f, 0.5f);
+
+            var shadowRenderer = shadowGO.GetComponent<MeshRenderer>();
+            if (shadowRenderer != null)
+            {
+                shadowRenderer.sharedMaterial = p.font.material;
+                shadowRenderer.sortingOrder = 0;
+            }
         }
 
         RenderTexture prev = RenderTexture.active;
@@ -711,6 +746,23 @@ public static class VpActionExecutor
 
         Debug.LogWarning($"[VP] sign target '{targetName}' not found under '{target.name}'");
         return target;
+    }
+
+    private static TextAlignment AnchorToAlignment(TextAnchor anchor)
+    {
+        switch (anchor)
+        {
+            case TextAnchor.MiddleLeft:
+            case TextAnchor.UpperLeft:
+            case TextAnchor.LowerLeft:
+                return TextAlignment.Left;
+            case TextAnchor.MiddleRight:
+            case TextAnchor.UpperRight:
+            case TextAnchor.LowerRight:
+                return TextAlignment.Right;
+            default:
+                return TextAlignment.Center;
+        }
     }
 
     private static Transform FindChildByName(Transform root, string name)
@@ -768,7 +820,8 @@ public static class VpActionExecutor
     {
         string textHash = p.text ?? string.Empty;
         string aspectHash = p.aspect.ToString("F3", CultureInfo.InvariantCulture);
-        return $"sign||{textHash}||{ColorToHex(p.textColor)}||{ColorToHex(p.backgroundColor)}||{p.face?.ToLowerInvariant()}||{p.quality}||{(p.italic ? 1 : 0)}||{(p.mipmaps ? 1 : 0)}||{aspectHash}";
+        string scaleHash = $"{p.scale.x.ToString("F3", CultureInfo.InvariantCulture)},{p.scale.y.ToString("F3", CultureInfo.InvariantCulture)}";
+        return $"sign||{textHash}||{ColorToHex(p.textColor)}||{ColorToHex(p.backgroundColor)}||{p.face?.ToLowerInvariant()}||{p.quality}||{(p.italic ? 1 : 0)}||{(p.mipmaps ? 1 : 0)}||{aspectHash}||{(int)p.anchor}||{(p.shadow ? 1 : 0)}||{scaleHash}";
     }
 
     private static string ColorToHex(Color c) => ColorUtility.ToHtmlStringRGBA(c);
@@ -1674,6 +1727,60 @@ public static class VpActionExecutor
     }
 
     private static int ClampQuality(int q) => Mathf.Clamp(q, 2, 128);
+
+    private static TextAnchor ParseAnchor(string value, TextAnchor fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "left": return TextAnchor.MiddleLeft;
+            case "right": return TextAnchor.MiddleRight;
+            case "upperleft": return TextAnchor.UpperLeft;
+            case "upperright": return TextAnchor.UpperRight;
+            case "lowerleft": return TextAnchor.LowerLeft;
+            case "lowerright": return TextAnchor.LowerRight;
+            case "top": return TextAnchor.UpperCenter;
+            case "bottom": return TextAnchor.LowerCenter;
+            default: return TextAnchor.MiddleCenter;
+        }
+    }
+
+    private static Vector2 ParseScale(string value, Vector2 fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        var parts = value.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            float s = ParseFloat(parts[0], fallback.x);
+            return new Vector2(s, s);
+        }
+        if (parts.Length >= 2)
+        {
+            float x = ParseFloat(parts[0], fallback.x);
+            float y = ParseFloat(parts[1], fallback.y);
+            return new Vector2(x, y);
+        }
+
+        return fallback;
+    }
+
+    private static Vector2 ParseScale(List<string> positional, ref int index, Vector2 fallback)
+    {
+        if (positional == null) return fallback;
+
+        if (index + 1 >= positional.Count)
+            return fallback;
+
+        float x = ParseFloat(positional[index + 1], fallback.x);
+        float y = (index + 2 < positional.Count) ? ParseFloat(positional[index + 2], fallback.y) : x;
+
+        index += (index + 2 < positional.Count) ? 2 : 1;
+        return new Vector2(x, y);
+    }
 
     private static float GetFloat(VpActionCommand cmd, string key, float fallback)
     {
