@@ -159,6 +159,46 @@ public static class VpActionExecutor
         return null;
     }
 
+    private static float ComputeRendererAspect(GameObject root, int? requiredTag)
+    {
+        if (root == null) return 1f;
+
+        float maxAspect = 1f;
+        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
+
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            var r = renderers[i];
+            if (r == null || r.sharedMaterials == null || r.sharedMaterials.Length == 0)
+                continue;
+
+            // If tag is required, ensure at least one material matches
+            bool tagMatched = !requiredTag.HasValue;
+            if (requiredTag.HasValue)
+            {
+                for (int mi = 0; mi < r.sharedMaterials.Length; mi++)
+                {
+                    var m = r.sharedMaterials[mi];
+                    if (m != null && ReadMaterialTag(m) == requiredTag.Value)
+                    {
+                        tagMatched = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!tagMatched) continue;
+
+            var b = r.bounds;
+            float w = Mathf.Max(0.001f, b.size.x);
+            float h = Mathf.Max(0.001f, b.size.y);
+            float aspect = w / h;
+            if (aspect > maxAspect) maxAspect = aspect;
+        }
+
+        return Mathf.Clamp(maxAspect, 0.05f, 20f);
+    }
+
     // ============================================================
     // AMBIENT / DIFFUSE (MPB-based; no material instancing)
     // ============================================================
@@ -428,6 +468,7 @@ public static class VpActionExecutor
         public bool global;
         public string targetName;
         public Font font;
+        public float aspect;
     }
 
     private static void ExecuteSign(GameObject target, VpActionCommand cmd)
@@ -480,7 +521,8 @@ public static class VpActionExecutor
             mipmaps = false,
             global = false,
             targetName = null,
-            text = null
+            text = null,
+            aspect = 1f
         };
 
         // Text from first positional token
@@ -556,22 +598,30 @@ public static class VpActionExecutor
         }
 
         p.font = GetSignFont(p.face, p.quality, p.italic);
+
+        // Determine aspect ratio from the targeted renderer (width / height). Fall back to 1:1.
+        var applyRoot = ResolveTargetRoot(target, p.targetName);
+        p.aspect = ComputeRendererAspect(applyRoot, requiredTag: 100);
         return p;
     }
 
     private static Texture2D GenerateSignTexture(SignParameters p)
     {
-        int res = ClampQuality(p.quality);
+        int maxDim = ClampQuality(p.quality);
+        float aspect = Mathf.Clamp(p.aspect, 0.05f, 20f);
+
+        int width = maxDim;
+        int height = Mathf.Max(2, Mathf.RoundToInt(maxDim / Mathf.Max(aspect, 0.0001f)));
 
         const int SignRenderLayer = 31;
 
-        var rt = new RenderTexture(res, res, 0, RenderTextureFormat.ARGB32)
+        var rt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
         {
             hideFlags = HideFlags.HideAndDontSave,
             useMipMap = p.mipmaps,
             autoGenerateMips = p.mipmaps,
             filterMode = FilterMode.Bilinear,
-            wrapMode = TextureWrapMode.Repeat
+            wrapMode = TextureWrapMode.Clamp
         };
 
         var camGO = new GameObject("vp-sign-camera") { hideFlags = HideFlags.HideAndDontSave };
@@ -596,7 +646,7 @@ public static class VpActionExecutor
         textMesh.text = p.text;
         textMesh.anchor = TextAnchor.MiddleCenter;
         textMesh.alignment = TextAlignment.Center;
-        textMesh.fontSize = Mathf.Max(12, (int)(res * 0.6f));
+        textMesh.fontSize = Mathf.Max(12, (int)(Mathf.Max(width, height) * 0.6f));
         textMesh.fontStyle = p.italic ? FontStyle.Italic : FontStyle.Normal;
         textMesh.color = p.textColor;
         textMesh.characterSize = 0.1f;
@@ -620,14 +670,14 @@ public static class VpActionExecutor
         GL.Clear(true, true, p.backgroundColor);
         cam.Render();
 
-        var tex = new Texture2D(res, res, TextureFormat.RGBA32, p.mipmaps, false)
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, p.mipmaps, false)
         {
             name = $"vp-sign:{p.text}",
-            wrapMode = TextureWrapMode.Repeat,
+            wrapMode = TextureWrapMode.Clamp,
             filterMode = FilterMode.Bilinear,
             hideFlags = HideFlags.DontUnloadUnusedAsset
         };
-        tex.ReadPixels(new Rect(0, 0, res, res), 0, 0);
+        tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
         tex.Apply(updateMipmaps: p.mipmaps, makeNoLongerReadable: false);
 
         RenderTexture.active = prev;
@@ -644,18 +694,23 @@ public static class VpActionExecutor
     {
         if (target == null || tex == null) return;
 
-        GameObject applyRoot = target;
-
-        if (!string.IsNullOrWhiteSpace(targetName))
-        {
-            Transform child = FindChildByName(target.transform, targetName);
-            if (child != null)
-                applyRoot = child.gameObject;
-            else
-                Debug.LogWarning($"[VP] sign target '{targetName}' not found under '{target.name}'");
-        }
-
+        GameObject applyRoot = ResolveTargetRoot(target, targetName);
         ApplyTextureToRendererMaterials(applyRoot, tex, requiredTag: 100);
+    }
+
+    private static GameObject ResolveTargetRoot(GameObject target, string targetName)
+    {
+        if (target == null) return null;
+
+        if (string.IsNullOrWhiteSpace(targetName))
+            return target;
+
+        Transform child = FindChildByName(target.transform, targetName);
+        if (child != null)
+            return child.gameObject;
+
+        Debug.LogWarning($"[VP] sign target '{targetName}' not found under '{target.name}'");
+        return target;
     }
 
     private static Transform FindChildByName(Transform root, string name)
@@ -712,7 +767,8 @@ public static class VpActionExecutor
     private static string MakeSignCacheKey(SignParameters p)
     {
         string textHash = p.text ?? string.Empty;
-        return $"sign||{textHash}||{ColorToHex(p.textColor)}||{ColorToHex(p.backgroundColor)}||{p.face?.ToLowerInvariant()}||{p.quality}||{(p.italic ? 1 : 0)}||{(p.mipmaps ? 1 : 0)}";
+        string aspectHash = p.aspect.ToString("F3", CultureInfo.InvariantCulture);
+        return $"sign||{textHash}||{ColorToHex(p.textColor)}||{ColorToHex(p.backgroundColor)}||{p.face?.ToLowerInvariant()}||{p.quality}||{(p.italic ? 1 : 0)}||{(p.mipmaps ? 1 : 0)}||{aspectHash}";
     }
 
     private static string ColorToHex(Color c) => ColorUtility.ToHtmlStringRGBA(c);
