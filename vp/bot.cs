@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using UnityEngine;
 using VpNet;
@@ -419,17 +420,34 @@ public class VPWorldAreaLoader : MonoBehaviour
     {
         if (obj == null) return null;
 
-        var prop = obj.GetType().GetProperty("Description");
-        if (prop != null)
+        try
         {
-            try
+            var type = obj.GetType();
+
+            foreach (var prop in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
-                return prop.GetValue(obj) as string;
+                if (!prop.CanRead) continue;
+                if (!string.Equals(prop.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = prop.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
             }
-            catch
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
             {
-                // ignore reflection errors
+                if (!string.Equals(field.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = field.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
             }
+        }
+        catch
+        {
+            // ignore reflection errors
         }
 
         return null;

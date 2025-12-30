@@ -11,6 +11,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Networking;
+using System.Reflection;
 using VpNet;
 using static Unity.Burst.Intrinsics.X86.Avx;
 using static UnityEngine.GraphicsBuffer;
@@ -1628,17 +1629,34 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     {
         if (obj == null) return null;
 
-        var prop = obj.GetType().GetProperty("Description");
-        if (prop != null)
+        try
         {
-            try
+            var type = obj.GetType();
+
+            foreach (var prop in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
-                return prop.GetValue(obj) as string;
+                if (!prop.CanRead) continue;
+                if (!string.Equals(prop.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = prop.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
             }
-            catch
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
             {
-                // Ignore reflection errors; description is optional metadata.
+                if (!string.Equals(field.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = field.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
             }
+        }
+        catch
+        {
+            // Ignore reflection errors; description is optional metadata.
         }
 
         return null;

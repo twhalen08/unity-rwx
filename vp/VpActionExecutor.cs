@@ -544,6 +544,10 @@ public static class VpActionExecutor
             {
                 p.text = meta.description.Trim();
             }
+            else if (meta != null && !string.IsNullOrWhiteSpace(meta.modelName))
+            {
+                p.text = meta.modelName.Trim();
+            }
             else
             {
                 Debug.LogWarning($"[VP] sign text not provided and description unavailable on '{target?.name}'");
