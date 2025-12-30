@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using UnityEngine;
 using VpNet;
@@ -51,6 +52,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public string description;
     }
 
     private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
@@ -166,19 +168,21 @@ public class VPWorldAreaLoader : MonoBehaviour
 
             // ✅ action is per-instance metadata
             string action = obj.Action;
+            string description = GetObjectDescription(obj);
 
-            EnqueueModelLoad(modelName, pos, rot, action);
+            EnqueueModelLoad(modelName, pos, rot, action, description);
         }
     }
 
-    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action)
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action, string description)
     {
         pendingModelLoads.Enqueue(new PendingModelLoad
         {
             modelName = modelName,
             position = position,
             rotation = rotation,
-            action = action
+            action = action,
+            description = description
         });
 
         if (loadQueueCoroutine == null)
@@ -236,6 +240,7 @@ public class VPWorldAreaLoader : MonoBehaviour
             loadedObject.transform.localRotation = request.rotation;
             ApplyModelBaseScale(loadedObject);
             EnsureModelColliders(loadedObject);
+            ApplyObjectMetadata(loadedObject, request.description, modelId);
 
             // Give the loader a frame to finish any late material/renderer setup
             yield return null;
@@ -390,6 +395,17 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
+    private void ApplyObjectMetadata(GameObject target, string description, string modelName)
+    {
+        if (target == null) return;
+
+        var meta = VpObjectMetadata.GetOrAdd(target);
+        if (!string.IsNullOrWhiteSpace(description))
+            meta.description = description;
+        if (!string.IsNullOrWhiteSpace(modelName))
+            meta.modelName = modelName;
+    }
+
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
         float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
@@ -398,5 +414,42 @@ public class VPWorldAreaLoader : MonoBehaviour
             (float)vpPos.Y * unityUnitsPerVpUnit,
             (float)vpPos.Z * unityUnitsPerVpUnit
         );
+    }
+
+    private string GetObjectDescription(object obj)
+    {
+        if (obj == null) return null;
+
+        try
+        {
+            var type = obj.GetType();
+
+            foreach (var prop in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (!prop.CanRead) continue;
+                if (!string.Equals(prop.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = prop.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
+            }
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (!string.Equals(field.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = field.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
+            }
+        }
+        catch
+        {
+            // ignore reflection errors
+        }
+
+        return null;
     }
 }

@@ -11,6 +11,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Networking;
+using System.Reflection;
 using VpNet;
 using static Unity.Burst.Intrinsics.X86.Avx;
 using static UnityEngine.GraphicsBuffer;
@@ -277,6 +278,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public string description;
     }
 
     // Model priority heap: smallest priority loads first
@@ -545,6 +547,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
             Quaternion rot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
+            string description = GetObjectDescription(obj);
 
             var req = new PendingModelLoad
             {
@@ -552,7 +555,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 modelName = modelName,
                 position = pos,
                 rotation = rot,
-                action = obj.Action
+                action = obj.Action,
+                description = description
             };
 
             float pri = ComputeModelPriority(pos, camPos);
@@ -940,6 +944,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             loadedObject.transform.localRotation = req.rotation;
             ApplyModelBaseScale(loadedObject);
             EnsureModelColliders(loadedObject);
+            ApplyObjectMetadata(loadedObject, req.description, modelId);
 
             // Give Unity a frame before heavier work
             yield return null;
@@ -1607,6 +1612,54 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             var collider = filter.gameObject.AddComponent<MeshCollider>();
             collider.sharedMesh = filter.sharedMesh;
         }
+    }
+
+    private void ApplyObjectMetadata(GameObject target, string description, string modelName)
+    {
+        if (target == null) return;
+
+        var meta = VpObjectMetadata.GetOrAdd(target);
+        if (!string.IsNullOrWhiteSpace(description))
+            meta.description = description;
+        if (!string.IsNullOrWhiteSpace(modelName))
+            meta.modelName = modelName;
+    }
+
+    private string GetObjectDescription(object obj)
+    {
+        if (obj == null) return null;
+
+        try
+        {
+            var type = obj.GetType();
+
+            foreach (var prop in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (!prop.CanRead) continue;
+                if (!string.Equals(prop.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = prop.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
+            }
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
+            {
+                if (!string.Equals(field.Name, "description", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var val = field.GetValue(obj) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
+            }
+        }
+        catch
+        {
+            // Ignore reflection errors; description is optional metadata.
+        }
+
+        return null;
     }
 
     private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 axis, double angle, string modelName)
