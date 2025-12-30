@@ -1916,3 +1916,13 @@ public class VpLightEffect : MonoBehaviour
 
 
 }
+
+/// <summary>
+/// Holds metadata for the most recent sign action on an object.
+/// Placed here to avoid missing-type issues in build pipelines that may not pick up helper files.
+/// </summary>
+public class VpSignState : MonoBehaviour
+{
+    public bool isGlobal;
+    public string text;
+}
