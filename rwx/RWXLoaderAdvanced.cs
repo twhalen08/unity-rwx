@@ -13,10 +13,10 @@ namespace RWXLoader
         public string defaultObjectPath = "http://objects.virtualparadise.org/vpbuild/";
         public string objectPathPassword = "";
         public Transform parentTransform;
-        
+
         [Header("Debug")]
         public bool enableDebugLogs = true;
-        
+
         private RWXParser parser;
         private RWXMeshBuilder meshBuilder;
         private RWXMaterialManager materialManager;
@@ -252,7 +252,7 @@ namespace RWXLoader
         {
             // Create root object
             GameObject rootObject = new GameObject(modelName);
-            
+
             // Initialize parse context
             var context = new RWXParseContext();
             context.rootObject = rootObject;
@@ -273,7 +273,7 @@ namespace RWXLoader
 
             // Parse RWX content line by line
             string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            
+
             if (enableDebugLogs)
                 Debug.Log($"Parsing {lines.Length} lines of RWX content");
 
@@ -379,7 +379,7 @@ namespace RWXLoader
 
             var models = new List<string>();
             var files = assetManager.ListZipContents(archive);
-            
+
             foreach (string file in files)
             {
                 if (file.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase))

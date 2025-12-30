@@ -4,14 +4,16 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using RWXLoader;
 using Unity.Burst;
 using Unity.Collections;
-using UnityEngine;
 using Unity.Jobs;
 using Unity.Mathematics;
-using VpNet;
-using RWXLoader;
+using UnityEngine;
 using UnityEngine.Networking;
+using VpNet;
+using static Unity.Burst.Intrinsics.X86.Avx;
+using static UnityEngine.GraphicsBuffer;
 
 /// <summary>
 /// VPWorldStreamerSmooth
@@ -259,6 +261,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     result.value0 = input.input1.z; // xMinus
                     result.valid = true;
                     break;
+
+               
+
             }
 
             outputs[index] = result;
@@ -923,101 +928,118 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield break;
         }
 
-        // Phase 1: cheap transform setup
-        loadedObject.transform.localPosition = req.position;
-        loadedObject.transform.localRotation = req.rotation;
-        ApplyModelBaseScale(loadedObject);
-        EnsureModelColliders(loadedObject);
+        // --- ACTION GATE: hide immediately until create actions + async downloads finish
+        var gate = loadedObject.GetComponent<VpActionGate>();
+        if (gate == null) gate = loadedObject.AddComponent<VpActionGate>();
+        gate.BeginAction(); // base gate (covers this whole method's create-action work)
 
-        // Give Unity a frame before heavier work
-        yield return null;
-
-        // If the cell vanished while we were loading, discard the object (optional)
-        if (dropModelsFromUnloadedCells)
+        try
         {
-            if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
-            {
-                Destroy(loadedObject);
-                yield break;
-            }
-        }
+            // Phase 1: cheap transform setup
+            loadedObject.transform.localPosition = req.position;
+            loadedObject.transform.localRotation = req.rotation;
+            ApplyModelBaseScale(loadedObject);
+            EnsureModelColliders(loadedObject);
 
-        // Phase 2: apply actions (time-sliced)
-        if (createActions.Count > 0 || activateActions.Count > 0)
-        {
-            if (logCreateActions && createActions.Count > 0)
-                Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
+            // Give Unity a frame before heavier work
+            yield return null;
 
-            if (!sliceActionApplication)
+            // If the cell vanished while we were loading, discard the object (optional)
+            if (dropModelsFromUnloadedCells)
             {
-                foreach (var a in createActions)
-                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
-            }
-            else
-            {
-                PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
-
-                if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
                 {
-                    var preprocessJob = new PreprocessActionJob
-                    {
-                        inputs = preprocessInputs,
-                        outputs = preprocessOutputs
-                    };
-
-                    int batchSize = math.max(1, preprocessInputs.Length / 4);
-                    preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
-
-                    preprocessedActionResults.Clear();
-                    for (int i = 0; i < preprocessOutputs.Length; i++)
-                        preprocessedActionResults.Add(preprocessOutputs[i]);
-                }
-
-                if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
-                if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
-
-                float start = Time.realtimeSinceStartup;
-
-                for (int i = 0; i < actionApplySteps.Count; i++)
-                {
-                    var step = actionApplySteps[i];
-
-                    if (step.isPreprocessed)
-                    {
-                        if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
-                            ApplyPreprocessedCreateAction(loadedObject, preprocessedActionResults[step.preprocessedIndex]);
-                    }
-                    else if (step.command != null)
-                    {
-                        VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
-                    }
-
-                    float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
-                    if (elapsedMs >= modelWorkBudgetMs)
-                    {
-                        yield return null;
-                        start = Time.realtimeSinceStartup;
-                    }
+                    Destroy(loadedObject);
+                    yield break;
                 }
             }
 
-            // Activate actions are stored (cheap)
-            if (activateActions.Count > 0)
+            // Phase 2: apply actions (time-sliced)
+            if (createActions.Count > 0 || activateActions.Count > 0)
             {
-                var act = loadedObject.GetComponent<VpActivateActions>();
-                if (act == null) act = loadedObject.AddComponent<VpActivateActions>();
-                act.actions.AddRange(activateActions);
+                if (logCreateActions && createActions.Count > 0)
+                    Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
 
-                if (logActivateActions)
-                    Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
+                if (!sliceActionApplication)
+                {
+                    foreach (var a in createActions)
+                        VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+                }
+                else
+                {
+                    PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
+
+                    if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                    {
+                        var preprocessJob = new PreprocessActionJob
+                        {
+                            inputs = preprocessInputs,
+                            outputs = preprocessOutputs
+                        };
+
+                        int batchSize = math.max(1, preprocessInputs.Length / 4);
+                        preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
+
+                        preprocessedActionResults.Clear();
+                        for (int i = 0; i < preprocessOutputs.Length; i++)
+                            preprocessedActionResults.Add(preprocessOutputs[i]);
+                    }
+
+                    if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
+                    if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
+
+                    float start = Time.realtimeSinceStartup;
+
+                    for (int i = 0; i < actionApplySteps.Count; i++)
+                    {
+                        var step = actionApplySteps[i];
+
+                        if (step.isPreprocessed)
+                        {
+                            if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
+                                ApplyPreprocessedCreateAction(loadedObject, preprocessedActionResults[step.preprocessedIndex]);
+                        }
+                        else if (step.command != null)
+                        {
+                            VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
+                        }
+
+                        float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
+                        if (elapsedMs >= modelWorkBudgetMs)
+                        {
+                            yield return null;
+                            start = Time.realtimeSinceStartup;
+                        }
+                    }
+                }
+
+                // Activate actions are stored (cheap)
+                if (activateActions.Count > 0)
+                {
+                    var act = loadedObject.GetComponent<VpActivateActions>();
+                    if (act == null) act = loadedObject.AddComponent<VpActivateActions>();
+                    act.actions.AddRange(activateActions);
+
+                    if (logActivateActions)
+                        Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
+                }
+            }
+
+            // If loader did not activate on instantiate, activate now (still gated)
+            if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
+            {
+                loadedObject.SetActive(true);
             }
         }
-
-        if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
+        finally
         {
-            loadedObject.SetActive(true);
+            // Release base gate. If texture/normalmap coroutines are still running,
+            // VpActionExecutor will keep the object gated until those finish too.
+            if (gate != null)
+                gate.EndAction();
         }
     }
+
 
     // -------------------------
     // Priority computation
@@ -1288,7 +1310,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             terrainTileNodes.Remove(tile);
 
             // Remove cached heights for this tile
-            int tileSpan = Mathf.Max(1, terrainTileCellSpan);
+             tileSpan = Mathf.Max(1, terrainTileCellSpan);
             for (int cz = 0; cz < tileSpan; cz++)
             {
                 for (int cx = 0; cx < tileSpan; cx++)
@@ -1447,8 +1469,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         float zMinus = GetPositionalFloat(cmd, 4, 0f);
         float xMinus = GetPositionalFloat(cmd, 5, 0f);
 
+        // Matches PreprocessActionJob + ApplyPreprocessedCreateAction mapping:
+        // data0 = (zPlus, xPlus, yPlus)
+        // data1.x = yMinus
+        // data1.y = zMinus
+        // value0  = xMinus
         input.input0 = new float4(zPlus, xPlus, yPlus, yMinus);
-        input.input1 = new float3(zMinus, xMinus, xMinus);
+        input.input1 = new float3(zMinus, 0f, xMinus); // input1.z is xMinus (value0)
     }
 
     private float ParseFloat(string s, float fallback)

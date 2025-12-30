@@ -6,81 +6,201 @@ using System.IO;
 using RWXLoader;
 using UnityEngine;
 
+/// <summary>
+/// VpActionExecutor
+/// ----------------
+/// Fixes:
+///  - Stops runaway material instancing (uses MaterialPropertyBlock + sharedMaterials)
+///  - Tagged actions (texture/color/opacity) apply per-material-index correctly
+///  - Prevents "overrides disappearing" after walking around (no renderer.materials churn)
+///  - Adds bounded texture cache with eviction to control memory growth
+///  - Standard shader alpha handling via shared *variant* materials (cached), not per-renderer instances
+/// </summary>
 public static class VpActionExecutor
 {
     private const float VpShearToUnity = 0.5f;
 
-    private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
+    // -------------------------
+    // Texture cache (bounded)
+    // -------------------------
+    private const int MaxCachedTextures = 512;
+
+    private struct TextureCacheEntry
+    {
+        public Texture2D tex;
+        public LinkedListNode<string> lruNode;
+    }
+
+    private static readonly Dictionary<string, TextureCacheEntry> _textureCache = new Dictionary<string, TextureCacheEntry>(1024);
+    private static readonly LinkedList<string> _textureLru = new LinkedList<string>();
+
+    // -------------------------
+    // Material variant caches (avoid instancing per renderer)
+    // -------------------------
+    private enum AlphaVariantMode : byte { Opaque = 0, Cutout = 1, Transparent = 2 }
+
+    private readonly struct MaterialVariantKey : IEquatable<MaterialVariantKey>
+    {
+        public readonly int baseId;
+        public readonly AlphaVariantMode mode;
+        public MaterialVariantKey(Material baseMat, AlphaVariantMode mode)
+        {
+            baseId = baseMat != null ? baseMat.GetInstanceID() : 0;
+            this.mode = mode;
+        }
+        public bool Equals(MaterialVariantKey other) => baseId == other.baseId && mode == other.mode;
+        public override bool Equals(object obj) => obj is MaterialVariantKey o && Equals(o);
+        public override int GetHashCode() => (baseId * 397) ^ (int)mode;
+    }
+
+    private static readonly Dictionary<MaterialVariantKey, Material> _materialVariants = new Dictionary<MaterialVariantKey, Material>(2048);
+
+    // -------------------------
+    // Shader property ids
+    // -------------------------
     private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
     private static readonly int _BaseMapId = Shader.PropertyToID("_BaseMap");
+    private static readonly int _ColorId = Shader.PropertyToID("_Color");
+    private static readonly int _BaseColorId = Shader.PropertyToID("_BaseColor");
+    private static readonly int _CutoffId = Shader.PropertyToID("_Cutoff");
 
-    /// <summary>
-    /// Convenience wrapper (optional) so older call sites can use Execute(...)
-    /// </summary>
     public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
     {
         ExecuteCreate(target, cmd, objectPath, password, host);
     }
 
+    private static VpActionGate GetOrAddGate(GameObject target)
+    {
+        if (target == null) return null;
+        var gate = target.GetComponent<VpActionGate>();
+        if (gate == null) gate = target.AddComponent<VpActionGate>();
+        return gate;
+    }
+
+    private static float NormalizeVpShear(float v)
+    {
+        // VP clamps shear inputs to [-20, 20]
+        v = Mathf.Clamp(v, -20f, 20f);
+
+        // VP scale: 20 => 1.0, 10 => 0.5, etc.
+        return v / 20f;
+    }
+
+    // ============================================================
+    // Dispatch
+    // ============================================================
+    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    {
+        if (target == null || cmd == null) return;
+
+        switch (cmd.verb)
+        {
+            case "texture":    ExecuteTexture(target, cmd, objectPath, password, host); break;
+            case "normalmap":  ExecuteNormalMap(target, cmd, objectPath, password, host); break;
+            case "ambient":    ExecuteAmbient(target, cmd); break;
+            case "diffuse":    ExecuteDiffuse(target, cmd); break;
+            case "opacity":    ExecuteOpacity(target, cmd); break;
+            case "light":      ExecuteLight(target, cmd); break;
+            case "scale":      ExecuteScale(target, cmd); break;
+            case "visible":    ExecuteVisible(target, cmd); break;
+            case "shear":      ExecuteShear(target, cmd); break;
+            case "color":      ExecuteColor(target, cmd); break;
+        }
+    }
+
+    // ============================================================
+    // TAG HELPERS (tag is per MATERIAL)
+    // ============================================================
+    private static int ReadMaterialTag(Material material)
+    {
+        if (material == null) return 0;
+        string tagValue = material.GetTag("RwxTag", false, "0") ?? "0";
+        if (int.TryParse(tagValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            return parsed;
+        return 0;
+    }
+
+    private static int? TryExtractTag(VpActionCommand cmd)
+    {
+        if (cmd == null) return null;
+
+        if (cmd.kv != null && cmd.kv.TryGetValue("tag", out var tagStr) &&
+            int.TryParse(tagStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            return parsed;
+
+        if (cmd.positional == null) return null;
+
+        for (int i = 0; i < cmd.positional.Count; i++)
+        {
+            string token = cmd.positional[i];
+            if (string.IsNullOrWhiteSpace(token)) continue;
+
+            token = token.Trim();
+            if (token.StartsWith("tag=", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(token.Substring(4), NumberStyles.Integer, CultureInfo.InvariantCulture, out int t))
+                    return t;
+            }
+
+            if (token.Equals("tag", StringComparison.OrdinalIgnoreCase) && i + 1 < cmd.positional.Count)
+            {
+                if (int.TryParse(cmd.positional[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int t))
+                    return t;
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // AMBIENT / DIFFUSE (MPB-based; no material instancing)
+    // ============================================================
     public static void ApplyAmbient(GameObject target, float ambient)
     {
         if (target == null) return;
-
         ambient = Mathf.Clamp01(ambient);
 
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
         {
-            foreach (var m in r.materials)
-            {
-                if (m == null) continue;
+            if (r == null) continue;
 
-                if (m.HasProperty("_Color"))
-                {
-                    Color c = m.color;
-                    m.color = new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a);
-                }
-                else if (m.HasProperty("_BaseColor"))
-                {
-                    Color c = m.GetColor("_BaseColor");
-                    m.SetColor("_BaseColor", new Color(c.r * ambient, c.g * ambient, c.b * ambient, c.a));
-                }
-            }
+            // apply uniformly to the whole renderer (all submeshes)
+            var block = new MaterialPropertyBlock();
+            r.GetPropertyBlock(block);
+
+            // derive from current effective color (block if present else shared material)
+            Color baseC = GetEffectiveRendererColor(r, block);
+            Color outC = new Color(baseC.r * ambient, baseC.g * ambient, baseC.b * ambient, baseC.a);
+
+            block.SetColor(_ColorId, outC);
+            block.SetColor(_BaseColorId, outC);
+            r.SetPropertyBlock(block);
         }
     }
 
     public static void ApplyDiffuse(GameObject target, float diffuse)
     {
         if (target == null) return;
-
         diffuse = Mathf.Max(0f, diffuse);
 
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
         {
-            foreach (var m in r.materials)
-            {
-                if (m == null) continue;
+            if (r == null) continue;
 
-                if (m.HasProperty("_Color"))
-                {
-                    Color c = m.color;
-                    m.color = new Color(
-                        Mathf.Clamp01(c.r * diffuse),
-                        Mathf.Clamp01(c.g * diffuse),
-                        Mathf.Clamp01(c.b * diffuse),
-                        c.a
-                    );
-                }
-                else if (m.HasProperty("_BaseColor"))
-                {
-                    Color c = m.GetColor("_BaseColor");
-                    m.SetColor("_BaseColor", new Color(
-                        Mathf.Clamp01(c.r * diffuse),
-                        Mathf.Clamp01(c.g * diffuse),
-                        Mathf.Clamp01(c.b * diffuse),
-                        c.a
-                    ));
-                }
-            }
+            var block = new MaterialPropertyBlock();
+            r.GetPropertyBlock(block);
+
+            Color baseC = GetEffectiveRendererColor(r, block);
+            Color outC = new Color(
+                Mathf.Clamp01(baseC.r * diffuse),
+                Mathf.Clamp01(baseC.g * diffuse),
+                Mathf.Clamp01(baseC.b * diffuse),
+                baseC.a
+            );
+
+            block.SetColor(_ColorId, outC);
+            block.SetColor(_BaseColorId, outC);
+            r.SetPropertyBlock(block);
         }
     }
 
@@ -88,15 +208,26 @@ public static class VpActionExecutor
     {
         if (target == null) return;
 
+        var gate = target.GetComponent<VpActionGate>();
+        if (gate != null)
+        {
+            gate.SetVisible(visible);
+            return;
+        }
+
         foreach (var r in target.GetComponentsInChildren<Renderer>(true))
             r.enabled = visible;
     }
 
+    // ============================================================
+    // SCALE (object-wide; uses base scale context)
+    // ============================================================
     public static void ApplyScale(GameObject target, Vector3 scale)
     {
         if (target == null) return;
 
         const float MinScale = 0.1f;
+
         Vector3 baseScale = Vector3.one;
         var scaleContext = target.GetComponent<VpModelScaleContext>();
         if (scaleContext != null)
@@ -105,57 +236,30 @@ public static class VpActionExecutor
         target.transform.localScale = new Vector3(
             Mathf.Max(MinScale, scale.x * baseScale.x),
             Mathf.Max(MinScale, scale.y * baseScale.y),
-            Mathf.Max(MinScale, scale.z * baseScale.z));
+            Mathf.Max(MinScale, scale.z * baseScale.z)
+        );
     }
 
+    // ============================================================
+    // SHEAR (as in your current; uses normalized VP shear already)
+    // ============================================================
     public static void ApplyShear(GameObject target, float zPlus, float xPlus, float yPlus, float yMinus, float zMinus, float xMinus)
     {
+        if (target == null) return;
+
+        zPlus = Mathf.Clamp(zPlus, -20f, 20f);
+        xPlus = Mathf.Clamp(xPlus, -20f, 20f);
+        yPlus = Mathf.Clamp(yPlus, -20f, 20f);
+        yMinus = Mathf.Clamp(yMinus, -20f, 20f);
+        zMinus = Mathf.Clamp(zMinus, -20f, 20f);
+        xMinus = Mathf.Clamp(xMinus, -20f, 20f);
+
         ApplyShearToAllMeshes_VpMatrix_ObjectLocal(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
     }
 
-    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
-    {
-        if (target == null || cmd == null) return;
-
-        switch (cmd.verb)
-        {
-            case "texture":
-                ExecuteTexture(target, cmd, objectPath, password, host);
-                break;
-
-            case "normalmap":
-                ExecuteNormalMap(target, cmd, objectPath, password, host);
-                break;
-
-            case "ambient":
-                ExecuteAmbient(target, cmd);
-                break;
-
-            case "diffuse":
-                ExecuteDiffuse(target, cmd);
-                break;
-
-            case "light":
-                ExecuteLight(target, cmd);
-                break;
-
-            case "scale":
-                ExecuteScale(target, cmd);
-                break;
-
-            case "visible":
-                ExecuteVisible(target, cmd);
-                break;
-
-            case "shear":
-                ExecuteShear(target, cmd);
-                break;
-        }
-    }
-
-    // -------------------------
-    // TEXTURE
-    // -------------------------
+    // ============================================================
+    // TEXTURE (fixed: per material index + variant materials + bounded cache)
+    // ============================================================
     private static void ExecuteTexture(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
     {
         if (host == null)
@@ -185,7 +289,15 @@ public static class VpActionExecutor
 
         int? tagOverride = TryExtractTag(cmd);
 
-        host.StartCoroutine(ApplyTextureCoroutine(target, tex.Trim(), objectPath, password, host, tagOverride));
+        var gate = GetOrAddGate(target);
+        gate?.BeginAction();
+        host.StartCoroutine(ApplyTextureCoroutine_Gated(target, tex.Trim(), objectPath, password, host, tagOverride, gate));
+    }
+
+    private static IEnumerator ApplyTextureCoroutine_Gated(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? tagOverride, VpActionGate gate)
+    {
+        try { yield return ApplyTextureCoroutine(target, textureName, objectPath, password, host, tagOverride); }
+        finally { gate?.EndAction(); }
     }
 
     private static IEnumerator ApplyTextureCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, int? tagOverride)
@@ -203,15 +315,13 @@ public static class VpActionExecutor
             yield break;
         }
 
-        // ---- Cache check ----
         string cacheKey = MakeTextureCacheKey(objectPath, textureName);
-        if (_textureCache.TryGetValue(cacheKey, out var cachedTex) && cachedTex != null)
+        if (TryGetCachedTexture(cacheKey, out var cachedTex))
         {
-            ApplyTextureToAllRenderers(target, cachedTex, tagOverride);
+            ApplyTextureToRendererMaterials(target, cachedTex, tagOverride);
             yield break;
         }
 
-        // candidates (NOW includes DDS / DDS.GZ)
         List<string> candidates = BuildTextureCandidates(textureName);
 
         string localPath = null;
@@ -230,8 +340,7 @@ public static class VpActionExecutor
                 done = true;
             }, password);
 
-            while (!done)
-                yield return null;
+            while (!done) yield return null;
 
             if (ok && File.Exists(result))
             {
@@ -249,17 +358,13 @@ public static class VpActionExecutor
         }
 
         byte[] bytes;
-        try
-        {
-            bytes = File.ReadAllBytes(localPath);
-        }
+        try { bytes = File.ReadAllBytes(localPath); }
         catch (Exception e)
         {
             Debug.LogWarning($"[VP] texture read failed '{localPath}': {e.Message}");
             yield break;
         }
 
-        // ---------- IMPORTANT: DDS must NOT use Texture2D.LoadImage ----------
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
         bool isDds = ext == ".dds" || localPath.EndsWith(".dds.gz", StringComparison.OrdinalIgnoreCase);
 
@@ -267,27 +372,22 @@ public static class VpActionExecutor
 
         if (isDds)
         {
-            // Ensure we have a RWXTextureLoader component to decode DDS
             RWXTextureLoader loader = host.GetComponent<RWXTextureLoader>();
             if (loader == null) loader = host.gameObject.AddComponent<RWXTextureLoader>();
 
-            // Pass filename so loader knows if it’s .dds.gz and will gzip-decompress
             string fileName = Path.GetFileName(localPath);
-
             tex = loader.LoadTextureFromBytes(bytes, fileName, isMask: false, isDoubleSided: false);
 
             if (tex == null)
             {
-                // Extra hint: are we even looking at DDS bytes?
                 string sig4 = bytes.Length >= 4 ? System.Text.Encoding.ASCII.GetString(bytes, 0, 4) : "????";
-                Debug.LogWarning($"[VP] DDS decode failed for '{textureName}' at '{localPath}' sig='{sig4}' len={bytes.Length}. Check DDSDBG logs from RWXTextureLoader.");
+                Debug.LogWarning($"[VP] DDS decode failed for '{textureName}' at '{localPath}' sig='{sig4}' len={bytes.Length}");
                 yield break;
             }
         }
         else
         {
-            // Normal images (jpg/png/bmp...) can use Unity decode
-            tex = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain: true);
+            tex = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain: true, linear: false);
             if (!tex.LoadImage(bytes))
             {
                 Debug.LogWarning($"[VP] Unity couldn't decode texture '{textureName}' at '{localPath}'");
@@ -295,23 +395,183 @@ public static class VpActionExecutor
             }
         }
 
-        tex.name = Path.GetFileNameWithoutExtension(localPath);
-
+        // IMPORTANT: name should be the *requested* name (keeps ".png" signal for heuristics)
+        tex.name = Path.GetFileName(localPath); // includes extension if present
         tex.wrapMode = TextureWrapMode.Repeat;
         tex.filterMode = FilterMode.Bilinear;
         tex.hideFlags = HideFlags.DontUnloadUnusedAsset;
 
-        _textureCache[cacheKey] = tex;
+        PutCachedTexture(cacheKey, tex);
 
-        ApplyTextureToAllRenderers(target, tex, tagOverride);
+        ApplyTextureToRendererMaterials(target, tex, tagOverride);
+    }
 
-        Debug.Log($"[VP] Applied texture '{tex.name}' to instance '{target.name}' (cachedKey='{cacheKey}')");
+    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag)
+    {
+        if (root == null || tex == null) return;
+
+        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
+        for (int ri = 0; ri < renderers.Length; ri++)
+        {
+            var r = renderers[ri];
+            if (r == null) continue;
+
+            var shared = r.sharedMaterials; // NO instancing
+            if (shared == null || shared.Length == 0) continue;
+
+            bool changedMaterials = false;
+
+            // Reuse one block per renderer to avoid allocations
+            var block = new MaterialPropertyBlock();
+
+            for (int mi = 0; mi < shared.Length; mi++)
+            {
+                var baseMat = shared[mi];
+                if (baseMat == null) continue;
+
+                if (requiredTag.HasValue && ReadMaterialTag(baseMat) != requiredTag.Value)
+                    continue;
+
+                // We don't know final opacity here; treat as opaque for texture selection.
+                // Opacity action will switch to Transparent later if needed.
+                var desiredMode = GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
+
+                var variant = GetOrCreateVariant(baseMat, desiredMode);
+
+                if (variant != baseMat)
+                {
+                    shared[mi] = variant;
+                    changedMaterials = true;
+                }
+
+                // Apply texture via per-material-index property block (no material instancing)
+                r.GetPropertyBlock(block, mi);
+                block.SetTexture(_MainTexId, tex);
+                block.SetTexture(_BaseMapId, tex);
+                r.SetPropertyBlock(block, mi);
+            }
+
+            if (changedMaterials)
+                r.sharedMaterials = shared;
+        }
+    }
+
+
+    private static AlphaVariantMode GuessAlphaModeForTexture(Material baseMat, Texture2D tex, float alphaForThisMaterial)
+    {
+        // If caller is only setting a texture, don't force Transparent just because texture has alpha.
+        // For foliage we want CUTOUT, and later OPACITY can switch to TRANSPARENT if alpha<1.
+        bool wantsTransparency = alphaForThisMaterial < 0.999f;
+
+        if (wantsTransparency)
+            return AlphaVariantMode.Transparent;
+
+        // Heuristic: if the requested texture filename ends with .png, treat it as cutout for Standard.
+        // (Your leaf sheet case: avoids black background / opaque rendering)
+        string n = tex.name ?? "";
+        bool looksPng = n.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+
+        // Only do this for Standard shader family.
+        if (looksPng && IsStandardLike(baseMat))
+            return AlphaVariantMode.Cutout;
+
+        return AlphaVariantMode.Opaque;
+    }
+
+    private static bool IsStandardLike(Material m)
+    {
+        if (m == null || m.shader == null) return false;
+        string sn = m.shader.name ?? "";
+        return sn.IndexOf("Standard", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static Material GetOrCreateVariant(Material baseMat, AlphaVariantMode mode)
+    {
+        if (baseMat == null) return null;
+
+        // If not Standard-like, don't mutate modes (leave as-is)
+        if (!IsStandardLike(baseMat))
+            return baseMat;
+
+        // If base is already in the desired mode (by its own settings), we still return base.
+        // (We can't reliably read mode for all shader graphs; stick to variants only.)
+        var key = new MaterialVariantKey(baseMat, mode);
+        if (_materialVariants.TryGetValue(key, out var existing) && existing != null)
+            return existing;
+
+        var v = new Material(baseMat)
+        {
+            name = baseMat.name + $"__VP_{mode}"
+        };
+
+        switch (mode)
+        {
+            case AlphaVariantMode.Opaque:
+                ConfigureStandardOpaque(v);
+                break;
+            case AlphaVariantMode.Cutout:
+                ConfigureStandardCutout(v, cutoff: 0.5f);
+                break;
+            case AlphaVariantMode.Transparent:
+                ConfigureStandardTransparent(v);
+                break;
+        }
+
+        _materialVariants[key] = v;
+        return v;
+    }
+
+    private static void ConfigureStandardOpaque(Material m)
+    {
+        if (m == null) return;
+
+        if (m.HasProperty("_Mode")) m.SetFloat("_Mode", 0f);
+        if (m.HasProperty("_SrcBlend")) m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        if (m.HasProperty("_DstBlend")) m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
+        if (m.HasProperty("_ZWrite")) m.SetInt("_ZWrite", 1);
+
+        m.DisableKeyword("_ALPHATEST_ON");
+        m.DisableKeyword("_ALPHABLEND_ON");
+        m.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        m.renderQueue = -1;
+    }
+
+    private static void ConfigureStandardCutout(Material m, float cutoff)
+    {
+        if (m == null) return;
+
+        if (m.HasProperty("_Mode")) m.SetFloat("_Mode", 1f);
+        if (m.HasProperty(_CutoffId)) m.SetFloat(_CutoffId, cutoff);
+
+        if (m.HasProperty("_SrcBlend")) m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        if (m.HasProperty("_DstBlend")) m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
+        if (m.HasProperty("_ZWrite")) m.SetInt("_ZWrite", 1);
+
+        m.EnableKeyword("_ALPHATEST_ON");
+        m.DisableKeyword("_ALPHABLEND_ON");
+        m.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        m.renderQueue = 2450;
+    }
+
+    private static void ConfigureStandardTransparent(Material m)
+    {
+        if (m == null) return;
+
+        if (m.HasProperty("_Mode")) m.SetFloat("_Mode", 3f);
+
+        if (m.HasProperty("_SrcBlend")) m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        if (m.HasProperty("_DstBlend")) m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        if (m.HasProperty("_ZWrite")) m.SetInt("_ZWrite", 0);
+
+        m.DisableKeyword("_ALPHATEST_ON");
+        m.EnableKeyword("_ALPHABLEND_ON");
+        m.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        m.renderQueue = 3000;
     }
 
     private static List<string> BuildTextureCandidates(string textureName)
     {
         var list = new List<string>();
-
         void Add(string s)
         {
             if (!string.IsNullOrWhiteSpace(s) && !list.Contains(s))
@@ -329,7 +589,6 @@ public static class VpActionExecutor
         Add(t + ".jpeg");
         Add(t + ".png");
         Add(t + ".bmp");
-
         Add(t + ".dds");
         Add(t + ".dds.gz");
 
@@ -341,100 +600,10 @@ public static class VpActionExecutor
         return list;
     }
 
-    private static int ReadRendererTag(Renderer renderer)
-    {
-        if (renderer == null)
-            return 0;
-
-        Material material = renderer.sharedMaterial;
-        if (material == null && renderer.material != null)
-        {
-            material = renderer.material;
-        }
-
-        string tagValue = material?.GetTag("RwxTag", false, "0") ?? "0";
-        if (int.TryParse(tagValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
-        {
-            return parsed;
-        }
-
-        return 0;
-    }
-
-    private static int? TryExtractTag(VpActionCommand cmd)
-    {
-        if (cmd == null || cmd.positional == null)
-            return null;
-
-        if (cmd.kv != null && cmd.kv.TryGetValue("tag", out var tagStr) &&
-            int.TryParse(tagStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
-        {
-            return parsed;
-        }
-
-        for (int i = 0; i < cmd.positional.Count; i++)
-        {
-            string token = cmd.positional[i];
-            if (TryParseTagToken(token, out int parsedTag))
-            {
-                return parsedTag;
-            }
-
-            if (token.Equals("tag", StringComparison.OrdinalIgnoreCase) && i + 1 < cmd.positional.Count)
-            {
-                if (int.TryParse(cmd.positional[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int nextTag))
-                {
-                    return nextTag;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryParseTagToken(string token, out int tag)
-    {
-        tag = 0;
-        if (string.IsNullOrWhiteSpace(token))
-            return false;
-
-        token = token.Trim();
-        if (token.StartsWith("tag=", StringComparison.OrdinalIgnoreCase))
-        {
-            return int.TryParse(token.Substring(4), NumberStyles.Integer, CultureInfo.InvariantCulture, out tag);
-        }
-
-        return false;
-    }
-
-    private static void ApplyTextureToAllRenderers(GameObject root, Texture2D tex, int? requiredTag)
-    {
-        if (root == null || tex == null) return;
-
-        var renderers = root.GetComponentsInChildren<Renderer>(includeInactive: true);
-        var block = new MaterialPropertyBlock();
-
-        foreach (var r in renderers)
-        {
-            if (r == null) continue;
-
-            if (requiredTag.HasValue && ReadRendererTag(r) != requiredTag.Value)
-            {
-                continue;
-            }
-
-            r.GetPropertyBlock(block);
-
-            block.SetTexture(_MainTexId, tex);
-            block.SetTexture(_BaseMapId, tex);
-
-            r.SetPropertyBlock(block);
-        }
-    }
-
-    // -------------------------
-    // NORMALMAP
-    // -------------------------
+    // ============================================================
+    // NORMALMAP (left mostly as-is; still uses renderer.materials -> but this is usually low volume)
+    // If you want, we can also switch this to MPB+variant later.
+    // ============================================================
     private static void ExecuteNormalMap(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
     {
         if (host == null)
@@ -450,7 +619,17 @@ public static class VpActionExecutor
         }
 
         string normalName = cmd.positional[0];
-        host.StartCoroutine(ApplyNormalMapCoroutine(target, normalName, objectPath, password, host));
+
+        var gate = GetOrAddGate(target);
+        gate?.BeginAction();
+
+        host.StartCoroutine(ApplyNormalMapCoroutine_Gated(target, normalName, objectPath, password, host, gate));
+    }
+
+    private static IEnumerator ApplyNormalMapCoroutine_Gated(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host, VpActionGate gate)
+    {
+        try { yield return ApplyNormalMapCoroutine(target, textureName, objectPath, password, host); }
+        finally { gate?.EndAction(); }
     }
 
     private static IEnumerator ApplyNormalMapCoroutine(GameObject target, string textureName, string objectPath, string password, MonoBehaviour host)
@@ -523,7 +702,7 @@ public static class VpActionExecutor
             }
         }
 
-        tex.name = Path.GetFileNameWithoutExtension(localPath);
+        tex.name = Path.GetFileName(localPath);
         tex.Apply(true, false);
 
         ApplyNormalMapToRenderers(target, tex);
@@ -533,6 +712,9 @@ public static class VpActionExecutor
     {
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
+            if (r == null) continue;
+
+            // NOTE: this can instance materials. Usually normalmap usage is rare; keep for now.
             foreach (var m in r.materials)
             {
                 if (m == null) continue;
@@ -546,9 +728,9 @@ public static class VpActionExecutor
         }
     }
 
-    // -------------------------
-    // AMBIENT / DIFFUSE
-    // -------------------------
+    // ============================================================
+    // AMBIENT / DIFFUSE dispatch
+    // ============================================================
     private static void ExecuteAmbient(GameObject target, VpActionCommand cmd)
     {
         if (cmd.positional == null || cmd.positional.Count == 0) return;
@@ -563,9 +745,274 @@ public static class VpActionExecutor
         ApplyDiffuse(target, diffuse);
     }
 
-    // -------------------------
-    // LIGHT
-    // -------------------------
+    // ============================================================
+    // OPACITY
+    //   - Tagged: per material index MPB + variant switch
+    //   - Untagged: whole-object state + MPB (no material instancing)
+    // ============================================================
+    private static void ExecuteOpacity(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null) return;
+
+        float opacity = 1f;
+        if (cmd.positional != null && cmd.positional.Count > 0)
+            opacity = Mathf.Clamp01(ParseFloat(cmd.positional[0], 1f));
+
+        int? tagOverride = TryExtractTag(cmd);
+
+        if (tagOverride.HasValue)
+        {
+            ApplyOpacity_TaggedMaterials(target, opacity, tagOverride.Value);
+            return;
+        }
+
+        ApplyOpacity(target, opacity);
+    }
+
+    private static void ApplyOpacity_TaggedMaterials(GameObject target, float opacity, int requiredTag)
+    {
+        if (target == null) return;
+
+        var renderers = target.GetComponentsInChildren<Renderer>(true);
+        for (int ri = 0; ri < renderers.Length; ri++)
+        {
+            var r = renderers[ri];
+            if (r == null) continue;
+
+            var shared = r.sharedMaterials;
+            if (shared == null || shared.Length == 0) continue;
+
+            bool changedMaterials = false;
+
+            for (int mi = 0; mi < shared.Length; mi++)
+            {
+                var baseMat = shared[mi];
+                if (baseMat == null) continue;
+                if (ReadMaterialTag(baseMat) != requiredTag) continue;
+
+                // If alpha != 1, we want transparent variant for Standard.
+                AlphaVariantMode desiredMode = (opacity < 0.999f) ? AlphaVariantMode.Transparent : AlphaVariantMode.Opaque;
+                var variant = GetOrCreateVariant(baseMat, desiredMode);
+
+                if (variant != baseMat)
+                {
+                    shared[mi] = variant;
+                    changedMaterials = true;
+                }
+
+                var block = new MaterialPropertyBlock();
+                r.GetPropertyBlock(block, mi);
+
+                // Preserve RGB from current effective color for that material index if present
+                Color baseC = GetEffectiveMaterialIndexColor(r, mi, block);
+                Color outC = new Color(baseC.r, baseC.g, baseC.b, opacity);
+
+                block.SetColor(_ColorId, outC);
+                block.SetColor(_BaseColorId, outC);
+
+                r.SetPropertyBlock(block, mi);
+            }
+
+            if (changedMaterials)
+                r.sharedMaterials = shared;
+        }
+    }
+
+    public static void ApplyOpacity(GameObject target, float opacity)
+    {
+        if (target == null) return;
+
+        var state = GetOrAddColorState(target);
+        state.hasOpacityOverride = true;
+        state.opacity = opacity;
+        state.hasAppliedColorBefore = true;
+
+        ApplyColorState(target, state, colorActive: state.hasColorOverride, clearTextures: false);
+    }
+
+    // ============================================================
+    // COLOR
+    //   - Tagged: MPB per material index
+    //   - Untagged: state system but applied via MPB/sharedMaterials (no instancing)
+    // ============================================================
+    private static void ExecuteColor(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null) return;
+
+        bool tint = false;
+        string colorStr = ExtractColorString(cmd, ref tint);
+
+        if (string.IsNullOrWhiteSpace(colorStr))
+        {
+            Debug.LogWarning($"[VP] color action missing color value: {cmd.raw}");
+            return;
+        }
+
+        Color color = ParseColor(colorStr, Color.white);
+        int? tagOverride = TryExtractTag(cmd);
+
+        if (tagOverride.HasValue)
+        {
+            ApplyColor_TaggedMaterials(target, color, tint, tagOverride.Value);
+            return;
+        }
+
+        var state = GetOrAddColorState(target);
+        state.hasColorOverride = true;
+        state.tint = tint;
+        state.color = color;
+        state.hasAppliedColorBefore = true;
+        state.sequence++;
+        state.lastColorSeq = state.sequence;
+
+        ApplyColorState(target, state, colorActive: true, clearTextures: !tint);
+    }
+
+    private static void ApplyColor_TaggedMaterials(GameObject target, Color color, bool tint, int requiredTag)
+    {
+        if (target == null) return;
+
+        var renderers = target.GetComponentsInChildren<Renderer>(true);
+        for (int ri = 0; ri < renderers.Length; ri++)
+        {
+            var r = renderers[ri];
+            if (r == null) continue;
+
+            var shared = r.sharedMaterials;
+            if (shared == null || shared.Length == 0) continue;
+
+            bool changedMaterials = false;
+
+            for (int mi = 0; mi < shared.Length; mi++)
+            {
+                var baseMat = shared[mi];
+                if (baseMat == null) continue;
+                if (ReadMaterialTag(baseMat) != requiredTag) continue;
+
+                // If color alpha < 1 => transparent variant.
+                AlphaVariantMode desiredMode = (color.a < 0.999f) ? AlphaVariantMode.Transparent : AlphaVariantMode.Opaque;
+                var variant = GetOrCreateVariant(baseMat, desiredMode);
+
+                if (variant != baseMat)
+                {
+                    shared[mi] = variant;
+                    changedMaterials = true;
+                }
+
+                var block = new MaterialPropertyBlock();
+                r.GetPropertyBlock(block, mi);
+
+                block.SetColor(_ColorId, color);
+                block.SetColor(_BaseColorId, color);
+
+                // If not tint, VP often implies "color replaces texture" for full object.
+                // For TAGGED pieces, we keep textures; clearing textures per-tag can be very destructive.
+                // So we do NOT clear textures here (matches what you observed: texture/tint already works).
+
+                r.SetPropertyBlock(block, mi);
+            }
+
+            if (changedMaterials)
+                r.sharedMaterials = shared;
+        }
+    }
+
+    // ============================================================
+    // COLOR STATE SYSTEM (rewritten to avoid renderer.materials instancing)
+    // ============================================================
+    private static void ApplyColorState(GameObject target, VpColorState state, bool colorActive, bool clearTextures)
+    {
+        if (target == null || state == null) return;
+
+        var renderers = target.GetComponentsInChildren<Renderer>(includeInactive: true);
+
+        foreach (var r in renderers)
+        {
+            if (r == null) continue;
+
+            var shared = r.sharedMaterials;
+            if (shared == null || shared.Length == 0) continue;
+
+            // Base color is stored per renderer instance in your state object.
+            Color baseColor = GetOrStoreBaseColor(r, shared, state);
+            Color desired = colorActive ? state.color : baseColor;
+
+            float alpha = state.hasOpacityOverride ? state.opacity : desired.a;
+            desired = new Color(desired.r, desired.g, desired.b, alpha);
+
+            bool changedMaterials = false;
+
+            // Apply to each material index so alpha variants are correct for Standard.
+            for (int mi = 0; mi < shared.Length; mi++)
+            {
+                var baseMat = shared[mi];
+                if (baseMat == null) continue;
+
+                // If alpha changes, need transparent variant.
+                AlphaVariantMode desiredMode = (desired.a < 0.999f) ? AlphaVariantMode.Transparent : AlphaVariantMode.Opaque;
+                var variant = GetOrCreateVariant(baseMat, desiredMode);
+                if (variant != baseMat)
+                {
+                    shared[mi] = variant;
+                    changedMaterials = true;
+                }
+
+                var block = new MaterialPropertyBlock();
+                r.GetPropertyBlock(block, mi);
+
+                if (clearTextures)
+                {
+                    block.SetTexture(_MainTexId, Texture2D.whiteTexture);
+                    block.SetTexture(_BaseMapId, Texture2D.whiteTexture);
+                }
+
+                block.SetColor(_ColorId, desired);
+                block.SetColor(_BaseColorId, desired);
+
+                r.SetPropertyBlock(block, mi);
+            }
+
+            if (changedMaterials)
+                r.sharedMaterials = shared;
+        }
+    }
+
+    private static Color GetOrStoreBaseColor(Renderer renderer, Material[] sharedMaterials, VpColorState state)
+    {
+        if (renderer == null || state == null) return Color.white;
+
+        int id = renderer.GetInstanceID();
+        if (state.baseColors.TryGetValue(id, out var baseColor))
+            return baseColor;
+
+        baseColor = ReadMaterialColor(sharedMaterials);
+        state.baseColors[id] = baseColor;
+        return baseColor;
+    }
+
+    private static Color ReadMaterialColor(Material[] materials)
+    {
+        if (materials == null || materials.Length == 0)
+            return Color.white;
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            var material = materials[i];
+            if (material == null) continue;
+
+            if (material.HasProperty(_ColorId))
+                return material.GetColor(_ColorId);
+
+            if (material.HasProperty(_BaseColorId))
+                return material.GetColor(_BaseColorId);
+        }
+
+        return Color.white;
+    }
+
+    // ============================================================
+    // LIGHT / SCALE / VISIBLE / SHEAR dispatch
+    // ============================================================
     private static void ExecuteLight(GameObject target, VpActionCommand cmd)
     {
         if (target == null || cmd == null) return;
@@ -601,9 +1048,6 @@ public static class VpActionExecutor
         }
     }
 
-    // -------------------------
-    // SCALE
-    // -------------------------
     private static void ExecuteScale(GameObject target, VpActionCommand cmd)
     {
         if (target == null) return;
@@ -633,9 +1077,207 @@ public static class VpActionExecutor
             z = 1f;
         }
 
-        target.transform.localScale = new Vector3(x, y, z);
+        ApplyScale(target, new Vector3(x, y, z));
     }
 
+    private static void ExecuteVisible(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null) return;
+        if (cmd.positional == null || cmd.positional.Count == 0) return;
+
+        string v = cmd.positional[0].Trim().ToLowerInvariant();
+        bool visible = v == "yes" || v == "true" || v == "1" || v == "on";
+        ApplyVisible(target, visible);
+    }
+
+    private static void ExecuteShear(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null) return;
+
+        float zPlus  = NormalizeVpShear(GetPosFloat(cmd, 0, 0f));
+        float xPlus  = NormalizeVpShear(GetPosFloat(cmd, 1, 0f));
+        float yPlus  = NormalizeVpShear(GetPosFloat(cmd, 2, 0f));
+        float yMinus = NormalizeVpShear(GetPosFloat(cmd, 3, 0f));
+        float zMinus = NormalizeVpShear(GetPosFloat(cmd, 4, 0f));
+        float xMinus = NormalizeVpShear(GetPosFloat(cmd, 5, 0f));
+
+        ApplyShear(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
+    }
+
+    // ============================================================
+    // Color-string extraction (unchanged)
+    // ============================================================
+    private static string ExtractColorString(VpActionCommand cmd, ref bool tint)
+    {
+        string colorStr = null;
+
+        if (cmd.positional != null)
+        {
+            foreach (var token in cmd.positional)
+            {
+                if (string.IsNullOrWhiteSpace(token)) continue;
+
+                string trimmed = token.Trim();
+
+                if (trimmed.Equals("tint", StringComparison.OrdinalIgnoreCase))
+                {
+                    tint = true;
+                    continue;
+                }
+
+                if (trimmed.StartsWith("tint=", StringComparison.OrdinalIgnoreCase))
+                {
+                    tint = true;
+                    if (trimmed.Length > 5)
+                        colorStr ??= trimmed.Substring(5);
+                    continue;
+                }
+
+                colorStr ??= trimmed;
+            }
+        }
+
+        if (cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("tint", out var tintVal))
+            {
+                tint = true;
+                if (string.IsNullOrWhiteSpace(colorStr))
+                    colorStr = tintVal;
+            }
+
+            if (string.IsNullOrWhiteSpace(colorStr) && cmd.kv.TryGetValue("color", out var kvColor))
+                colorStr = kvColor;
+        }
+
+        return colorStr;
+    }
+
+    // ============================================================
+    // Helpers: effective colors
+    // ============================================================
+    private static Color GetEffectiveRendererColor(Renderer r, MaterialPropertyBlock block)
+    {
+        // If MPB has color, use it, else first shared material color
+        if (block != null)
+        {
+            // MPB doesn't have HasProperty, but GetColor returns default if unset; we use a small heuristic:
+            var c = block.GetColor(_ColorId);
+            if (c != default) return c;
+            c = block.GetColor(_BaseColorId);
+            if (c != default) return c;
+        }
+
+        var shared = r != null ? r.sharedMaterials : null;
+        return ReadMaterialColor(shared);
+    }
+
+    private static Color GetEffectiveMaterialIndexColor(Renderer r, int materialIndex, MaterialPropertyBlock blockForIndex)
+    {
+        if (blockForIndex != null)
+        {
+            var c = blockForIndex.GetColor(_ColorId);
+            if (c != default) return c;
+            c = blockForIndex.GetColor(_BaseColorId);
+            if (c != default) return c;
+        }
+
+        var shared = r != null ? r.sharedMaterials : null;
+        if (shared != null && materialIndex >= 0 && materialIndex < shared.Length && shared[materialIndex] != null)
+        {
+            var m = shared[materialIndex];
+            if (m.HasProperty(_ColorId)) return m.GetColor(_ColorId);
+            if (m.HasProperty(_BaseColorId)) return m.GetColor(_BaseColorId);
+        }
+
+        return Color.white;
+    }
+
+    // ============================================================
+    // Texture cache: bounded LRU
+    // ============================================================
+    private static bool TryGetCachedTexture(string key, out Texture2D tex)
+    {
+        tex = null;
+        if (string.IsNullOrEmpty(key)) return false;
+
+        if (_textureCache.TryGetValue(key, out var entry) && entry.tex != null)
+        {
+            // bump LRU
+            if (entry.lruNode != null)
+            {
+                _textureLru.Remove(entry.lruNode);
+                _textureLru.AddFirst(entry.lruNode);
+            }
+
+            tex = entry.tex;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void PutCachedTexture(string key, Texture2D tex)
+    {
+        if (string.IsNullOrEmpty(key) || tex == null) return;
+
+        // update existing
+        if (_textureCache.TryGetValue(key, out var existing))
+        {
+            // replace texture (destroy old)
+            if (existing.tex != null && existing.tex != tex)
+                UnityEngine.Object.Destroy(existing.tex);
+
+            if (existing.lruNode != null)
+            {
+                _textureLru.Remove(existing.lruNode);
+                _textureLru.AddFirst(existing.lruNode);
+                existing.tex = tex;
+                _textureCache[key] = existing;
+            }
+            else
+            {
+                var node = new LinkedListNode<string>(key);
+                _textureLru.AddFirst(node);
+                _textureCache[key] = new TextureCacheEntry { tex = tex, lruNode = node };
+            }
+
+            return;
+        }
+
+        // insert new
+        var n = new LinkedListNode<string>(key);
+        _textureLru.AddFirst(n);
+        _textureCache[key] = new TextureCacheEntry { tex = tex, lruNode = n };
+
+        // evict
+        while (_textureCache.Count > MaxCachedTextures && _textureLru.Last != null)
+        {
+            string evictKey = _textureLru.Last.Value;
+            _textureLru.RemoveLast();
+
+            if (_textureCache.TryGetValue(evictKey, out var e))
+            {
+                if (e.tex != null)
+                    UnityEngine.Object.Destroy(e.tex);
+                _textureCache.Remove(evictKey);
+            }
+        }
+    }
+
+    // ============================================================
+    // VpColorState hook
+    // ============================================================
+    private static VpColorState GetOrAddColorState(GameObject target)
+    {
+        var state = target.GetComponent<VpColorState>();
+        if (state == null) state = target.AddComponent<VpColorState>();
+        return state;
+    }
+
+    // ============================================================
+    // Parsing helpers
+    // ============================================================
     private static float ParseFloat(string s, float fallback)
     {
         if (string.IsNullOrWhiteSpace(s))
@@ -709,13 +1351,10 @@ public static class VpActionExecutor
         {
             if (!float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out float v) &&
                 !float.TryParse(parts[i], NumberStyles.Float, CultureInfo.CurrentCulture, out v))
-            {
                 return false;
-            }
 
             vals[i] = v;
-            if (v > 1f)
-                anyAboveOne = true;
+            if (v > 1f) anyAboveOne = true;
         }
 
         float scale = anyAboveOne ? 1f / 255f : 1f;
@@ -728,45 +1367,34 @@ public static class VpActionExecutor
         return true;
     }
 
-    // -------------------------
-    // VISIBLE
-    // -------------------------
-    private static void ExecuteVisible(GameObject target, VpActionCommand cmd)
+    private static float GetPosFloat(VpActionCommand cmd, int index, float fallback)
     {
-        if (target == null) return;
+        if (cmd.positional == null || cmd.positional.Count <= index)
+            return fallback;
 
-        if (cmd.positional == null || cmd.positional.Count == 0)
-            return;
+        string s = cmd.positional[index];
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
 
-        string v = cmd.positional[0].Trim().ToLowerInvariant();
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+            return v;
 
-        bool visible =
-            v == "yes" ||
-            v == "true" ||
-            v == "1" ||
-            v == "on";
+        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out v))
+            return v;
 
-        ApplyVisible(target, visible);
+        return fallback;
     }
 
-    // -------------------------
-    // SHEAR
-    // -------------------------
-    private static void ExecuteShear(GameObject target, VpActionCommand cmd)
+    private static string MakeTextureCacheKey(string objectPath, string textureName)
     {
-        if (target == null || cmd == null)
-            return;
-
-        float zPlus = GetPosFloat(cmd, 0, 0f);
-        float xPlus = GetPosFloat(cmd, 1, 0f);
-        float yPlus = GetPosFloat(cmd, 2, 0f);
-        float yMinus = GetPosFloat(cmd, 3, 0f);
-        float zMinus = GetPosFloat(cmd, 4, 0f);
-        float xMinus = GetPosFloat(cmd, 5, 0f);
-
-        ApplyShear(target, zPlus, xPlus, yPlus, yMinus, zMinus, xMinus);
+        string op = (objectPath ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
+        string tn = (textureName ?? string.Empty).Trim().ToLowerInvariant();
+        return op + "||" + tn;
     }
 
+    // ============================================================
+    // SHEAR (your existing)
+    // ============================================================
     private static void ApplyShearToAllMeshes_VpMatrix_ObjectLocal(
         GameObject root,
         float zPlus, float xPlus, float yPlus,
@@ -816,6 +1444,13 @@ public static class VpActionExecutor
         if (verts == null || verts.Length == 0)
             return;
 
+        zPlus = Mathf.Clamp(zPlus, -20f, 20f);
+        xPlus = Mathf.Clamp(xPlus, -20f, 20f);
+        yPlus = Mathf.Clamp(yPlus, -20f, 20f);
+        yMinus = Mathf.Clamp(yMinus, -20f, 20f);
+        zMinus = Mathf.Clamp(zMinus, -20f, 20f);
+        xMinus = Mathf.Clamp(xMinus, -20f, 20f);
+
         for (int i = 0; i < verts.Length; i++)
         {
             Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
@@ -841,32 +1476,12 @@ public static class VpActionExecutor
         mesh.RecalculateTangents();
     }
 
-    private static float GetPosFloat(VpActionCommand cmd, int index, float fallback)
-    {
-        if (cmd.positional == null || cmd.positional.Count <= index)
-            return fallback;
 
-        string s = cmd.positional[index];
-        if (string.IsNullOrWhiteSpace(s))
-            return fallback;
-
-        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
-            return v;
-
-        if (float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out v))
-            return v;
-
-        return fallback;
-    }
-
-    private static string MakeTextureCacheKey(string objectPath, string textureName)
-    {
-        string op = (objectPath ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
-        string tn = (textureName ?? string.Empty).Trim().ToLowerInvariant();
-        return op + "||" + tn;
-    }
 }
 
+// ------------------------------------------------------------
+// VpLightEffect unchanged
+// ------------------------------------------------------------
 public class VpLightEffect : MonoBehaviour
 {
     private Light _light;
@@ -915,24 +1530,12 @@ public class VpLightEffect : MonoBehaviour
 
         switch (_effect)
         {
-            case "blink":
-                Blink();
-                break;
-            case "fadein":
-                FadeIn();
-                break;
-            case "fadeout":
-                FadeOut();
-                break;
-            case "fire":
-                Fire();
-                break;
-            case "pulse":
-                Pulse();
-                break;
-            case "rainbow":
-                Rainbow();
-                break;
+            case "blink": Blink(); break;
+            case "fadein": FadeIn(); break;
+            case "fadeout": FadeOut(); break;
+            case "fire": Fire(); break;
+            case "pulse": Pulse(); break;
+            case "rainbow": Rainbow(); break;
             default:
                 _light.color = _baseColor;
                 _light.intensity = _brightness;
@@ -982,4 +1585,7 @@ public class VpLightEffect : MonoBehaviour
         _light.color = Color.HSVToRGB(h, 1f, 1f);
         _light.intensity = _brightness;
     }
+
+
+
 }
