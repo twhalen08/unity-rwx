@@ -503,7 +503,8 @@ public static class VpActionExecutor
 
         if (tex != null)
         {
-            ApplySignTexture(target, tex, parameters.targetName);
+            bool wantsTransparency = parameters.backgroundColor.a < 0.999f || parameters.textColor.a < 0.999f;
+            ApplySignTexture(target, tex, parameters.targetName, wantsTransparency);
 
             var state = target.GetComponent<VpSignState>();
             if (state == null) state = target.AddComponent<VpSignState>();
@@ -624,11 +625,11 @@ public static class VpActionExecutor
 
     private static Texture2D GenerateSignTexture(SignParameters p)
     {
-        int maxDim = ClampQuality(p.quality);
+        int maxTexDim = ClampQuality(p.quality);
         float aspect = Mathf.Clamp(p.aspect, 0.05f, 20f);
 
-        int width = maxDim;
-        int height = Mathf.Max(2, Mathf.RoundToInt(maxDim / Mathf.Max(aspect, 0.0001f)));
+        int width = maxTexDim;
+        int height = Mathf.Max(2, Mathf.RoundToInt(maxTexDim / Mathf.Max(aspect, 0.0001f)));
 
         const int SignRenderLayer = 31;
 
@@ -663,7 +664,7 @@ public static class VpActionExecutor
         textMesh.text = p.text;
         textMesh.anchor = p.anchor;
         textMesh.alignment = AnchorToAlignment(p.anchor);
-        textMesh.fontSize = Mathf.Max(12, (int)(Mathf.Max(width, height) * 0.6f));
+        textMesh.fontSize = Mathf.Max(12, (int)(Mathf.Max(width, height) * 0.8f));
         textMesh.fontStyle = p.italic ? FontStyle.Italic : FontStyle.Normal;
         textMesh.color = p.textColor;
         textMesh.characterSize = 0.1f;
@@ -682,6 +683,12 @@ public static class VpActionExecutor
             textGO.transform.localScale = new Vector3(fitScale * p.scale.x, fitScale * p.scale.y, 1f);
         }
 
+        // Recenter camera on text bounds and zoom to fit tightly.
+        bounds = mr.bounds;
+        Vector3 center = bounds.center;
+        cam.transform.position = new Vector3(center.x, center.y, -10f);
+        cam.orthographicSize = Mathf.Max(0.001f, bounds.extents.y * 1.1f);
+
         if (p.shadow)
         {
             var shadowGO = UnityEngine.Object.Instantiate(textGO, textGO.transform.parent);
@@ -690,7 +697,10 @@ public static class VpActionExecutor
             shadowGO.transform.localScale = textGO.transform.localScale;
 
             var shadowMesh = shadowGO.GetComponent<TextMesh>();
-            shadowMesh.color = new Color(0f, 0f, 0f, 0.5f);
+            shadowMesh.color = new Color(0f, 0f, 0f, p.textColor.a * 0.5f);
+            shadowMesh.text = p.text;
+            shadowMesh.anchor = textMesh.anchor;
+            shadowMesh.alignment = textMesh.alignment;
 
             var shadowRenderer = shadowGO.GetComponent<MeshRenderer>();
             if (shadowRenderer != null)
@@ -725,12 +735,12 @@ public static class VpActionExecutor
         return tex;
     }
 
-    private static void ApplySignTexture(GameObject target, Texture2D tex, string targetName)
+    private static void ApplySignTexture(GameObject target, Texture2D tex, string targetName, bool forceTransparent)
     {
         if (target == null || tex == null) return;
 
         GameObject applyRoot = ResolveTargetRoot(target, targetName);
-        ApplyTextureToRendererMaterials(applyRoot, tex, requiredTag: 100);
+        ApplyTextureToRendererMaterials(applyRoot, tex, requiredTag: 100, forceTransparent: forceTransparent);
     }
 
     private static GameObject ResolveTargetRoot(GameObject target, string targetName)
@@ -826,7 +836,7 @@ public static class VpActionExecutor
 
     private static string ColorToHex(Color c) => ColorUtility.ToHtmlStringRGBA(c);
 
-    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag)
+    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag, bool forceTransparent = false)
     {
         if (root == null || tex == null) return;
 
@@ -854,7 +864,9 @@ public static class VpActionExecutor
 
                 // We don't know final opacity here; treat as opaque for texture selection.
                 // Opacity action will switch to Transparent later if needed.
-                var desiredMode = GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
+                var desiredMode = forceTransparent
+                    ? AlphaVariantMode.Transparent
+                    : GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
 
                 var variant = GetOrCreateVariant(baseMat, desiredMode);
 
