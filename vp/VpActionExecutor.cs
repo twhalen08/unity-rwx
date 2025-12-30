@@ -56,6 +56,11 @@ public static class VpActionExecutor
     private static readonly Dictionary<MaterialVariantKey, Material> _materialVariants = new Dictionary<MaterialVariantKey, Material>(2048);
 
     // -------------------------
+    // Font cache for sign rendering
+    // -------------------------
+    private static readonly Dictionary<string, Font> _fontCache = new Dictionary<string, Font>(64);
+
+    // -------------------------
     // Shader property ids
     // -------------------------
     private static readonly int _MainTexId = Shader.PropertyToID("_MainTex");
@@ -105,6 +110,7 @@ public static class VpActionExecutor
             case "visible":    ExecuteVisible(target, cmd); break;
             case "shear":      ExecuteShear(target, cmd); break;
             case "color":      ExecuteColor(target, cmd); break;
+            case "sign":       ExecuteSign(target, cmd); break;
         }
     }
 
@@ -405,6 +411,306 @@ public static class VpActionExecutor
 
         ApplyTextureToRendererMaterials(target, tex, tagOverride);
     }
+
+    // ============================================================
+    // SIGN
+    // ============================================================
+    private struct SignParameters
+    {
+        public string text;
+        public Color textColor;
+        public Color backgroundColor;
+        public string face;
+        public int quality;
+        public bool italic;
+        public bool mipmaps;
+        public bool global;
+        public string targetName;
+        public Font font;
+    }
+
+    private static void ExecuteSign(GameObject target, VpActionCommand cmd)
+    {
+        if (target == null || cmd == null) return;
+
+        var parameters = ParseSignParameters(target, cmd);
+
+        if (string.IsNullOrWhiteSpace(parameters.text))
+        {
+            Debug.LogWarning($"[VP] sign action missing text and description: {cmd.raw}");
+            return;
+        }
+
+        if (parameters.font == null)
+        {
+            Debug.LogWarning($"[VP] sign font unavailable (face='{parameters.face}')");
+            return;
+        }
+
+        string cacheKey = MakeSignCacheKey(parameters);
+
+        if (!TryGetCachedTexture(cacheKey, out var tex))
+        {
+            tex = GenerateSignTexture(parameters);
+            if (tex != null)
+                PutCachedTexture(cacheKey, tex);
+        }
+
+        if (tex != null)
+        {
+            ApplySignTexture(target, tex, parameters.targetName);
+
+            var state = target.GetComponent<VpSignState>();
+            if (state == null) state = target.AddComponent<VpSignState>();
+            state.isGlobal = parameters.global;
+            state.text = parameters.text;
+        }
+    }
+
+    private static SignParameters ParseSignParameters(GameObject target, VpActionCommand cmd)
+    {
+        var p = new SignParameters
+        {
+            textColor = Color.white,
+            backgroundColor = Color.blue,
+            face = "Arial",
+            quality = 64,
+            italic = false,
+            mipmaps = false,
+            global = false,
+            targetName = null,
+            text = null
+        };
+
+        // Text from first positional token
+        if (cmd.positional != null && cmd.positional.Count > 0)
+            p.text = cmd.positional[0];
+
+        // Named text overrides
+        if (string.IsNullOrWhiteSpace(p.text) && cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("text", out var kvText))
+                p.text = kvText;
+            else if (cmd.kv.TryGetValue("name", out var kvName))
+                p.text = kvName;
+        }
+
+        // Renderer target name (uses name if provided)
+        if (cmd.kv != null && cmd.kv.TryGetValue("name", out var targetName))
+            p.targetName = targetName;
+
+        // Positional parameters after text follow VP order: color, bcolor, face, quality
+        if (cmd.positional != null)
+        {
+            if (cmd.positional.Count > 1) p.textColor = ParseColor(cmd.positional[1], p.textColor);
+            if (cmd.positional.Count > 2) p.backgroundColor = ParseColor(cmd.positional[2], p.backgroundColor);
+            if (cmd.positional.Count > 3) p.face = cmd.positional[3];
+            if (cmd.positional.Count > 4) p.quality = ClampQuality(Mathf.RoundToInt(ParseFloat(cmd.positional[4], p.quality)));
+
+            for (int i = 1; i < cmd.positional.Count; i++)
+            {
+                string token = cmd.positional[i];
+                if (string.IsNullOrWhiteSpace(token)) continue;
+
+                string lower = token.Trim().ToLowerInvariant();
+                if (lower == "i" || lower == "italic")
+                    p.italic = true;
+                else if (lower == "mip" || lower == "mipmap" || lower == "mipmaps")
+                    p.mipmaps = true;
+                else if (lower == "global")
+                    p.global = true;
+            }
+        }
+
+        // Named overrides
+        if (cmd.kv != null)
+        {
+            if (cmd.kv.TryGetValue("color", out var c)) p.textColor = ParseColor(c, p.textColor);
+            if (cmd.kv.TryGetValue("bcolor", out var bc)) p.backgroundColor = ParseColor(bc, p.backgroundColor);
+            if (cmd.kv.TryGetValue("face", out var f)) p.face = f;
+            if (cmd.kv.TryGetValue("q", out var qStr)) p.quality = ClampQuality(Mathf.RoundToInt(ParseFloat(qStr, p.quality)));
+            if (cmd.kv.TryGetValue("i", out var italicVal)) p.italic = ParseBoolToken(italicVal, true);
+            if (cmd.kv.TryGetValue("mip", out var mipVal)) p.mipmaps = ParseBoolToken(mipVal, true);
+            if (cmd.kv.TryGetValue("global", out var globalVal)) p.global = ParseBoolToken(globalVal, true);
+        }
+
+        p.quality = ClampQuality(p.quality);
+        p.text = p.text?.Trim();
+
+        if (string.IsNullOrWhiteSpace(p.text))
+        {
+            var meta = target != null ? target.GetComponent<VpObjectMetadata>() : null;
+            if (meta != null && !string.IsNullOrWhiteSpace(meta.description))
+            {
+                p.text = meta.description.Trim();
+            }
+            else
+            {
+                Debug.LogWarning($"[VP] sign text not provided and description unavailable on '{target?.name}'");
+            }
+        }
+
+        p.font = GetSignFont(p.face, p.quality, p.italic);
+        return p;
+    }
+
+    private static Texture2D GenerateSignTexture(SignParameters p)
+    {
+        int res = ClampQuality(p.quality);
+
+        const int SignRenderLayer = 31;
+
+        var rt = new RenderTexture(res, res, 0, RenderTextureFormat.ARGB32)
+        {
+            hideFlags = HideFlags.HideAndDontSave,
+            useMipMap = p.mipmaps,
+            autoGenerateMips = p.mipmaps,
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Repeat
+        };
+
+        var camGO = new GameObject("vp-sign-camera") { hideFlags = HideFlags.HideAndDontSave };
+        camGO.layer = SignRenderLayer;
+        var cam = camGO.AddComponent<Camera>();
+        cam.orthographic = true;
+        cam.orthographicSize = 0.5f;
+        cam.clearFlags = CameraClearFlags.Color;
+        cam.backgroundColor = p.backgroundColor;
+        cam.cullingMask = 1 << SignRenderLayer;
+        cam.targetTexture = rt;
+        cam.enabled = false;
+        cam.transform.position = new Vector3(0f, 0f, -10f);
+
+        var textGO = new GameObject("vp-sign-text") { hideFlags = HideFlags.HideAndDontSave };
+        textGO.layer = SignRenderLayer;
+        textGO.transform.SetParent(camGO.transform, false);
+        textGO.transform.localPosition = new Vector3(0f, 0f, 5f);
+
+        var textMesh = textGO.AddComponent<TextMesh>();
+        textMesh.font = p.font;
+        textMesh.text = p.text;
+        textMesh.anchor = TextAnchor.MiddleCenter;
+        textMesh.alignment = TextAlignment.Center;
+        textMesh.fontSize = Mathf.Max(12, (int)(res * 0.6f));
+        textMesh.fontStyle = p.italic ? FontStyle.Italic : FontStyle.Normal;
+        textMesh.color = p.textColor;
+        textMesh.characterSize = 0.1f;
+
+        var mr = textGO.GetComponent<MeshRenderer>();
+        mr.sharedMaterial = p.font.material;
+
+        // Ensure glyphs are available
+        p.font.RequestCharactersInTexture(p.text, textMesh.fontSize, textMesh.fontStyle);
+
+        var bounds = mr.bounds;
+        float maxDim = Mathf.Max(bounds.size.x, bounds.size.y);
+        if (maxDim > 0.0001f)
+        {
+            float scale = 0.8f / maxDim;
+            textGO.transform.localScale = new Vector3(scale, scale, scale);
+        }
+
+        RenderTexture prev = RenderTexture.active;
+        RenderTexture.active = rt;
+        GL.Clear(true, true, p.backgroundColor);
+        cam.Render();
+
+        var tex = new Texture2D(res, res, TextureFormat.RGBA32, p.mipmaps, false)
+        {
+            name = $"vp-sign:{p.text}",
+            wrapMode = TextureWrapMode.Repeat,
+            filterMode = FilterMode.Bilinear,
+            hideFlags = HideFlags.DontUnloadUnusedAsset
+        };
+        tex.ReadPixels(new Rect(0, 0, res, res), 0, 0);
+        tex.Apply(updateMipmaps: p.mipmaps, makeNoLongerReadable: false);
+
+        RenderTexture.active = prev;
+
+        cam.targetTexture = null;
+        rt.Release();
+        UnityEngine.Object.Destroy(rt);
+        UnityEngine.Object.Destroy(camGO);
+
+        return tex;
+    }
+
+    private static void ApplySignTexture(GameObject target, Texture2D tex, string targetName)
+    {
+        if (target == null || tex == null) return;
+
+        GameObject applyRoot = target;
+
+        if (!string.IsNullOrWhiteSpace(targetName))
+        {
+            Transform child = FindChildByName(target.transform, targetName);
+            if (child != null)
+                applyRoot = child.gameObject;
+            else
+                Debug.LogWarning($"[VP] sign target '{targetName}' not found under '{target.name}'");
+        }
+
+        ApplyTextureToRendererMaterials(applyRoot, tex, requiredTag: 100);
+    }
+
+    private static Transform FindChildByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+            return null;
+
+        var comparison = StringComparison.OrdinalIgnoreCase;
+
+        if (root.name.Equals(name, comparison))
+            return root;
+
+        foreach (Transform child in root)
+        {
+            var found = FindChildByName(child, name);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
+
+    private static Font GetSignFont(string face, int quality, bool italic)
+    {
+        string key = $"{face?.Trim().ToLowerInvariant()}||{quality}||{italic}";
+        if (_fontCache.TryGetValue(key, out var cached) && cached != null)
+            return cached;
+
+        try
+        {
+            var font = Font.CreateDynamicFontFromOSFont(face, Mathf.Max(quality, 16));
+            if (font != null)
+            {
+                _fontCache[key] = font;
+                return font;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[VP] Unable to create sign font '{face}': {e.Message}");
+        }
+
+        // Fallback to Arial builtin
+        Font fallback = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        if (fallback != null)
+        {
+            _fontCache[key] = fallback;
+            return fallback;
+        }
+
+        return null;
+    }
+
+    private static string MakeSignCacheKey(SignParameters p)
+    {
+        string textHash = p.text ?? string.Empty;
+        return $"sign||{textHash}||{ColorToHex(p.textColor)}||{ColorToHex(p.backgroundColor)}||{p.face?.ToLowerInvariant()}||{p.quality}||{(p.italic ? 1 : 0)}||{(p.mipmaps ? 1 : 0)}";
+    }
+
+    private static string ColorToHex(Color c) => ColorUtility.ToHtmlStringRGBA(c);
 
     private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag)
     {
@@ -1291,6 +1597,22 @@ public static class VpActionExecutor
 
         return fallback;
     }
+
+    private static bool ParseBoolToken(string s, bool fallback)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+
+        string v = s.Trim().ToLowerInvariant();
+        if (v == "1" || v == "true" || v == "yes" || v == "on")
+            return true;
+        if (v == "0" || v == "false" || v == "no" || v == "off")
+            return false;
+
+        return fallback;
+    }
+
+    private static int ClampQuality(int q) => Mathf.Clamp(q, 2, 128);
 
     private static float GetFloat(VpActionCommand cmd, string key, float fallback)
     {
