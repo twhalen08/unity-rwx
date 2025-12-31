@@ -601,6 +601,145 @@ public static class VpActionExecutor
     }
 
     // ============================================================
+    // SIGN TEXTURE (text-to-texture renderer)
+    // ============================================================
+    public static Texture2D GenerateSignTexture(
+        Renderer targetRenderer,
+        string text,
+        Font font,
+        Color textColor,
+        Color backgroundColor,
+        int textureWidth = 512,
+        float paddingFraction = 0.05f)
+    {
+        text ??= string.Empty;
+        paddingFraction = Mathf.Clamp01(paddingFraction);
+        textureWidth = Mathf.Max(16, textureWidth);
+
+        // Fallback font so we always render something.
+        if (font == null)
+            font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+        // Use the renderer's mesh bounds (scaled) to establish the target aspect.
+        Vector2 quadSize = GetRendererQuadSize(targetRenderer);
+        float aspect = quadSize.x <= 0.0001f || quadSize.y <= 0.0001f
+            ? 1f
+            : quadSize.x / quadSize.y;
+
+        int texWidth = textureWidth;
+        int texHeight = Mathf.Max(16, Mathf.RoundToInt(texWidth / Mathf.Max(aspect, 0.001f)));
+
+        float padX = texWidth * paddingFraction;
+        float padY = texHeight * paddingFraction;
+        float innerWidth = Mathf.Max(1f, texWidth - (padX * 2f));
+        float innerHeight = Mathf.Max(1f, texHeight - (padY * 2f));
+
+        // Measure text at a probe size.
+        const int ProbeFontSize = 64;
+        var generator = new TextGenerator();
+        var settings = new TextGenerationSettings
+        {
+            textAnchor = TextAnchor.MiddleCenter,
+            generationExtents = new Vector2(innerWidth, innerHeight),
+            pivot = new Vector2(0.5f, 0.5f),
+            richText = true,
+            font = font,
+            color = textColor,
+            fontSize = ProbeFontSize,
+            lineSpacing = 1f,
+            scaleFactor = 1f,
+            horizontalOverflow = HorizontalWrapMode.Wrap,
+            verticalOverflow = VerticalWrapMode.Overflow,
+            resizeTextForBestFit = false,
+            updateBounds = true
+        };
+
+        generator.Populate(text, settings);
+        Vector2 measured = generator.rectExtents.size;
+        if (measured.x <= 0.001f || measured.y <= 0.001f)
+            measured = new Vector2(1f, 1f);
+
+        // Fit scale must honor BOTH width and height extents.
+        float maxScaleFromWidth = innerWidth / measured.x;
+        float maxScaleFromHeight = innerHeight / measured.y;
+        float clampedScale = Mathf.Min(maxScaleFromWidth, maxScaleFromHeight);
+        clampedScale = Mathf.Max(0.01f, clampedScale);
+
+        int finalFontSize = Mathf.Clamp(Mathf.RoundToInt(ProbeFontSize * clampedScale), 2, 4096);
+
+        // Re-run generation at the final size to keep bounds tight and avoid cropping.
+        settings.fontSize = finalFontSize;
+        generator.Populate(text, settings);
+
+        var rt = RenderTexture.GetTemporary(texWidth, texHeight, 0, RenderTextureFormat.ARGB32);
+        var prevRt = RenderTexture.active;
+        RenderTexture.active = rt;
+
+        GL.PushMatrix();
+        GL.LoadPixelMatrix(0, texWidth, texHeight, 0);
+        GL.Clear(true, true, backgroundColor);
+
+        var style = new GUIStyle(GUI.skin.label)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            wordWrap = true,
+            font = font,
+            fontSize = finalFontSize
+        };
+        style.normal.textColor = textColor;
+
+        Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
+        GUI.Label(textRect, text, style);
+
+        var output = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false)
+        {
+            wrapMode = TextureWrapMode.Clamp,
+            name = "sign-texture"
+        };
+
+        output.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
+        output.Apply();
+
+        GL.PopMatrix();
+        RenderTexture.active = prevRt;
+        RenderTexture.ReleaseTemporary(rt);
+
+        return output;
+    }
+
+    private static Vector2 GetRendererQuadSize(Renderer renderer)
+    {
+        const float MinSize = 0.001f;
+
+        if (renderer == null)
+            return new Vector2(1f, 1f);
+
+        var mf = renderer.GetComponent<MeshFilter>();
+        var mesh = mf != null ? mf.sharedMesh : null;
+        if (mesh != null)
+        {
+            Vector3 scaled = Vector3.Scale(mesh.bounds.size, mf.transform.lossyScale);
+
+            // Use the two largest dimensions as width/height to ignore thickness.
+            float[] dims = { Mathf.Abs(scaled.x), Mathf.Abs(scaled.y), Mathf.Abs(scaled.z) };
+            Array.Sort(dims);
+
+            float height = Mathf.Max(MinSize, dims[1]);
+            float width = Mathf.Max(MinSize, dims[2]);
+            return new Vector2(width, height);
+        }
+
+        // Fallback to renderer bounds in world space.
+        var size = renderer.bounds.size;
+        float[] worldDims = { Mathf.Abs(size.x), Mathf.Abs(size.y), Mathf.Abs(size.z) };
+        Array.Sort(worldDims);
+
+        float worldHeight = Mathf.Max(MinSize, worldDims[1]);
+        float worldWidth = Mathf.Max(MinSize, worldDims[2]);
+        return new Vector2(worldWidth, worldHeight);
+    }
+
+    // ============================================================
     // NORMALMAP (left mostly as-is; still uses renderer.materials -> but this is usually low volume)
     // If you want, we can also switch this to MPB+variant later.
     // ============================================================
