@@ -723,7 +723,11 @@ public static class VpActionExecutor
 
         // Fallback font so we always render something.
         if (font == null)
-            font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        {
+            font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null)
+                font = Font.CreateDynamicFontFromOSFont("Arial", 16);
+        }
 
         // Use the renderer's mesh bounds (scaled) to establish the target aspect.
         Vector2 quadSize = GetRendererQuadSize(targetRenderer);
