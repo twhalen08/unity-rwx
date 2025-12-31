@@ -787,26 +787,8 @@ public static class VpActionExecutor
         GL.LoadPixelMatrix(0, texWidth, texHeight, 0);
         GL.Clear(true, true, backgroundColor);
 
-        var style = new GUIStyle(GUI.skin.label)
-        {
-            alignment = anchor,
-            wordWrap = true,
-            font = font,
-            fontSize = finalFontSize
-        };
-        style.normal.textColor = textColor;
-
         Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
-
-        if (dropShadow)
-        {
-            var shadowStyle = new GUIStyle(style);
-            shadowStyle.normal.textColor = shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f);
-            Vector2 offset = Vector2.one * Mathf.Max(1f, finalFontSize * 0.06f);
-            GUI.Label(new Rect(textRect.x + offset.x, textRect.y + offset.y, textRect.width, textRect.height), text, shadowStyle);
-        }
-
-        GUI.Label(textRect, text, style);
+        DrawTextToRenderTexture(generator, font, textColor, shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f), textRect, dropShadow);
 
         var output = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false)
         {
@@ -854,6 +836,82 @@ public static class VpActionExecutor
         float worldHeight = Mathf.Max(MinSize, worldDims[1]);
         float worldWidth = Mathf.Max(MinSize, worldDims[2]);
         return new Vector2(worldWidth, worldHeight);
+    }
+
+    private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow)
+    {
+        if (generator == null || font == null)
+            return;
+
+        var verts = generator.verts;
+        if (verts == null || verts.Count == 0)
+            return;
+
+        int quadCount = verts.Count / 4;
+        if (quadCount == 0)
+            return;
+
+        var mesh = new Mesh { name = "vp-sign-mesh" };
+        var positions = new Vector3[quadCount * 4];
+        var uvs = new Vector2[quadCount * 4];
+        var colors = new Color[quadCount * 4];
+        var indices = new int[quadCount * 6];
+
+        // TextGenerator verts are centered around rectExtents.center; recenter into targetRect.
+        Vector2 genCenter = generator.rectExtents.center;
+        Vector2 targetCenter = targetRect.center;
+        Vector3 offset = new Vector3(targetCenter.x - genCenter.x, targetCenter.y - genCenter.y, 0f);
+
+        for (int qi = 0; qi < quadCount; qi++)
+        {
+            int vi = qi * 4;
+
+            for (int j = 0; j < 4; j++)
+            {
+                int dst = vi + j;
+                var v = verts[dst];
+                positions[dst] = v.position + offset;
+                uvs[dst] = v.uv0;
+                colors[dst] = textColor;
+            }
+
+            int ii = qi * 6;
+            indices[ii + 0] = vi + 0;
+            indices[ii + 1] = vi + 1;
+            indices[ii + 2] = vi + 2;
+            indices[ii + 3] = vi + 2;
+            indices[ii + 4] = vi + 3;
+            indices[ii + 5] = vi + 0;
+        }
+
+        mesh.SetVertices(positions);
+        mesh.SetUVs(0, uvs);
+        mesh.SetColors(colors);
+        mesh.SetTriangles(indices, 0);
+
+        var baseMat = new Material(font.material) { color = textColor };
+
+        GL.PushMatrix();
+        GL.MultMatrix(Matrix4x4.identity);
+
+        if (dropShadow)
+        {
+            var shadowMat = new Material(baseMat) { color = shadowColor };
+            Vector3 shadowOffset = Vector3.one * Mathf.Max(1f, font.fontSize * 0.06f);
+            GL.PushMatrix();
+            GL.MultMatrix(Matrix4x4.Translate(shadowOffset));
+            shadowMat.SetPass(0);
+            Graphics.DrawMeshNow(mesh, Matrix4x4.identity);
+            GL.PopMatrix();
+            UnityEngine.Object.DestroyImmediate(shadowMat);
+        }
+
+        baseMat.SetPass(0);
+        Graphics.DrawMeshNow(mesh, Matrix4x4.identity);
+        GL.PopMatrix();
+
+        UnityEngine.Object.DestroyImmediate(mesh);
+        UnityEngine.Object.DestroyImmediate(baseMat);
     }
 
     // ============================================================
