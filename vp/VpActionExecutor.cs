@@ -64,9 +64,9 @@ public static class VpActionExecutor
     private static readonly int _BaseColorId = Shader.PropertyToID("_BaseColor");
     private static readonly int _CutoffId = Shader.PropertyToID("_Cutoff");
 
-    public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host, string description = null)
     {
-        ExecuteCreate(target, cmd, objectPath, password, host);
+        ExecuteCreate(target, cmd, objectPath, password, host, description);
     }
 
     private static VpActionGate GetOrAddGate(GameObject target)
@@ -89,7 +89,7 @@ public static class VpActionExecutor
     // ============================================================
     // Dispatch
     // ============================================================
-    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host, string description = null)
     {
         if (target == null || cmd == null) return;
 
@@ -105,6 +105,7 @@ public static class VpActionExecutor
             case "visible":    ExecuteVisible(target, cmd); break;
             case "shear":      ExecuteShear(target, cmd); break;
             case "color":      ExecuteColor(target, cmd); break;
+            case "sign":       ExecuteSign(target, cmd, description); break;
         }
     }
 
@@ -603,6 +604,105 @@ public static class VpActionExecutor
     // ============================================================
     // SIGN TEXTURE (text-to-texture renderer)
     // ============================================================
+    private static void ExecuteSign(GameObject target, VpActionCommand cmd, string description)
+    {
+        if (target == null || cmd == null) return;
+
+        var renderer = target.GetComponentInChildren<Renderer>(includeInactive: true);
+        if (renderer == null)
+        {
+            Debug.LogWarning("[VP] sign action could not find a renderer target.");
+            return;
+        }
+
+        string text = GetValue(cmd, "text");
+        if (string.IsNullOrWhiteSpace(text))
+            text = description ?? string.Empty;
+
+        text = text?.Replace("\\n", "\n") ?? string.Empty;
+
+        Color textColor = ParseColor(GetValue(cmd, "color"), Color.white);
+        Color backgroundColor = ParseColor(GetValue(cmd, "bcolor"), Color.black);
+
+        string align = GetValue(cmd, "align");
+        TextAnchor anchor = ParseTextAnchor(align, TextAnchor.MiddleCenter);
+
+        float paddingFraction = Mathf.Clamp01(ParseFloat(GetValue(cmd, "pad"), 0.05f));
+
+        float scaleMultiplier = 1f;
+        string scaleStr = GetValue(cmd, "scale");
+        if (!string.IsNullOrWhiteSpace(scaleStr))
+        {
+            var parts = scaleStr.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0)
+                scaleMultiplier = ParseFloat(parts[0], 1f);
+        }
+
+        bool dropShadow = HasFlag(cmd, "shadow");
+        Color shadowColor = new Color(0f, 0f, 0f, textColor.a * 0.75f);
+
+        var signTexture = GenerateSignTexture(
+            renderer,
+            text,
+            null,
+            textColor,
+            backgroundColor,
+            512,
+            paddingFraction,
+            anchor,
+            scaleMultiplier,
+            dropShadow,
+            shadowColor);
+
+        ApplyTextureToRendererMaterials(target, signTexture, null);
+    }
+
+    private static bool HasFlag(VpActionCommand cmd, string flag)
+    {
+        if (cmd == null || string.IsNullOrWhiteSpace(flag))
+            return false;
+
+        string f = flag.Trim().ToLowerInvariant();
+
+        if (cmd.positional != null)
+        {
+            for (int i = 0; i < cmd.positional.Count; i++)
+            {
+                if (string.Equals(cmd.positional[i]?.Trim(), f, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+
+        if (cmd.kv != null && cmd.kv.TryGetValue(f, out var val))
+        {
+            if (string.IsNullOrWhiteSpace(val))
+                return true;
+
+            string v = val.Trim().ToLowerInvariant();
+            return v == "1" || v == "true" || v == "yes" || v == "on";
+        }
+
+        return false;
+    }
+
+    private static TextAnchor ParseTextAnchor(string align, TextAnchor fallback)
+    {
+        if (string.IsNullOrWhiteSpace(align))
+            return fallback;
+
+        switch (align.Trim().ToLowerInvariant())
+        {
+            case "left":
+            case "west":
+                return TextAnchor.MiddleLeft;
+            case "right":
+            case "east":
+                return TextAnchor.MiddleRight;
+            default:
+                return fallback;
+        }
+    }
+
     public static Texture2D GenerateSignTexture(
         Renderer targetRenderer,
         string text,
@@ -610,11 +710,16 @@ public static class VpActionExecutor
         Color textColor,
         Color backgroundColor,
         int textureWidth = 512,
-        float paddingFraction = 0.05f)
+        float paddingFraction = 0.05f,
+        TextAnchor anchor = TextAnchor.MiddleCenter,
+        float scaleMultiplier = 1f,
+        bool dropShadow = false,
+        Color? shadowColor = null)
     {
         text ??= string.Empty;
         paddingFraction = Mathf.Clamp01(paddingFraction);
         textureWidth = Mathf.Max(16, textureWidth);
+        scaleMultiplier = Mathf.Max(0.01f, scaleMultiplier);
 
         // Fallback font so we always render something.
         if (font == null)
@@ -639,7 +744,7 @@ public static class VpActionExecutor
         var generator = new TextGenerator();
         var settings = new TextGenerationSettings
         {
-            textAnchor = TextAnchor.MiddleCenter,
+            textAnchor = anchor,
             generationExtents = new Vector2(innerWidth, innerHeight),
             pivot = new Vector2(0.5f, 0.5f),
             richText = true,
@@ -662,7 +767,8 @@ public static class VpActionExecutor
         // Fit scale must honor BOTH width and height extents.
         float maxScaleFromWidth = innerWidth / measured.x;
         float maxScaleFromHeight = innerHeight / measured.y;
-        float clampedScale = Mathf.Min(maxScaleFromWidth, maxScaleFromHeight);
+        float baseScale = Mathf.Min(maxScaleFromWidth, maxScaleFromHeight);
+        float clampedScale = Mathf.Min(baseScale, baseScale * scaleMultiplier);
         clampedScale = Mathf.Max(0.01f, clampedScale);
 
         int finalFontSize = Mathf.Clamp(Mathf.RoundToInt(ProbeFontSize * clampedScale), 2, 4096);
@@ -681,7 +787,7 @@ public static class VpActionExecutor
 
         var style = new GUIStyle(GUI.skin.label)
         {
-            alignment = TextAnchor.MiddleCenter,
+            alignment = anchor,
             wordWrap = true,
             font = font,
             fontSize = finalFontSize
@@ -689,6 +795,15 @@ public static class VpActionExecutor
         style.normal.textColor = textColor;
 
         Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
+
+        if (dropShadow)
+        {
+            var shadowStyle = new GUIStyle(style);
+            shadowStyle.normal.textColor = shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f);
+            Vector2 offset = Vector2.one * Mathf.Max(1f, finalFontSize * 0.06f);
+            GUI.Label(new Rect(textRect.x + offset.x, textRect.y + offset.y, textRect.width, textRect.height), text, shadowStyle);
+        }
+
         GUI.Label(textRect, text, style);
 
         var output = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false)
