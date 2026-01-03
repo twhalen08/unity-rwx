@@ -928,9 +928,9 @@ public static class VpActionExecutor
             return;
 
         bool rebuild = false;
-        void OnRebuild() => rebuild = true;
+        void OnRebuild(Font f) { if (f == font) rebuild = true; }
 
-        font.textureRebuildCallback += OnRebuild;
+        Font.textureRebuilt += OnRebuild;
 
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -940,7 +940,7 @@ public static class VpActionExecutor
             if (!rebuild) break;
         }
 
-        font.textureRebuildCallback -= OnRebuild;
+        Font.textureRebuilt -= OnRebuild;
     }
 
     private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow, TextAnchor anchor)
