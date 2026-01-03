@@ -804,6 +804,7 @@ public static class VpActionExecutor
             updateBounds = true
         };
 
+        font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
         generator.Populate(text, settings);
         Vector2 measured = generator.rectExtents.size;
         if (measured.x <= 0.001f || measured.y <= 0.001f)
@@ -822,6 +823,7 @@ public static class VpActionExecutor
 
         // Re-run generation at the final size to keep bounds tight and avoid cropping.
         settings.fontSize = finalFontSize;
+        font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
         generator.Populate(text, settings);
 
         // Second pass: use actual generated bounds to fill remaining space (without exceeding safety factor).
@@ -993,9 +995,9 @@ public static class VpActionExecutor
         mesh.SetTriangles(indices, 0);
 
         var baseMat = new Material(font.material) { color = textColor };
+        baseMat.mainTexture = font.material.mainTexture;
 
         GL.PushMatrix();
-        GL.modelview = Matrix4x4.identity;
         GL.MultMatrix(Matrix4x4.identity);
 
         if (dropShadow)
