@@ -819,6 +819,22 @@ public static class VpActionExecutor
         settings.fontSize = finalFontSize;
         generator.Populate(text, settings);
 
+        // Second pass: use actual generated bounds to fill remaining space (without exceeding safety factor).
+        Vector2 genSize = ComputeGeneratedTextSize(generator);
+        float fillScale = Mathf.Min(
+            innerWidth / Mathf.Max(1f, genSize.x),
+            innerHeight / Mathf.Max(1f, genSize.y)
+        );
+        fillScale = Mathf.Clamp(fillScale * 0.98f, 0.5f, 2.0f); // avoid over/under-scaling extremes
+
+        int adjustedFontSize = Mathf.Clamp(Mathf.RoundToInt(finalFontSize * fillScale), 2, 4096);
+        if (adjustedFontSize != finalFontSize)
+        {
+            finalFontSize = adjustedFontSize;
+            settings.fontSize = finalFontSize;
+            generator.Populate(text, settings);
+        }
+
         var rt = RenderTexture.GetTemporary(texWidth, texHeight, 0, RenderTextureFormat.ARGB32);
         var prevRt = RenderTexture.active;
         RenderTexture.active = rt;
@@ -877,6 +893,27 @@ public static class VpActionExecutor
         float worldHeight = Mathf.Max(MinSize, worldDims[1]);
         float worldWidth = Mathf.Max(MinSize, worldDims[2]);
         return new Vector2(worldWidth, worldHeight);
+    }
+
+    private static Vector2 ComputeGeneratedTextSize(TextGenerator generator)
+    {
+        if (generator == null) return Vector2.zero;
+        var verts = generator.verts;
+        if (verts == null || verts.Count == 0) return Vector2.zero;
+
+        float minX = float.MaxValue, maxX = float.MinValue;
+        float minY = float.MaxValue, maxY = float.MinValue;
+
+        for (int i = 0; i < verts.Count; i++)
+        {
+            var p = verts[i].position;
+            minX = Mathf.Min(minX, p.x);
+            maxX = Mathf.Max(maxX, p.x);
+            minY = Mathf.Min(minY, p.y);
+            maxY = Mathf.Max(maxY, p.y);
+        }
+
+        return new Vector2(Mathf.Max(0f, maxX - minX), Mathf.Max(0f, maxY - minY));
     }
 
     private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow, TextAnchor anchor)
