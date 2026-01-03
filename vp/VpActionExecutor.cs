@@ -928,7 +928,7 @@ public static class VpActionExecutor
             return;
 
         bool rebuild = false;
-        void OnRebuild(Font f) => rebuild = true;
+        void OnRebuild() => rebuild = true;
 
         font.textureRebuildCallback += OnRebuild;
 
