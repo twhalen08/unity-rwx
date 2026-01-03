@@ -999,6 +999,9 @@ public static class VpActionExecutor
         var fontTex = font.material != null ? font.material.mainTexture : null;
         baseMat.mainTexture = fontTex;
         baseMat.SetTexture("_MainTex", fontTex);
+        baseMat.SetInt("_ZWrite", 0);
+        baseMat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+        baseMat.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
 
         GL.PushMatrix();
         Matrix4x4 prevModel = GL.modelview;
