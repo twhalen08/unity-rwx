@@ -648,8 +648,13 @@ public static class VpActionExecutor
         float hMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "hmargin"), 0f));
         float vMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "vmargin"), 0f));
 
+        // Treat values >1 as percentages.
+        if (margin > 1f) margin *= 0.01f;
+        if (hMargin > 1f) hMargin *= 0.01f;
+        if (vMargin > 1f) vMargin *= 0.01f;
+
         // Clamp margins so we don't erase the drawable area.
-        const float MaxMarginFraction = 0.45f;
+        const float MaxMarginFraction = 0.49f;
         hMargin = Mathf.Clamp(margin > 0f ? margin : hMargin, 0f, MaxMarginFraction);
         vMargin = Mathf.Clamp(margin > 0f ? margin : vMargin, 0f, MaxMarginFraction);
 
@@ -825,7 +830,7 @@ public static class VpActionExecutor
             innerWidth / Mathf.Max(1f, genSize.x),
             innerHeight / Mathf.Max(1f, genSize.y)
         );
-        fillScale = Mathf.Clamp(fillScale * 0.98f, 0.5f, 2.0f); // avoid over/under-scaling extremes
+        fillScale = Mathf.Clamp(fillScale, 0.5f, 3.0f); // allow moderate upscaling while avoiding blowouts
 
         int adjustedFontSize = Mathf.Clamp(Mathf.RoundToInt(finalFontSize * fillScale), 2, 4096);
         if (adjustedFontSize != finalFontSize)
