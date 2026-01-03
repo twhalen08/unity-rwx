@@ -407,7 +407,7 @@ public static class VpActionExecutor
         ApplyTextureToRendererMaterials(target, tex, tagOverride);
     }
 
-    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag)
+    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag, bool forceWhiteColor = false)
     {
         if (root == null || tex == null) return;
 
@@ -449,6 +449,12 @@ public static class VpActionExecutor
                 r.GetPropertyBlock(block, mi);
                 block.SetTexture(_MainTexId, tex);
                 block.SetTexture(_BaseMapId, tex);
+
+                if (forceWhiteColor)
+                {
+                    block.SetColor(_ColorId, Color.white);
+                    block.SetColor(_BaseColorId, Color.white);
+                }
                 r.SetPropertyBlock(block, mi);
             }
 
@@ -661,13 +667,14 @@ public static class VpActionExecutor
             textColor,
             backgroundColor,
             512,
-            Mathf.Max(padXFraction, padYFraction),
+            padXFraction,
+            padYFraction,
             anchor,
             scaleMultiplier,
             dropShadow,
             shadowColor);
 
-        ApplyTextureToRendererMaterials(target, signTexture, null);
+        ApplyTextureToRendererMaterials(target, signTexture, requiredTag: 100, forceWhiteColor: true);
     }
 
     private static bool HasFlag(VpActionCommand cmd, string flag)
@@ -723,14 +730,16 @@ public static class VpActionExecutor
         Color textColor,
         Color backgroundColor,
         int textureWidth = 512,
-        float paddingFraction = 0.05f,
+        float paddingXFraction = 0.05f,
+        float paddingYFraction = 0.05f,
         TextAnchor anchor = TextAnchor.MiddleCenter,
         float scaleMultiplier = 1f,
         bool dropShadow = false,
         Color? shadowColor = null)
     {
         text ??= string.Empty;
-        paddingFraction = Mathf.Clamp01(paddingFraction);
+        paddingXFraction = Mathf.Clamp01(paddingXFraction);
+        paddingYFraction = Mathf.Clamp01(paddingYFraction);
         textureWidth = Mathf.Max(16, textureWidth);
         scaleMultiplier = Mathf.Max(0.01f, scaleMultiplier);
 
@@ -751,8 +760,8 @@ public static class VpActionExecutor
         int texWidth = textureWidth;
         int texHeight = Mathf.Max(16, Mathf.RoundToInt(texWidth / Mathf.Max(aspect, 0.001f)));
 
-        float padX = texWidth * paddingFraction;
-        float padY = texHeight * paddingFraction;
+        float padX = texWidth * paddingXFraction;
+        float padY = texHeight * paddingYFraction;
         float innerWidth = Mathf.Max(1f, texWidth - (padX * 2f));
         float innerHeight = Mathf.Max(1f, texHeight - (padY * 2f));
 
