@@ -622,12 +622,25 @@ public static class VpActionExecutor
         text = text?.Replace("\\n", "\n") ?? string.Empty;
 
         Color textColor = ParseColor(GetValue(cmd, "color"), Color.white);
-        Color backgroundColor = ParseColor(GetValue(cmd, "bcolor"), Color.black);
+        Color backgroundColor = ParseColor(GetValue(cmd, "bcolor"), new Color32(0, 0, 192, 255)); // VP default: medium blue
 
         string align = GetValue(cmd, "align");
         TextAnchor anchor = ParseTextAnchor(align, TextAnchor.MiddleCenter);
 
-        float paddingFraction = Mathf.Clamp01(ParseFloat(GetValue(cmd, "pad"), 0.05f));
+        float paddingFraction = Mathf.Clamp01(ParseFloat(GetValue(cmd, "pad"), 0f));
+
+        float margin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "margin"), 0f));
+        float hMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "hmargin"), 0f));
+        float vMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "vmargin"), 0f));
+
+        // Clamp margins so we don't erase the drawable area.
+        const float MaxMarginFraction = 0.45f;
+        hMargin = Mathf.Clamp(margin > 0f ? margin : hMargin, 0f, MaxMarginFraction);
+        vMargin = Mathf.Clamp(margin > 0f ? margin : vMargin, 0f, MaxMarginFraction);
+
+        // Use the largest of margin/pad for each axis.
+        float padXFraction = Mathf.Clamp01(Mathf.Max(paddingFraction, hMargin));
+        float padYFraction = Mathf.Clamp01(Mathf.Max(paddingFraction, vMargin));
 
         float scaleMultiplier = 1f;
         string scaleStr = GetValue(cmd, "scale");
@@ -638,7 +651,7 @@ public static class VpActionExecutor
                 scaleMultiplier = ParseFloat(parts[0], 1f);
         }
 
-        bool dropShadow = HasFlag(cmd, "shadow");
+        bool dropShadow = HasFlag(cmd, "shadow") && !HasFlag(cmd, "noshadow");
         Color shadowColor = new Color(0f, 0f, 0f, textColor.a * 0.75f);
 
         var signTexture = GenerateSignTexture(
@@ -648,7 +661,7 @@ public static class VpActionExecutor
             textColor,
             backgroundColor,
             512,
-            paddingFraction,
+            Mathf.Max(padXFraction, padYFraction),
             anchor,
             scaleMultiplier,
             dropShadow,
@@ -788,7 +801,8 @@ public static class VpActionExecutor
         RenderTexture.active = rt;
 
         GL.PushMatrix();
-        GL.LoadPixelMatrix(0, texWidth, texHeight, 0);
+        // y-up so text isn't flipped.
+        GL.LoadPixelMatrix(0, texWidth, 0, texHeight);
         GL.Clear(true, true, backgroundColor);
 
         Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
@@ -862,9 +876,9 @@ public static class VpActionExecutor
         var indices = new int[quadCount * 6];
 
         // TextGenerator verts are centered around rectExtents.center; recenter into targetRect.
-        Vector2 genCenter = generator.rectExtents.center;
-        Vector2 targetCenter = targetRect.center;
-        Vector3 offset = new Vector3(targetCenter.x - genCenter.x, targetCenter.y - genCenter.y, 0f);
+        Vector2 genMin = generator.rectExtents.min;
+        Vector2 targetMin = new Vector2(targetRect.xMin, targetRect.yMin);
+        Vector3 offset = new Vector3(targetMin.x - genMin.x, targetMin.y - genMin.y, 0f);
 
         for (int qi = 0; qi < quadCount; qi++)
         {
