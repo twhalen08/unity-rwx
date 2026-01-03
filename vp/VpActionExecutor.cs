@@ -407,7 +407,7 @@ public static class VpActionExecutor
         ApplyTextureToRendererMaterials(target, tex, tagOverride);
     }
 
-    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag, bool forceWhiteColor = false)
+    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag, bool forceWhiteColor = false, bool forceTransparentVariant = false)
     {
         if (root == null || tex == null) return;
 
@@ -433,9 +433,10 @@ public static class VpActionExecutor
                 if (requiredTag.HasValue && ReadMaterialTag(baseMat) != requiredTag.Value)
                     continue;
 
-                // We don't know final opacity here; treat as opaque for texture selection.
-                // Opacity action will switch to Transparent later if needed.
-                var desiredMode = GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
+                // We don't know final opacity here; treat as opaque for texture selection unless forced transparent.
+                var desiredMode = forceTransparentVariant
+                    ? AlphaVariantMode.Transparent
+                    : GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
 
                 var variant = GetOrCreateVariant(baseMat, desiredMode);
 
@@ -682,7 +683,7 @@ public static class VpActionExecutor
             dropShadow,
             shadowColor);
 
-        ApplyTextureToRendererMaterials(target, signTexture, requiredTag: 100, forceWhiteColor: true);
+        ApplyTextureToRendererMaterials(target, signTexture, requiredTag: 100, forceWhiteColor: true, forceTransparentVariant: true);
     }
 
     private static bool HasFlag(VpActionCommand cmd, string flag)
