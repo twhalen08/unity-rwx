@@ -995,6 +995,7 @@ public static class VpActionExecutor
         var baseMat = new Material(font.material) { color = textColor };
 
         GL.PushMatrix();
+        GL.modelview = Matrix4x4.identity;
         GL.MultMatrix(Matrix4x4.identity);
 
         if (dropShadow)
