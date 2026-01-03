@@ -832,7 +832,7 @@ public static class VpActionExecutor
             innerWidth / Mathf.Max(1f, genSize.x),
             innerHeight / Mathf.Max(1f, genSize.y)
         );
-        fillScale = Mathf.Clamp(fillScale, 0.5f, 3.0f); // allow moderate upscaling while avoiding blowouts
+        fillScale = Mathf.Clamp(fillScale, 0.9f, 3.0f); // bias toward filling while avoiding blowouts
 
         int adjustedFontSize = Mathf.Clamp(Mathf.RoundToInt(finalFontSize * fillScale), 2, 4096);
         if (adjustedFontSize != finalFontSize)
@@ -847,6 +847,7 @@ public static class VpActionExecutor
         RenderTexture.active = rt;
 
         GL.PushMatrix();
+        GL.modelview = Matrix4x4.identity;
         // y-up so text isn't flipped.
         GL.LoadPixelMatrix(0, texWidth, 0, texHeight);
         GL.Clear(true, true, backgroundColor);
