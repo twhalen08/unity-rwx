@@ -829,7 +829,7 @@ public static class VpActionExecutor
         GL.Clear(true, true, backgroundColor);
 
         Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
-        DrawTextToRenderTexture(generator, font, textColor, shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f), textRect, dropShadow);
+        DrawTextToRenderTexture(generator, font, textColor, shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f), textRect, dropShadow, anchor);
 
         var output = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false)
         {
@@ -879,7 +879,7 @@ public static class VpActionExecutor
         return new Vector2(worldWidth, worldHeight);
     }
 
-    private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow)
+    private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow, TextAnchor anchor)
     {
         if (generator == null || font == null)
             return;
@@ -905,17 +905,13 @@ public static class VpActionExecutor
         float offsetX = targetRect.center.x - genCenter.x;
         float offsetY = targetRect.center.y - genCenter.y;
 
-        // Left/right alignment (default center)
-        if (generator.vertCount > 0)
+        // Horizontal anchor adjustments
+        if (generator.rectExtents.size.x > 0f)
         {
-            // Horizontal
-            if (generator.rectExtents.size.x > 0f)
-            {
-                if (generator.textSettings.textAnchor == TextAnchor.MiddleLeft)
-                    offsetX = targetRect.xMin - genMin.x;
-                else if (generator.textSettings.textAnchor == TextAnchor.MiddleRight)
-                    offsetX = targetRect.xMax - genMax.x;
-            }
+            if (anchor == TextAnchor.MiddleLeft)
+                offsetX = targetRect.xMin - genMin.x;
+            else if (anchor == TextAnchor.MiddleRight)
+                offsetX = targetRect.xMax - genMax.x;
         }
 
         Vector3 offset = new Vector3(offsetX, offsetY, 0f);
