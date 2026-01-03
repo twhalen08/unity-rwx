@@ -898,21 +898,29 @@ public static class VpActionExecutor
         var colors = new Color[quadCount * 4];
         var indices = new int[quadCount * 6];
 
-        // Align generated verts using anchor semantics (horizontal only; vertical stays centered).
-        Vector2 genMin = generator.rectExtents.min;
-        Vector2 genMax = generator.rectExtents.max;
-        Vector2 genCenter = generator.rectExtents.center;
-        float offsetX = targetRect.center.x - genCenter.x;
-        float offsetY = targetRect.center.y - genCenter.y;
+        // Compute actual text bounds from generated verts.
+        float boundsMinX = float.MaxValue, boundsMaxX = float.MinValue;
+        float boundsMinY = float.MaxValue, boundsMaxY = float.MinValue;
+        for (int i = 0; i < verts.Count; i++)
+        {
+            Vector3 p = verts[i].position;
+            boundsMinX = Mathf.Min(boundsMinX, p.x);
+            boundsMaxX = Mathf.Max(boundsMaxX, p.x);
+            boundsMinY = Mathf.Min(boundsMinY, p.y);
+            boundsMaxY = Mathf.Max(boundsMaxY, p.y);
+        }
+
+        float textCenterX = (boundsMinX + boundsMaxX) * 0.5f;
+        float textCenterY = (boundsMinY + boundsMaxY) * 0.5f;
+
+        float offsetX = targetRect.center.x - textCenterX;
+        float offsetY = targetRect.center.y - textCenterY;
 
         // Horizontal anchor adjustments
-        if (generator.rectExtents.size.x > 0f)
-        {
-            if (anchor == TextAnchor.MiddleLeft)
-                offsetX = targetRect.xMin - genMin.x;
-            else if (anchor == TextAnchor.MiddleRight)
-                offsetX = targetRect.xMax - genMax.x;
-        }
+        if (anchor == TextAnchor.MiddleLeft)
+            offsetX = targetRect.xMin - boundsMinX;
+        else if (anchor == TextAnchor.MiddleRight)
+            offsetX = targetRect.xMax - boundsMaxX;
 
         Vector3 offset = new Vector3(offsetX, offsetY, 0f);
 
