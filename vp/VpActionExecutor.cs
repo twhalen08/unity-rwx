@@ -663,7 +663,12 @@ public static class VpActionExecutor
         {
             var parts = scaleStr.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length > 0)
-                scaleMultiplier = ParseFloat(parts[0], 1f);
+            {
+                float best = 1f;
+                for (int i = 0; i < parts.Length; i++)
+                    best = Mathf.Max(best, ParseFloat(parts[i], 1f));
+                scaleMultiplier = best;
+            }
         }
 
         bool dropShadow = HasFlag(cmd, "shadow") && !HasFlag(cmd, "noshadow");
@@ -893,10 +898,27 @@ public static class VpActionExecutor
         var colors = new Color[quadCount * 4];
         var indices = new int[quadCount * 6];
 
-        // Align generated verts (centered around rectExtents.center) into our target rect.
+        // Align generated verts using anchor semantics (horizontal only; vertical stays centered).
+        Vector2 genMin = generator.rectExtents.min;
+        Vector2 genMax = generator.rectExtents.max;
         Vector2 genCenter = generator.rectExtents.center;
-        Vector2 targetCenter = targetRect.center;
-        Vector3 offset = new Vector3(targetCenter.x - genCenter.x, targetCenter.y - genCenter.y, 0f);
+        float offsetX = targetRect.center.x - genCenter.x;
+        float offsetY = targetRect.center.y - genCenter.y;
+
+        // Left/right alignment (default center)
+        if (generator.vertCount > 0)
+        {
+            // Horizontal
+            if (generator.rectExtents.size.x > 0f)
+            {
+                if (generator.textSettings.textAnchor == TextAnchor.MiddleLeft)
+                    offsetX = targetRect.xMin - genMin.x;
+                else if (generator.textSettings.textAnchor == TextAnchor.MiddleRight)
+                    offsetX = targetRect.xMax - genMax.x;
+            }
+        }
+
+        Vector3 offset = new Vector3(offsetX, offsetY, 0f);
 
         for (int qi = 0; qi < quadCount; qi++)
         {
