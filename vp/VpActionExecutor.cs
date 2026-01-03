@@ -804,8 +804,7 @@ public static class VpActionExecutor
             updateBounds = true
         };
 
-        font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
-        generator.Populate(text, settings);
+        PopulateWithFont(font, text, settings, generator);
         Vector2 measured = generator.rectExtents.size;
         if (measured.x <= 0.001f || measured.y <= 0.001f)
             measured = new Vector2(1f, 1f);
@@ -823,8 +822,7 @@ public static class VpActionExecutor
 
         // Re-run generation at the final size to keep bounds tight and avoid cropping.
         settings.fontSize = finalFontSize;
-        font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
-        generator.Populate(text, settings);
+        PopulateWithFont(font, text, settings, generator);
 
         // Second pass: use actual generated bounds to fill remaining space (without exceeding safety factor).
         Vector2 genSize = ComputeGeneratedTextSize(generator);
@@ -839,7 +837,7 @@ public static class VpActionExecutor
         {
             finalFontSize = adjustedFontSize;
             settings.fontSize = finalFontSize;
-            generator.Populate(text, settings);
+            PopulateWithFont(font, text, settings, generator);
         }
 
         var rt = RenderTexture.GetTemporary(texWidth, texHeight, 0, RenderTextureFormat.ARGB32);
@@ -922,6 +920,27 @@ public static class VpActionExecutor
         }
 
         return new Vector2(Mathf.Max(0f, maxX - minX), Mathf.Max(0f, maxY - minY));
+    }
+
+    private static void PopulateWithFont(Font font, string text, TextGenerationSettings settings, TextGenerator generator)
+    {
+        if (font == null || generator == null)
+            return;
+
+        bool rebuild = false;
+        void OnRebuild(Font f) => rebuild = true;
+
+        font.textureRebuildCallback += OnRebuild;
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            rebuild = false;
+            font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
+            generator.Populate(text, settings);
+            if (!rebuild) break;
+        }
+
+        font.textureRebuildCallback -= OnRebuild;
     }
 
     private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow, TextAnchor anchor)
