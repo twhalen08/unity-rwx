@@ -996,9 +996,13 @@ public static class VpActionExecutor
         mesh.SetTriangles(indices, 0);
 
         var baseMat = new Material(font.material) { color = textColor };
-        baseMat.mainTexture = font.material.mainTexture;
+        var fontTex = font.material != null ? font.material.mainTexture : null;
+        baseMat.mainTexture = fontTex;
+        baseMat.SetTexture("_MainTex", fontTex);
 
         GL.PushMatrix();
+        Matrix4x4 prevModel = GL.modelview;
+        GL.modelview = Matrix4x4.identity;
         GL.MultMatrix(Matrix4x4.identity);
 
         if (dropShadow)
@@ -1016,6 +1020,7 @@ public static class VpActionExecutor
         baseMat.SetPass(0);
         Graphics.DrawMeshNow(mesh, Matrix4x4.identity);
         GL.PopMatrix();
+        GL.modelview = prevModel;
 
         UnityEngine.Object.DestroyImmediate(mesh);
         UnityEngine.Object.DestroyImmediate(baseMat);
