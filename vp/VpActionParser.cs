@@ -2,6 +2,9 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+namespace VP
+{
+
 public static class VpActionParser
 {
 
@@ -211,4 +214,6 @@ public static class VpActionParser
         if (cur.Length > 0)
             yield return cur.ToString();
     }
+}
+
 }

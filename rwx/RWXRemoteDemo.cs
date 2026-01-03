@@ -279,7 +279,7 @@ public class RWXRemoteDemo : MonoBehaviour
             return;
         }
 
-        VpActionParser.Parse(action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions);
+        VP.VpActionParser.Parse(action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions);
 
         if (createActions.Count == 0 && activateActions.Count == 0)
         {

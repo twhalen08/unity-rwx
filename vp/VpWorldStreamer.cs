@@ -914,7 +914,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (!string.IsNullOrWhiteSpace(req.action))
         {
-            VpActionParser.Parse(req.action, out createActions, out activateActions);
+            VP.VpActionParser.Parse(req.action, out createActions, out activateActions);
         }
 
         createActions ??= new List<VpActionCommand>();

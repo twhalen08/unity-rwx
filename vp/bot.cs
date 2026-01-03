@@ -221,7 +221,7 @@ public class VPWorldAreaLoader : MonoBehaviour
 
             if (!string.IsNullOrWhiteSpace(request.action))
             {
-                VpActionParser.Parse(request.action, out createActions, out activateActions);
+                VP.VpActionParser.Parse(request.action, out createActions, out activateActions);
             }
 
             createActions ??= new List<VpActionCommand>();
