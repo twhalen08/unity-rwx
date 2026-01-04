@@ -300,7 +300,7 @@ namespace RWXLoader
             }
 
             // Try multiple file extensions
-            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".tga", ".dds", ".dds.gz" };
             
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
@@ -552,10 +552,12 @@ namespace RWXLoader
                 if (isMask)
                 {
                     possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_tl01m.bmp"
-                        baseName + ".bmp",   // e.g., "t_tl01m.bmp"
-                        baseName + ".BMP",   // uppercase variant
-                        baseName,            // just the base name
+                        textureNameWithExt,     // e.g., "t_tl01m.bmp"
+                        baseName + ".bmp",      // e.g., "t_tl01m.bmp"
+                        baseName + ".BMP",      // uppercase variant
+                        baseName + ".bmp.gz",   // gzipped BMP
+                        baseName + ".BMP.GZ",   // uppercase gzipped BMP
+                        baseName,               // just the base name
                     };
                 }
                 else
@@ -623,35 +625,41 @@ namespace RWXLoader
         {
             // Ensure texture has proper extension for remote download
             string textureNameWithExt = EnsureTextureExtension(textureName, isMask);
+            string baseName = Path.GetFileNameWithoutExtension(textureNameWithExt);
 
-            bool downloadSuccess = false;
-            string localTexturePath = "";
-
-            yield return assetManager.DownloadTexture(currentObjectPath, textureNameWithExt, (success, result) =>
+            var candidateNames = new List<string> { textureNameWithExt };
+            if (isMask)
             {
-                downloadSuccess = success;
-                localTexturePath = result;
-            }, objectPathPassword);
+                candidateNames.Add(baseName + ".bmp.gz");
+                candidateNames.Add(baseName + ".BMP.GZ");
+            }
 
-            if (downloadSuccess && File.Exists(localTexturePath))
+            foreach (string candidate in candidateNames)
             {
-                byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
-                if (texture != null)
+                bool downloadSuccess = false;
+                string localTexturePath = "";
+
+                yield return assetManager.DownloadTexture(currentObjectPath, candidate, (success, result) =>
                 {
-                    string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
-                    textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
-                    onComplete?.Invoke(texture);
-                }
-                else
+                    downloadSuccess = success;
+                    localTexturePath = result;
+                }, objectPathPassword);
+
+                if (downloadSuccess && File.Exists(localTexturePath))
                 {
-                    onComplete?.Invoke(null);
+                    byte[] fileData = File.ReadAllBytes(localTexturePath);
+                    Texture2D texture = LoadTextureFromBytes(fileData, candidate, isMask, isDoubleSided);
+                    if (texture != null)
+                    {
+                        string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
+                        textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
+                        onComplete?.Invoke(texture);
+                        yield break;
+                    }
                 }
             }
-            else
-            {
-                onComplete?.Invoke(null);
-            }
+
+            onComplete?.Invoke(null);
         }
 
         /// <summary>
