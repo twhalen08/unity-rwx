@@ -59,7 +59,14 @@ namespace RWXLoader
         private bool IsMaskFile(string fileName)
         {
             string lowerName = fileName.ToLower();
-            return lowerName.Contains("mask") || lowerName.Contains("_m") || fileName.EndsWith("m.bmp") || lowerName.Contains("tl01m");
+            string baseName = Path.GetFileNameWithoutExtension(fileName).ToLower();
+            return lowerName.Contains("mask")
+                || lowerName.Contains("_m")
+                || fileName.EndsWith("m.bmp", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith("m.zip", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith("m.gz", StringComparison.OrdinalIgnoreCase)
+                || baseName.EndsWith("m")
+                || lowerName.Contains("tl01m");
         }
 
         private bool TryDecompressGzip(byte[] data, out byte[] decompressedData)
@@ -300,7 +307,7 @@ namespace RWXLoader
             }
 
             // Try multiple file extensions
-            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".bmp.zip", ".tga", ".dds", ".dds.gz" };
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".bmp.zip", ".zip", ".tga", ".dds", ".dds.gz" };
             
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
@@ -589,6 +596,8 @@ namespace RWXLoader
                         baseName + ".BMP.GZ",   // uppercase gzipped BMP
                         baseName + ".bmp.zip",  // zipped BMP
                         baseName + ".BMP.ZIP",  // uppercase zipped BMP
+                        baseName + ".zip",      // plain zipped BMP
+                        baseName + ".ZIP",      // uppercase plain zipped BMP
                         baseName,               // just the base name
                     };
                 }
@@ -659,13 +668,15 @@ namespace RWXLoader
             string textureNameWithExt = EnsureTextureExtension(textureName, isMask);
             string baseName = Path.GetFileNameWithoutExtension(textureNameWithExt);
 
-            var candidateNames = new List<string> { textureNameWithExt };
+                var candidateNames = new List<string> { textureNameWithExt };
             if (isMask)
             {
                 candidateNames.Add(baseName + ".bmp.gz");
                 candidateNames.Add(baseName + ".BMP.GZ");
                 candidateNames.Add(baseName + ".bmp.zip");
                 candidateNames.Add(baseName + ".BMP.ZIP");
+                candidateNames.Add(baseName + ".zip");
+                candidateNames.Add(baseName + ".ZIP");
             }
 
             foreach (string candidate in candidateNames)
