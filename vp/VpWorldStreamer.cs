@@ -14,6 +14,7 @@ using UnityEngine.Networking;
 using VpNet;
 using static Unity.Burst.Intrinsics.X86.Avx;
 using static UnityEngine.GraphicsBuffer;
+using System.Reflection;
 
 /// <summary>
 /// VPWorldStreamerSmooth
@@ -277,6 +278,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public string description;
     }
 
     // Model priority heap: smallest priority loads first
@@ -298,6 +300,23 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly List<VpPreprocessedAction> preprocessedActionResults = new();
     private readonly List<VpPreprocessActionInput> preprocessedActionInputs = new();
     private readonly List<ActionApplyStep> actionApplySteps = new();
+
+    private static string ExtractDescription(object obj)
+    {
+        if (obj == null) return string.Empty;
+
+        var type = obj.GetType();
+
+        var prop = type.GetProperty("Description", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (prop != null && prop.PropertyType == typeof(string))
+            return prop.GetValue(obj) as string ?? string.Empty;
+
+        var field = type.GetField("Description", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (field != null && field.FieldType == typeof(string))
+            return field.GetValue(obj) as string ?? string.Empty;
+
+        return string.Empty;
+    }
 
     private void Start()
     {
@@ -552,7 +571,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 modelName = modelName,
                 position = pos,
                 rotation = rot,
-                action = obj.Action
+                action = obj.Action,
+                description = ExtractDescription(obj)
             };
 
             float pri = ComputeModelPriority(pos, camPos);
@@ -894,7 +914,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (!string.IsNullOrWhiteSpace(req.action))
         {
-            VpActionParser.Parse(req.action, out createActions, out activateActions);
+            VP.VpActionParser.Parse(req.action, out createActions, out activateActions);
         }
 
         createActions ??= new List<VpActionCommand>();
@@ -963,7 +983,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (!sliceActionApplication)
                 {
                     foreach (var a in createActions)
-                        VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+                        VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this, req.description);
                 }
                 else
                 {
@@ -1001,7 +1021,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                         }
                         else if (step.command != null)
                         {
-                            VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
+                            VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this, req.description);
                         }
 
                         float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using UnityEngine;
 using VpNet;
 using RWXLoader;
+using System.Reflection;
 
 public class VPWorldAreaLoader : MonoBehaviour
 {
@@ -51,6 +52,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public string description;
     }
 
     private readonly Queue<PendingModelLoad> pendingModelLoads = new Queue<PendingModelLoad>();
@@ -150,6 +152,22 @@ public class VPWorldAreaLoader : MonoBehaviour
             yield return null;
     }
 
+    private static string ExtractDescription(object obj)
+    {
+        if (obj == null) return string.Empty;
+
+        var type = obj.GetType();
+        var prop = type.GetProperty("Description", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (prop != null && prop.PropertyType == typeof(string))
+            return prop.GetValue(obj) as string ?? string.Empty;
+
+        var field = type.GetField("Description", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (field != null && field.FieldType == typeof(string))
+            return field.GetValue(obj) as string ?? string.Empty;
+
+        return string.Empty;
+    }
+
     private void ProcessCell(QueryCellResult cell)
     {
         foreach (var obj in cell.Objects)
@@ -166,19 +184,21 @@ public class VPWorldAreaLoader : MonoBehaviour
 
             // ✅ action is per-instance metadata
             string action = obj.Action;
+            string description = ExtractDescription(obj);
 
-            EnqueueModelLoad(modelName, pos, rot, action);
+            EnqueueModelLoad(modelName, pos, rot, action, description);
         }
     }
 
-    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action)
+    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action, string description)
     {
         pendingModelLoads.Enqueue(new PendingModelLoad
         {
             modelName = modelName,
             position = position,
             rotation = rotation,
-            action = action
+            action = action,
+            description = description
         });
 
         if (loadQueueCoroutine == null)
@@ -201,7 +221,7 @@ public class VPWorldAreaLoader : MonoBehaviour
 
             if (!string.IsNullOrWhiteSpace(request.action))
             {
-                VpActionParser.Parse(request.action, out createActions, out activateActions);
+                VP.VpActionParser.Parse(request.action, out createActions, out activateActions);
             }
 
             createActions ??= new List<VpActionCommand>();
@@ -247,7 +267,7 @@ public class VPWorldAreaLoader : MonoBehaviour
                     Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
 
                 foreach (var a in createActions)
-                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this, request.description);
 
                 if (activateActions.Count > 0)
                 {

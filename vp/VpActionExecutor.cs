@@ -64,9 +64,9 @@ public static class VpActionExecutor
     private static readonly int _BaseColorId = Shader.PropertyToID("_BaseColor");
     private static readonly int _CutoffId = Shader.PropertyToID("_Cutoff");
 
-    public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    public static void Execute(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host, string description = null)
     {
-        ExecuteCreate(target, cmd, objectPath, password, host);
+        ExecuteCreate(target, cmd, objectPath, password, host, description);
     }
 
     private static VpActionGate GetOrAddGate(GameObject target)
@@ -89,7 +89,7 @@ public static class VpActionExecutor
     // ============================================================
     // Dispatch
     // ============================================================
-    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host)
+    public static void ExecuteCreate(GameObject target, VpActionCommand cmd, string objectPath, string password, MonoBehaviour host, string description = null)
     {
         if (target == null || cmd == null) return;
 
@@ -105,6 +105,7 @@ public static class VpActionExecutor
             case "visible":    ExecuteVisible(target, cmd); break;
             case "shear":      ExecuteShear(target, cmd); break;
             case "color":      ExecuteColor(target, cmd); break;
+            case "sign":       ExecuteSign(target, cmd, description); break;
         }
     }
 
@@ -406,7 +407,7 @@ public static class VpActionExecutor
         ApplyTextureToRendererMaterials(target, tex, tagOverride);
     }
 
-    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag)
+    private static void ApplyTextureToRendererMaterials(GameObject root, Texture2D tex, int? requiredTag, bool forceWhiteColor = false, bool forceTransparentVariant = false)
     {
         if (root == null || tex == null) return;
 
@@ -432,9 +433,10 @@ public static class VpActionExecutor
                 if (requiredTag.HasValue && ReadMaterialTag(baseMat) != requiredTag.Value)
                     continue;
 
-                // We don't know final opacity here; treat as opaque for texture selection.
-                // Opacity action will switch to Transparent later if needed.
-                var desiredMode = GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
+                // We don't know final opacity here; treat as opaque for texture selection unless forced transparent.
+                var desiredMode = forceTransparentVariant
+                    ? AlphaVariantMode.Transparent
+                    : GuessAlphaModeForTexture(baseMat, tex, alphaForThisMaterial: 1f);
 
                 var variant = GetOrCreateVariant(baseMat, desiredMode);
 
@@ -448,6 +450,12 @@ public static class VpActionExecutor
                 r.GetPropertyBlock(block, mi);
                 block.SetTexture(_MainTexId, tex);
                 block.SetTexture(_BaseMapId, tex);
+
+                if (forceWhiteColor)
+                {
+                    block.SetColor(_ColorId, Color.white);
+                    block.SetColor(_BaseColorId, Color.white);
+                }
                 r.SetPropertyBlock(block, mi);
             }
 
@@ -598,6 +606,446 @@ public static class VpActionExecutor
         Add(t + ".DDS.GZ");
 
         return list;
+    }
+
+    // ============================================================
+    // SIGN TEXTURE (text-to-texture renderer)
+    // ============================================================
+    private static void ExecuteSign(GameObject target, VpActionCommand cmd, string description)
+    {
+        if (target == null || cmd == null) return;
+
+        var renderer = target.GetComponentInChildren<Renderer>(includeInactive: true);
+        if (renderer == null)
+        {
+            Debug.LogWarning("[VP] sign action could not find a renderer target.");
+            return;
+        }
+
+        string text = GetValue(cmd, "text");
+        if (string.IsNullOrWhiteSpace(text))
+            text = description ?? string.Empty;
+
+        text = text?.Replace("\\n", "\n") ?? string.Empty;
+
+        string rawBcolor = GetValue(cmd, "bcolor");
+        Color textColor = ParseColor(GetValue(cmd, "color"), Color.white);
+        Color backgroundColor = ParseColor(rawBcolor, new Color32(0, 0, 192, 255)); // VP default: medium blue
+        if (!string.IsNullOrWhiteSpace(rawBcolor))
+        {
+            string trimmed = rawBcolor.Trim();
+            string hex = trimmed.StartsWith("#") ? trimmed.Substring(1) : trimmed;
+            if (string.Equals(hex, "000000", StringComparison.OrdinalIgnoreCase))
+                backgroundColor = new Color(backgroundColor.r, backgroundColor.g, backgroundColor.b, 0f);
+        }
+
+        string align = GetValue(cmd, "align");
+        TextAnchor anchor = ParseTextAnchor(align, TextAnchor.MiddleCenter);
+
+        float paddingFraction = Mathf.Clamp01(ParseFloat(GetValue(cmd, "pad"), 0f));
+
+        float margin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "margin"), 0f));
+        float hMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "hmargin"), 0f));
+        float vMargin = Mathf.Max(0f, ParseFloat(GetValue(cmd, "vmargin"), 0f));
+
+        // Treat values >1 as percentages.
+        if (margin > 1f) margin *= 0.01f;
+        if (hMargin > 1f) hMargin *= 0.01f;
+        if (vMargin > 1f) vMargin *= 0.01f;
+
+        // Clamp margins so we don't erase the drawable area.
+        const float MaxMarginFraction = 0.49f;
+        hMargin = Mathf.Clamp(margin > 0f ? margin : hMargin, 0f, MaxMarginFraction);
+        vMargin = Mathf.Clamp(margin > 0f ? margin : vMargin, 0f, MaxMarginFraction);
+
+        // Use the largest of margin/pad for each axis.
+        float padXFraction = Mathf.Clamp01(Mathf.Max(paddingFraction, hMargin));
+        float padYFraction = Mathf.Clamp01(Mathf.Max(paddingFraction, vMargin));
+
+        float scaleMultiplier = 1f;
+        string scaleStr = GetValue(cmd, "scale");
+        if (!string.IsNullOrWhiteSpace(scaleStr))
+        {
+            var parts = scaleStr.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0)
+            {
+                float best = 1f;
+                for (int i = 0; i < parts.Length; i++)
+                    best = Mathf.Max(best, ParseFloat(parts[i], 1f));
+                scaleMultiplier = best;
+            }
+        }
+
+        bool dropShadow = HasFlag(cmd, "shadow") && !HasFlag(cmd, "noshadow");
+        Color shadowColor = new Color(0f, 0f, 0f, textColor.a * 0.75f);
+
+        var signTexture = GenerateSignTexture(
+            renderer,
+            text,
+            null,
+            textColor,
+            backgroundColor,
+            512,
+            padXFraction,
+            padYFraction,
+            anchor,
+            scaleMultiplier,
+            dropShadow,
+            shadowColor);
+
+        ApplyTextureToRendererMaterials(target, signTexture, requiredTag: 100, forceWhiteColor: true, forceTransparentVariant: true);
+    }
+
+    private static bool HasFlag(VpActionCommand cmd, string flag)
+    {
+        if (cmd == null || string.IsNullOrWhiteSpace(flag))
+            return false;
+
+        string f = flag.Trim().ToLowerInvariant();
+
+        if (cmd.positional != null)
+        {
+            for (int i = 0; i < cmd.positional.Count; i++)
+            {
+                if (string.Equals(cmd.positional[i]?.Trim(), f, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+
+        if (cmd.kv != null && cmd.kv.TryGetValue(f, out var val))
+        {
+            if (string.IsNullOrWhiteSpace(val))
+                return true;
+
+            string v = val.Trim().ToLowerInvariant();
+            return v == "1" || v == "true" || v == "yes" || v == "on";
+        }
+
+        return false;
+    }
+
+    private static TextAnchor ParseTextAnchor(string align, TextAnchor fallback)
+    {
+        if (string.IsNullOrWhiteSpace(align))
+            return fallback;
+
+        switch (align.Trim().ToLowerInvariant())
+        {
+            case "left":
+            case "west":
+                return TextAnchor.MiddleLeft;
+            case "right":
+            case "east":
+                return TextAnchor.MiddleRight;
+            default:
+                return fallback;
+        }
+    }
+
+    public static Texture2D GenerateSignTexture(
+        Renderer targetRenderer,
+        string text,
+        Font font,
+        Color textColor,
+        Color backgroundColor,
+        int textureWidth = 512,
+        float paddingXFraction = 0.05f,
+        float paddingYFraction = 0.05f,
+        TextAnchor anchor = TextAnchor.MiddleCenter,
+        float scaleMultiplier = 1f,
+        bool dropShadow = false,
+        Color? shadowColor = null)
+    {
+        text ??= string.Empty;
+        paddingXFraction = Mathf.Clamp01(paddingXFraction);
+        paddingYFraction = Mathf.Clamp01(paddingYFraction);
+        textureWidth = Mathf.Max(16, textureWidth);
+        scaleMultiplier = Mathf.Max(0.01f, scaleMultiplier);
+
+        // Fallback font so we always render something.
+        if (font == null)
+        {
+            font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null)
+                font = Font.CreateDynamicFontFromOSFont("Arial", 16);
+        }
+
+        // Use the renderer's mesh bounds (scaled) to establish the target aspect.
+        Vector2 quadSize = GetRendererQuadSize(targetRenderer);
+        float aspect = quadSize.x <= 0.0001f || quadSize.y <= 0.0001f
+            ? 1f
+            : quadSize.x / quadSize.y;
+
+        int texWidth = textureWidth;
+        int texHeight = Mathf.Max(16, Mathf.RoundToInt(texWidth / Mathf.Max(aspect, 0.001f)));
+
+        float padX = texWidth * paddingXFraction;
+        float padY = texHeight * paddingYFraction;
+        float innerWidth = Mathf.Max(1f, texWidth - (padX * 2f));
+        float innerHeight = Mathf.Max(1f, texHeight - (padY * 2f));
+
+        // Measure text at a probe size.
+        const int ProbeFontSize = 64;
+        var generator = new TextGenerator();
+        var settings = new TextGenerationSettings
+        {
+            textAnchor = anchor,
+            generationExtents = new Vector2(innerWidth, innerHeight),
+            pivot = new Vector2(0.5f, 0.5f),
+            richText = true,
+            font = font,
+            color = textColor,
+            fontSize = ProbeFontSize,
+            lineSpacing = 1f,
+            scaleFactor = 1f,
+            horizontalOverflow = HorizontalWrapMode.Wrap,
+            verticalOverflow = VerticalWrapMode.Overflow,
+            resizeTextForBestFit = false,
+            updateBounds = true
+        };
+
+        PopulateWithFont(font, text, settings, generator);
+        Vector2 measured = generator.rectExtents.size;
+        if (measured.x <= 0.001f || measured.y <= 0.001f)
+            measured = new Vector2(1f, 1f);
+
+        // Fit scale must honor BOTH width and height extents.
+        float maxScaleFromWidth = innerWidth / measured.x;
+        float maxScaleFromHeight = innerHeight / measured.y;
+        float baseScale = Mathf.Min(maxScaleFromWidth, maxScaleFromHeight);
+
+        // Allow scaling down, but clamp upscales so text stays inside the quad.
+        float requestedScale = baseScale * scaleMultiplier;
+        float clampedScale = Mathf.Clamp(requestedScale, 0.01f, baseScale);
+
+        int finalFontSize = Mathf.Clamp(Mathf.RoundToInt(ProbeFontSize * clampedScale), 2, 4096);
+
+        // Re-run generation at the final size to keep bounds tight and avoid cropping.
+        settings.fontSize = finalFontSize;
+        PopulateWithFont(font, text, settings, generator);
+
+        // Second pass: use actual generated bounds to fill remaining space (without exceeding safety factor).
+        Vector2 genSize = ComputeGeneratedTextSize(generator);
+        float fillScale = Mathf.Min(
+            innerWidth / Mathf.Max(1f, genSize.x),
+            innerHeight / Mathf.Max(1f, genSize.y)
+        );
+        fillScale = Mathf.Clamp(fillScale, 0.9f, 3.0f); // bias toward filling while avoiding blowouts
+
+        int adjustedFontSize = Mathf.Clamp(Mathf.RoundToInt(finalFontSize * fillScale), 2, 4096);
+        if (adjustedFontSize != finalFontSize)
+        {
+            finalFontSize = adjustedFontSize;
+            settings.fontSize = finalFontSize;
+            PopulateWithFont(font, text, settings, generator);
+        }
+
+        var rt = RenderTexture.GetTemporary(texWidth, texHeight, 0, RenderTextureFormat.ARGB32);
+        var prevRt = RenderTexture.active;
+        RenderTexture.active = rt;
+
+        GL.PushMatrix();
+        GL.modelview = Matrix4x4.identity;
+        // y-up so text isn't flipped.
+        GL.LoadPixelMatrix(0, texWidth, 0, texHeight);
+        GL.Clear(true, true, backgroundColor);
+
+        Rect textRect = new Rect(padX, padY, innerWidth, innerHeight);
+        DrawTextToRenderTexture(generator, font, textColor, shadowColor ?? new Color(0f, 0f, 0f, textColor.a * 0.75f), textRect, dropShadow, anchor);
+
+        var output = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false)
+        {
+            wrapMode = TextureWrapMode.Clamp,
+            name = "sign-texture"
+        };
+
+        output.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
+        output.Apply();
+
+        GL.PopMatrix();
+        RenderTexture.active = prevRt;
+        RenderTexture.ReleaseTemporary(rt);
+
+        return output;
+    }
+
+    private static Vector2 GetRendererQuadSize(Renderer renderer)
+    {
+        const float MinSize = 0.001f;
+
+        if (renderer == null)
+            return new Vector2(1f, 1f);
+
+        var mf = renderer.GetComponent<MeshFilter>();
+        var mesh = mf != null ? mf.sharedMesh : null;
+        if (mesh != null)
+        {
+            Vector3 scaled = Vector3.Scale(mesh.bounds.size, mf.transform.lossyScale);
+
+            // Use the two largest dimensions as width/height to ignore thickness.
+            float[] dims = { Mathf.Abs(scaled.x), Mathf.Abs(scaled.y), Mathf.Abs(scaled.z) };
+            Array.Sort(dims);
+
+            float height = Mathf.Max(MinSize, dims[1]);
+            float width = Mathf.Max(MinSize, dims[2]);
+            return new Vector2(width, height);
+        }
+
+        // Fallback to renderer bounds in world space.
+        var size = renderer.bounds.size;
+        float[] worldDims = { Mathf.Abs(size.x), Mathf.Abs(size.y), Mathf.Abs(size.z) };
+        Array.Sort(worldDims);
+
+        float worldHeight = Mathf.Max(MinSize, worldDims[1]);
+        float worldWidth = Mathf.Max(MinSize, worldDims[2]);
+        return new Vector2(worldWidth, worldHeight);
+    }
+
+    private static Vector2 ComputeGeneratedTextSize(TextGenerator generator)
+    {
+        if (generator == null) return Vector2.zero;
+        var verts = generator.verts;
+        if (verts == null || verts.Count == 0) return Vector2.zero;
+
+        float minX = float.MaxValue, maxX = float.MinValue;
+        float minY = float.MaxValue, maxY = float.MinValue;
+
+        for (int i = 0; i < verts.Count; i++)
+        {
+            var p = verts[i].position;
+            minX = Mathf.Min(minX, p.x);
+            maxX = Mathf.Max(maxX, p.x);
+            minY = Mathf.Min(minY, p.y);
+            maxY = Mathf.Max(maxY, p.y);
+        }
+
+        return new Vector2(Mathf.Max(0f, maxX - minX), Mathf.Max(0f, maxY - minY));
+    }
+
+    private static void PopulateWithFont(Font font, string text, TextGenerationSettings settings, TextGenerator generator)
+    {
+        if (font == null || generator == null)
+            return;
+
+        bool rebuild = false;
+        void OnRebuild(Font f) { if (f == font) rebuild = true; }
+
+        Font.textureRebuilt += OnRebuild;
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            rebuild = false;
+            font.RequestCharactersInTexture(text, settings.fontSize, FontStyle.Normal);
+            generator.Populate(text, settings);
+            if (!rebuild) break;
+        }
+
+        Font.textureRebuilt -= OnRebuild;
+    }
+
+    private static void DrawTextToRenderTexture(TextGenerator generator, Font font, Color textColor, Color shadowColor, Rect targetRect, bool dropShadow, TextAnchor anchor)
+    {
+        if (generator == null || font == null)
+            return;
+
+        var verts = generator.verts;
+        if (verts == null || verts.Count == 0)
+            return;
+
+        int quadCount = verts.Count / 4;
+        if (quadCount == 0)
+            return;
+
+        var mesh = new Mesh { name = "vp-sign-mesh" };
+        var positions = new Vector3[quadCount * 4];
+        var uvs = new Vector2[quadCount * 4];
+        var colors = new Color[quadCount * 4];
+        var indices = new int[quadCount * 6];
+
+        // Compute actual text bounds from generated verts.
+        float boundsMinX = float.MaxValue, boundsMaxX = float.MinValue;
+        float boundsMinY = float.MaxValue, boundsMaxY = float.MinValue;
+        for (int i = 0; i < verts.Count; i++)
+        {
+            Vector3 p = verts[i].position;
+            boundsMinX = Mathf.Min(boundsMinX, p.x);
+            boundsMaxX = Mathf.Max(boundsMaxX, p.x);
+            boundsMinY = Mathf.Min(boundsMinY, p.y);
+            boundsMaxY = Mathf.Max(boundsMaxY, p.y);
+        }
+
+        float textCenterX = (boundsMinX + boundsMaxX) * 0.5f;
+        float textCenterY = (boundsMinY + boundsMaxY) * 0.5f;
+
+        float offsetX = targetRect.center.x - textCenterX;
+        float offsetY = targetRect.center.y - textCenterY;
+
+        // Horizontal anchor adjustments
+        if (anchor == TextAnchor.MiddleLeft)
+            offsetX = targetRect.xMin - boundsMinX;
+        else if (anchor == TextAnchor.MiddleRight)
+            offsetX = targetRect.xMax - boundsMaxX;
+
+        Vector3 offset = new Vector3(offsetX, offsetY, 0f);
+
+        for (int qi = 0; qi < quadCount; qi++)
+        {
+            int vi = qi * 4;
+            for (int j = 0; j < 4; j++)
+            {
+                int dst = vi + j;
+                var v = verts[dst];
+                positions[dst] = v.position + offset;
+                uvs[dst] = v.uv0;
+                colors[dst] = textColor;
+            }
+
+            int ii = qi * 6;
+            indices[ii + 0] = vi + 0;
+            indices[ii + 1] = vi + 1;
+            indices[ii + 2] = vi + 2;
+            indices[ii + 3] = vi + 2;
+            indices[ii + 4] = vi + 3;
+            indices[ii + 5] = vi + 0;
+        }
+
+        mesh.SetVertices(positions);
+        mesh.SetUVs(0, uvs);
+        mesh.SetColors(colors);
+        mesh.SetTriangles(indices, 0);
+
+        var baseMat = new Material(font.material) { color = textColor };
+        var fontTex = font.material != null ? font.material.mainTexture : null;
+        baseMat.mainTexture = fontTex;
+        baseMat.SetTexture("_MainTex", fontTex);
+        baseMat.SetInt("_ZWrite", 0);
+        baseMat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+        baseMat.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+
+        GL.PushMatrix();
+        Matrix4x4 prevModel = GL.modelview;
+        GL.modelview = Matrix4x4.identity;
+        GL.MultMatrix(Matrix4x4.identity);
+
+        if (dropShadow)
+        {
+            var shadowMat = new Material(baseMat) { color = shadowColor };
+            Vector3 shadowOffset = Vector3.one * Mathf.Max(1f, font.fontSize * 0.06f);
+            GL.PushMatrix();
+            GL.MultMatrix(Matrix4x4.Translate(shadowOffset));
+            shadowMat.SetPass(0);
+            Graphics.DrawMeshNow(mesh, Matrix4x4.identity);
+            GL.PopMatrix();
+            UnityEngine.Object.DestroyImmediate(shadowMat);
+        }
+
+        baseMat.SetPass(0);
+        Graphics.DrawMeshNow(mesh, Matrix4x4.identity);
+        GL.PopMatrix();
+        GL.modelview = prevModel;
+
+        UnityEngine.Object.DestroyImmediate(mesh);
+        UnityEngine.Object.DestroyImmediate(baseMat);
     }
 
     // ============================================================
