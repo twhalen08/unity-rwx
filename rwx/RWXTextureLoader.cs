@@ -300,7 +300,7 @@ namespace RWXLoader
             }
 
             // Try multiple file extensions
-            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".tga", ".dds", ".dds.gz" };
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".bmp.zip", ".tga", ".dds", ".dds.gz" };
             
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
@@ -419,6 +419,36 @@ namespace RWXLoader
                 {
                     workingData = decompressedData;
                     effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
+                }
+
+                if (effectiveFileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var zipStream = new MemoryStream(workingData))
+                    using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
+                    {
+                        ZipArchiveEntry entry = null;
+                        foreach (var e in archive.Entries)
+                        {
+                            if (!string.IsNullOrEmpty(e.Name))
+                            {
+                                entry = e;
+                                break;
+                            }
+                        }
+
+                        if (entry == null)
+                        {
+                            return null;
+                        }
+
+                        using (var entryStream = entry.Open())
+                        using (var ms = new MemoryStream())
+                        {
+                            entryStream.CopyTo(ms);
+                            workingData = ms.ToArray();
+                            effectiveFileName = entry.Name;
+                        }
+                    }
                 }
 
                 if (effectiveFileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
@@ -557,6 +587,8 @@ namespace RWXLoader
                         baseName + ".BMP",      // uppercase variant
                         baseName + ".bmp.gz",   // gzipped BMP
                         baseName + ".BMP.GZ",   // uppercase gzipped BMP
+                        baseName + ".bmp.zip",  // zipped BMP
+                        baseName + ".BMP.ZIP",  // uppercase zipped BMP
                         baseName,               // just the base name
                     };
                 }
@@ -632,6 +664,8 @@ namespace RWXLoader
             {
                 candidateNames.Add(baseName + ".bmp.gz");
                 candidateNames.Add(baseName + ".BMP.GZ");
+                candidateNames.Add(baseName + ".bmp.zip");
+                candidateNames.Add(baseName + ".BMP.ZIP");
             }
 
             foreach (string candidate in candidateNames)
