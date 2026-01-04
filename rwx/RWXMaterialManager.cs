@@ -255,6 +255,10 @@ namespace RWXLoader
                 
                 // Verify the texture was applied
             }
+            else if (!string.IsNullOrEmpty(rwxMaterial.mask))
+            {
+                Debug.LogWarning($"[RWXMaterialManager] Mask '{rwxMaterial.mask}' could not be loaded for material with texture '{rwxMaterial.texture ?? \"(none)\"}'. Transparency will be missing.");
+            }
         }
 
         /// <summary>

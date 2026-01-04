@@ -20,6 +20,7 @@ namespace RWXLoader
         private RWXAssetManager assetManager;
         private string currentObjectPath;
         private string objectPathPassword;
+        private bool DebugLogging => assetManager != null && assetManager.enableDebugLogs;
 
         private void Start()
         {
@@ -464,13 +465,17 @@ namespace RWXLoader
                             }
                         }
 
-                        if (entry == null)
-                        {
-                            return null;
-                        }
+                if (entry == null)
+                {
+                    if (DebugLogging)
+                    {
+                        Debug.LogWarning($"[RWXTextureLoader] No entries found in zip '{effectiveFileName}' when attempting to load texture.");
+                    }
+                    return null;
+                }
 
-                        using (var entryStream = entry.Open())
-                        using (var ms = new MemoryStream())
+                using (var entryStream = entry.Open())
+                using (var ms = new MemoryStream())
                         {
                             entryStream.CopyTo(ms);
                             workingData = ms.ToArray();
@@ -661,6 +666,15 @@ namespace RWXLoader
                         onComplete?.Invoke(texture);
                         yield break;
                     }
+                    else if (DebugLogging)
+                    {
+                        Debug.LogWarning($"[RWXTextureLoader] Failed to decode texture data from '{foundFileName}' inside '{zipFileName}'.");
+                    }
+                }
+                else if (DebugLogging)
+                {
+                    string triedNames = string.Join(", ", possibleNames);
+                    Debug.LogWarning($"[RWXTextureLoader] Could not find any matching entries in '{zipFileName}'. Tried: {triedNames}");
                 }
             }
             finally
@@ -723,6 +737,12 @@ namespace RWXLoader
                         yield break;
                     }
                 }
+            }
+
+            if (DebugLogging)
+            {
+                string attempted = string.Join(", ", candidateNames);
+                Debug.LogWarning($"[RWXTextureLoader] Remote download failed for '{textureName}' (mask={isMask}). Tried: {attempted}");
             }
 
             onComplete?.Invoke(null);
