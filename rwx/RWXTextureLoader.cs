@@ -63,9 +63,8 @@ namespace RWXLoader
             return lowerName.Contains("mask")
                 || lowerName.Contains("_m")
                 || fileName.EndsWith("m.bmp", StringComparison.OrdinalIgnoreCase)
-                || fileName.EndsWith("m.zip", StringComparison.OrdinalIgnoreCase)
-                || fileName.EndsWith("m.gz", StringComparison.OrdinalIgnoreCase)
-                || baseName.EndsWith("m")
+                || fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
                 || lowerName.Contains("tl01m");
         }
 
@@ -433,13 +432,35 @@ namespace RWXLoader
                     using (var zipStream = new MemoryStream(workingData))
                     using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
                     {
+                        string targetBase = Path.GetFileNameWithoutExtension(fileName);
                         ZipArchiveEntry entry = null;
+
+                        // Prefer an entry whose basename matches the zip name, otherwise first file
                         foreach (var e in archive.Entries)
                         {
-                            if (!string.IsNullOrEmpty(e.Name))
+                            if (string.IsNullOrEmpty(e.Name))
+                            {
+                                continue;
+                            }
+
+                            string entryBase = Path.GetFileNameWithoutExtension(e.Name);
+                            if (entryBase.Equals(targetBase, StringComparison.OrdinalIgnoreCase))
                             {
                                 entry = e;
                                 break;
+                            }
+
+                            // Fallback: pick the first BMP/PNG/JPG if we haven't chosen one yet
+                            if (entry == null)
+                            {
+                                string ext = Path.GetExtension(e.Name);
+                                if (ext.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    entry = e;
+                                }
                             }
                         }
 
@@ -482,7 +503,7 @@ namespace RWXLoader
                     Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
-                    if (effectiveFileName.EndsWith(".bmp"))
+                    if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
                     {
                         RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
                         if (bmpDecoder != null)
