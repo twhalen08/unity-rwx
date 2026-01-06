@@ -31,6 +31,7 @@ public class VpTerrainBuilder
     private readonly Func<float> getUnityUnitsPerVpUnit;
     private readonly Func<IEnumerator, Coroutine> coroutineStarter;
     private readonly Action<string> logWarning;
+    private readonly Action<string> logInfo;
     private readonly Func<string, Shader> shaderLookup;
 
     public int TerrainTileCellSpan { get; set; } = 32;
@@ -49,13 +50,15 @@ public class VpTerrainBuilder
         Func<float> unityUnitsPerVpUnit,
         Func<IEnumerator, Coroutine> coroutineStarter,
         Func<string, Shader> shaderLookup = null,
-        Action<string> logWarning = null)
+        Action<string> logWarning = null,
+        Action<string> logInfo = null)
     {
         getUnityUnitsPerVpCell = unityUnitsPerVpCell ?? throw new ArgumentNullException(nameof(unityUnitsPerVpCell));
         getUnityUnitsPerVpUnit = unityUnitsPerVpUnit ?? throw new ArgumentNullException(nameof(unityUnitsPerVpUnit));
         this.coroutineStarter = coroutineStarter ?? throw new ArgumentNullException(nameof(coroutineStarter));
         this.shaderLookup = shaderLookup ?? Shader.Find;
         this.logWarning = logWarning ?? Debug.LogWarning;
+        this.logInfo = logInfo;
     }
 
     public Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
@@ -322,6 +325,12 @@ public class VpTerrainBuilder
         if (target == null)
             yield break;
 
+        if (string.IsNullOrWhiteSpace(ObjectPath))
+        {
+            logWarning?.Invoke("[VP] Terrain texture download skipped: objectPath is empty.");
+            yield break;
+        }
+
         string basePath = ObjectPath.TrimEnd('/') + "/";
 
         terrainDownloadsInFlight.Add(textureId);
@@ -337,6 +346,7 @@ public class VpTerrainBuilder
                 string separator = url.Contains("?") ? "&" : "?";
                 url = $"{url}{separator}password={UnityWebRequest.EscapeURL(ObjectPathPassword)}";
             }
+            logInfo?.Invoke($"[VP] Downloading terrain texture {textureId} from {url}");
             using (var req = UnityWebRequestTexture.GetTexture(url))
             {
                 yield return req.SendWebRequest();
@@ -361,6 +371,7 @@ public class VpTerrainBuilder
             target.mainTexture = texFound;
             if (target.HasProperty("_BaseMap"))
                 target.SetTexture("_BaseMap", texFound);
+            logInfo?.Invoke($"[VP] Terrain texture {textureId} applied.");
         }
         else
         {

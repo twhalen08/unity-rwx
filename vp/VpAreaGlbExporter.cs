@@ -173,7 +173,8 @@ public class VpAreaGlbExporter : MonoBehaviour
             GetUnityUnitsPerVpUnit,
             StartCoroutine,
             Shader.Find,
-            Debug.LogWarning)
+            Debug.LogWarning,
+            Log)
         {
             TerrainTileCellSpan = terrainTileCellSpan,
             TerrainNodeCellSpan = terrainNodeCellSpan,
@@ -482,7 +483,10 @@ public class VpAreaGlbExporter : MonoBehaviour
     {
         var exportType = Type.GetType("GLTFast.GltfExport, glTFast") ?? Type.GetType("GLTFast.GltfExport");
         if (exportType == null)
+        {
+            Log("[VP Export] glTFast exporter not found, falling back.");
             return false;
+        }
 
         object exportInstance = null;
         try
@@ -507,6 +511,10 @@ public class VpAreaGlbExporter : MonoBehaviour
                 {
                     var enumValue = Enum.Parse(formatProp.PropertyType, "Glb", ignoreCase: true);
                     formatProp.SetValue(exportSettings, enumValue);
+                }
+                else
+                {
+                    Log("[VP Export] glTFast ExportSettings.Format property not found; continuing with defaults.");
                 }
             }
             catch (Exception ex)
@@ -552,7 +560,10 @@ public class VpAreaGlbExporter : MonoBehaviour
         }
 
         if (!added)
+        {
+            Log("[VP Export] glTFast AddScene returned false; skipping glTFast.");
             return false;
+        }
 
         var saveMethods = new[]
         {
@@ -570,7 +581,10 @@ public class VpAreaGlbExporter : MonoBehaviour
             {
                 var result = method.Invoke(exportInstance, new object[] { path });
                 if (result == null || (result is bool b && b))
+                {
+                    Log("[VP Export] glTFast export succeeded.");
                     return true;
+                }
             }
             catch (Exception ex)
             {

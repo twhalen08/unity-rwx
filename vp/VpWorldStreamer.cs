@@ -286,7 +286,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             GetUnityUnitsPerVpUnit,
             StartCoroutine,
             Shader.Find,
-            Debug.LogWarning)
+            Debug.LogWarning,
+            msg => { if (logCellLoads) Debug.Log(msg); })
         {
             TerrainTileCellSpan = terrainTileCellSpan,
             TerrainNodeCellSpan = terrainNodeCellSpan,
