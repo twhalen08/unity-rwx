@@ -8,6 +8,11 @@ using RWXLoader;
 using UnityEngine;
 using VpNet;
 
+#if GLTFAST || GLTFAST_PRESENT || HAVE_GLTFast
+using GLTFast;
+using GLTFast.Export;
+#endif
+
 /// <summary>
 /// Utility MonoBehaviour that exports a square VP area to GLB.
 /// </summary>
@@ -402,7 +407,11 @@ public class VpAreaGlbExporter : MonoBehaviour
         var colliderStates = colliders.Select(c => (collider: c, enabled: c.enabled)).ToList();
         foreach (var c in colliders) c.enabled = false;
 
-        bool exported = TryExportWithGltfast(root, path)
+        bool exported =
+#if GLTFAST || GLTFAST_PRESENT || HAVE_GLTFast
+            TryExportWithGltfastTyped(root, path) ||
+#endif
+            TryExportWithGltfastReflection(root, path)
             || TryExportWithUnityGLTF(root, path)
             || TryExportWithSiccity(root, path);
 
@@ -479,7 +488,43 @@ public class VpAreaGlbExporter : MonoBehaviour
         return false;
     }
 
-    private bool TryExportWithGltfast(GameObject root, string path)
+#if GLTFAST || GLTFAST_PRESENT || HAVE_GLTFast
+    private bool TryExportWithGltfastTyped(GameObject root, string path)
+    {
+        try
+        {
+            var export = new GltfExport();
+            var settings = new ExportSettings
+            {
+                Format = GltfFormat.Glb
+            };
+
+            bool added = export.AddScene(root, settings);
+            if (!added)
+            {
+                Log("[VP Export] glTFast (typed) AddScene returned false; falling back.");
+                return false;
+            }
+
+            bool saved = export.SaveToFileAndDispose(path);
+            if (!saved)
+            {
+                Log("[VP Export] glTFast (typed) SaveToFileAndDispose returned false; falling back.");
+                return false;
+            }
+
+            Log("[VP Export] glTFast (typed) export succeeded.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log($"[VP Export] glTFast (typed) export failed: {ex.Message}");
+            return false;
+        }
+    }
+#endif
+
+    private bool TryExportWithGltfastReflection(GameObject root, string path)
     {
         Type exportType = FindType(
             "GLTFast.Export.GltfExport, glTFast",
