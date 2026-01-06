@@ -11,7 +11,6 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using VpNet;
 using RWXLoader;
-using UnityEngine.Networking;
 
 /// <summary>
 /// VPWorldStreamerSmooth
@@ -151,13 +150,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly HashSet<(int tx, int tz)> queuedTerrainTiles = new();
     private readonly HashSet<(int tx, int tz)> queryingTerrainTiles = new();
     private readonly MinHeap<(int tx, int tz)> queuedTerrainHeap = new MinHeap<(int tx, int tz)>();
-    private readonly Dictionary<ushort, Material> terrainMaterialCache = new();
-    private readonly HashSet<ushort> terrainDownloadsInFlight = new();
     private readonly HashSet<(int tx, int tz)> desiredTerrainTiles = new();
-    private readonly Dictionary<(int cx, int cz), TerrainCellCacheEntry> terrainCellCache = new();
     private readonly Dictionary<(int tx, int tz), TerrainNode[]> terrainTileNodes = new();
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
+    private VpTerrainBuilder terrainBuilder;
 
     private struct DesiredCellData
     {
@@ -195,22 +192,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 manhattan = math.abs(dx) + math.abs(dy)
             };
         }
-    }
-
-    private struct TerrainCellData
-    {
-        public bool hasData;
-        public bool isHole;
-        public float height;
-        public ushort texture;
-        public byte rotation;
-    }
-
-    private struct TerrainCellCacheEntry
-    {
-        public bool hasData;
-        public bool isHole;
-        public float height;
     }
 
     [BurstCompile]
@@ -300,12 +281,35 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         SetupModelLoader();
 
+        terrainBuilder = new VpTerrainBuilder(
+            GetUnityUnitsPerVpCell,
+            GetUnityUnitsPerVpUnit,
+            StartCoroutine,
+            Shader.Find,
+            Debug.LogWarning)
+        {
+            TerrainTileCellSpan = terrainTileCellSpan,
+            TerrainNodeCellSpan = terrainNodeCellSpan,
+            TerrainHeightOffset = terrainHeightOffset,
+            TerrainMaterialTemplate = terrainMaterialTemplate,
+            ObjectPath = objectPath
+        };
+
         if (streamTerrain && terrainMaterialTemplate == null)
         {
             terrainMaterialTemplate = new Material(Shader.Find("Standard"))
             {
                 name = "VP Terrain Material"
             };
+        }
+
+        if (terrainBuilder != null)
+        {
+            terrainBuilder.TerrainTileCellSpan = terrainTileCellSpan;
+            terrainBuilder.TerrainNodeCellSpan = terrainNodeCellSpan;
+            terrainBuilder.TerrainHeightOffset = terrainHeightOffset;
+            terrainBuilder.TerrainMaterialTemplate = terrainMaterialTemplate;
+            terrainBuilder.ObjectPath = objectPath;
         }
 
         if (streamTerrain && terrainRoot == null)
@@ -591,6 +595,12 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (!streamTerrain)
             return;
 
+        if (terrainBuilder == null)
+        {
+            Debug.LogWarning("[VP] TerrainBuilder missing; cannot build terrain tile.");
+            return;
+        }
+
         if (terrainRoot == null)
             terrainRoot = new GameObject("VP Terrain Root");
 
@@ -600,7 +610,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         if (terrainTiles.TryGetValue(key, out var existing) && existing != null)
             Destroy(existing);
 
-        var mesh = BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
+        terrainBuilder.TerrainTileCellSpan = terrainTileCellSpan;
+        terrainBuilder.TerrainNodeCellSpan = terrainNodeCellSpan;
+        terrainBuilder.TerrainHeightOffset = terrainHeightOffset;
+        terrainBuilder.TerrainMaterialTemplate = terrainMaterialTemplate;
+        terrainBuilder.ObjectPath = objectPath;
+
+        var mesh = terrainBuilder.BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
         if (mesh == null)
             return;
 
@@ -643,236 +659,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         BuildTerrainTile(tileX, tileZ, nodes, false);
     }
 
-    private Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
-    {
-        materials = new List<Material>();
-
-        if (nodes == null || nodes.Length == 0 || terrainTileCellSpan <= 0 || terrainNodeCellSpan <= 0)
-            return null;
-
-        int tileSpan = terrainTileCellSpan;
-        int nodeSpan = terrainNodeCellSpan;
-
-        var cellData = new TerrainCellData[tileSpan, tileSpan];
-
-        foreach (var node in nodes)
-        {
-            for (int cz = 0; cz < nodeSpan; cz++)
-            {
-                for (int cx = 0; cx < nodeSpan; cx++)
-                {
-                    int idx = cz * nodeSpan + cx;
-                    if (node.Cells == null || idx >= node.Cells.Length)
-                        continue;
-
-                    int cellX = node.X * nodeSpan + cx;
-                    int cellZ = node.Z * nodeSpan + cz;
-
-                    if (cellX < 0 || cellX >= tileSpan || cellZ < 0 || cellZ >= tileSpan)
-                        continue;
-
-                    var cell = new TerrainCellData
-                    {
-                        hasData = true,
-                        height = node.Cells[idx].Height,
-                        texture = node.Cells[idx].Texture,
-                        isHole = node.Cells[idx].IsHole,
-                        rotation = ExtractTerrainRotation(node.Cells[idx])
-                    };
-
-                    cellData[cellX, cellZ] = cell;
-
-                    int worldCX = tileX * tileSpan + cellX;
-                    int worldCZ = tileZ * tileSpan + cellZ;
-                    terrainCellCache[(worldCX, worldCZ)] = new TerrainCellCacheEntry
-                    {
-                        hasData = cell.hasData,
-                        isHole = cell.isHole,
-                        height = cell.height
-                    };
-                }
-            }
-        }
-
-        float cellSizeUnity = GetUnityUnitsPerVpCell();
-        if (cellSizeUnity <= 0f)
-            cellSizeUnity = 1f;
-
-        bool TryGetCellHeight(int worldCX, int worldCZ, out float h)
-        {
-            if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
-            {
-                h = cachedCell.height;
-                return true;
-            }
-
-            int localCX = worldCX - tileX * tileSpan;
-            int localCZ = worldCZ - tileZ * tileSpan;
-            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
-            {
-                var c = cellData[localCX, localCZ];
-                if (c.hasData && !c.isHole)
-                {
-                    h = c.height;
-                    return true;
-                }
-            }
-
-            h = 0f;
-            return false;
-        }
-
-        float[,] heightGrid = new float[tileSpan + 1, tileSpan + 1];
-        for (int vx = 0; vx <= tileSpan; vx++)
-        {
-            for (int vz = 0; vz <= tileSpan; vz++)
-            {
-                int worldCX = tileX * tileSpan + vx;
-                int worldCZ = tileZ * tileSpan + vz;
-                int ownerCX = worldCX;
-                int ownerCZ = worldCZ;
-
-                // Prefer deterministic owner first, then the three adjacent corner cells
-                float hExact;
-                if (TryGetCellHeight(ownerCX, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX - 1, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX, ownerCZ - 1, out hExact) ||
-                    TryGetCellHeight(ownerCX - 1, ownerCZ - 1, out hExact))
-                {
-                    heightGrid[vx, vz] = hExact;
-                    continue;
-                }
-
-                // Deterministic nearest-neighbor fallback (search expanding radius)
-                float foundH = 0f;
-                bool found = false;
-                for (int radius = 1; radius <= 2 && !found; radius++)
-                {
-                    for (int dz = -radius; dz <= radius && !found; dz++)
-                    {
-                        for (int dx = -radius; dx <= radius && !found; dx++)
-                        {
-                            int wx = ownerCX + dx;
-                            int wz = ownerCZ + dz;
-                            if (TryGetCellHeight(wx, wz, out float hh))
-                            {
-                                foundH = hh;
-                                found = true;
-                            }
-                        }
-                    }
-                }
-
-                // If still not found, stick with 0 to avoid mismatched averages
-                heightGrid[vx, vz] = found ? foundH : 0f;
-            }
-        }
-
-        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
-
-        // Smooth normals from height grid (shared heights, separate UVs)
-        var normalsGrid = new UnityEngine.Vector3[tileSpan + 1, tileSpan + 1];
-        for (int vx = 0; vx <= tileSpan; vx++)
-        {
-            for (int vz = 0; vz <= tileSpan; vz++)
-            {
-                float hC = heightGrid[vx, vz] * unityUnitsPerVpUnit;
-                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] * unityUnitsPerVpUnit;
-                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] * unityUnitsPerVpUnit;
-                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] * unityUnitsPerVpUnit;
-                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] * unityUnitsPerVpUnit;
-
-                float dx = (hR - hL) * 0.5f / cellSizeUnity;
-                float dz = (hU - hD) * 0.5f / cellSizeUnity;
-
-                normalsGrid[vx, vz] = new UnityEngine.Vector3(-dx, 1f, dz).normalized;
-            }
-        }
-
-        var vertices = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
-        var normals = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
-        var uvs = new List<UnityEngine.Vector2>(tileSpan * tileSpan * 4);
-        var trianglesByTex = new Dictionary<ushort, List<int>>();
-
-        for (int z = 0; z < tileSpan; z++)
-        {
-            for (int x = 0; x < tileSpan; x++)
-            {
-                var cell = cellData[x, z];
-                if (!cell.hasData || cell.isHole)
-                    continue;
-
-                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
-                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
-
-                float h00 = heightGrid[x, z] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h10 = heightGrid[x + 1, z] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h01 = heightGrid[x, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h11 = heightGrid[x + 1, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
-
-                int vStart = vertices.Count;
-                vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h10, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-unityX, h01, unityZ + cellSizeUnity));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h11, unityZ + cellSizeUnity));
-
-                normals.Add(normalsGrid[x, z]);
-                normals.Add(normalsGrid[x + 1, z]);
-                normals.Add(normalsGrid[x, z + 1]);
-                normals.Add(normalsGrid[x + 1, z + 1]);
-
-                // VP terrain textures are flipped vertically relative to Unity by default
-                UnityEngine.Vector2 uv0 = new UnityEngine.Vector2(0f, 1f);
-                UnityEngine.Vector2 uv1 = new UnityEngine.Vector2(1f, 1f);
-                UnityEngine.Vector2 uv2 = new UnityEngine.Vector2(0f, 0f);
-                UnityEngine.Vector2 uv3 = new UnityEngine.Vector2(1f, 0f);
-
-                // Rotate in-place for quarter turns (VP uses 0-3)
-                RotateUvQuarter(ref uv0, ref uv1, ref uv2, ref uv3, cell.rotation);
-
-                uvs.Add(uv0);
-                uvs.Add(uv1);
-                uvs.Add(uv2);
-                uvs.Add(uv3);
-
-                if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
-                {
-                    tris = new List<int>();
-                    trianglesByTex[cell.texture] = tris;
-                }
-
-                tris.AddRange(new[]
-                {
-                    vStart, vStart + 1, vStart + 2,
-                    vStart + 1, vStart + 3, vStart + 2
-                });
-            }
-        }
-
-        if (vertices.Count == 0 || trianglesByTex.Count == 0)
-            return null;
-
-        var mesh = new Mesh
-        {
-            indexFormat = vertices.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16,
-            name = $"VP_Terrain_{tileX}_{tileZ}"
-        };
-
-        mesh.SetVertices(vertices);
-        mesh.SetNormals(normals);
-        mesh.SetUVs(0, uvs);
-        mesh.subMeshCount = trianglesByTex.Count;
-
-        int subMesh = 0;
-        foreach (var kvp in trianglesByTex)
-        {
-            mesh.SetTriangles(kvp.Value, subMesh++);
-            materials.Add(GetTerrainMaterial(kvp.Key));
-        }
-
-        mesh.RecalculateBounds();
-        return mesh;
-    }
 
     // -------------------------
     // Model load + actions (budgeted)
@@ -1287,15 +1073,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             desiredTerrainTiles.Remove(tile);
             terrainTileNodes.Remove(tile);
 
-            // Remove cached heights for this tile
-            int tileSpan = Mathf.Max(1, terrainTileCellSpan);
-            for (int cz = 0; cz < tileSpan; cz++)
-            {
-                for (int cx = 0; cx < tileSpan; cx++)
-                {
-                    terrainCellCache.Remove((tile.tx * tileSpan + cx, tile.tz * tileSpan + cz));
-                }
-            }
+            terrainBuilder?.ClearTileCache(tile.tx, tile.tz);
 
             if (terrainTiles.TryGetValue(tile, out var go) && go != null)
                 Destroy(go);
@@ -1606,119 +1384,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return Quaternion.Normalize(unityQ);
     }
 
-    private byte ExtractTerrainRotation(object cell)
-    {
-        if (cell == null) return 0;
 
-        var type = cell.GetType();
-        var rotProp = type.GetProperty("Rotation") ?? type.GetProperty("TextureRotation");
-        if (rotProp != null)
-        {
-            try
-            {
-                var val = rotProp.GetValue(cell);
-                if (val is byte b) return b;
-                if (val is int i) return (byte)i;
-                if (val is short s) return (byte)s;
-                if (val is sbyte sb) return (byte)sb;
-                if (val is IConvertible conv)
-                    return (byte)conv.ToInt32(System.Globalization.CultureInfo.InvariantCulture);
-            }
-            catch { }
-        }
 
-        return 0;
-    }
 
-    private void RotateUvQuarter(ref UnityEngine.Vector2 uv0, ref UnityEngine.Vector2 uv1, ref UnityEngine.Vector2 uv2, ref UnityEngine.Vector2 uv3, byte rotation)
-    {
-        // VP rotation increases clockwise; we flipped the UVs vertically earlier,
-        // so reverse the rotation direction here to stay aligned with VP (0-3).
-        int r = ((-rotation) % 4 + 4) % 4;
-        if (r == 0) return;
-
-        for (int i = 0; i < r; i++)
-        {
-            // 90° clockwise rotation: (u,v) -> (v, 1-u)
-            uv0 = new UnityEngine.Vector2(uv0.y, 1f - uv0.x);
-            uv1 = new UnityEngine.Vector2(uv1.y, 1f - uv1.x);
-            uv2 = new UnityEngine.Vector2(uv2.y, 1f - uv2.x);
-            uv3 = new UnityEngine.Vector2(uv3.y, 1f - uv3.x);
-        }
-    }
-
-    private Material GetTerrainMaterial(ushort textureId)
-    {
-        if (terrainMaterialCache.TryGetValue(textureId, out var cached) && cached != null)
-            return cached;
-
-        var mat = terrainMaterialTemplate != null
-            ? new Material(terrainMaterialTemplate)
-            : new Material(Shader.Find("Standard"));
-
-        mat.name = $"Terrain_{textureId}";
-        terrainMaterialCache[textureId] = mat;
-
-        // Force smoothness down to match VP terrain visuals
-        if (mat.HasProperty("_Glossiness"))
-            mat.SetFloat("_Glossiness", 0.0f);
-        if (mat.HasProperty("_Smoothness"))
-            mat.SetFloat("_Smoothness", 0.0f);
-
-        if (!terrainDownloadsInFlight.Contains(textureId))
-            StartCoroutine(DownloadTerrainTexture(textureId, mat));
-
-        return mat;
-    }
-
-    private IEnumerator DownloadTerrainTexture(ushort textureId, Material target)
-    {
-        if (target == null)
-            yield break;
-
-        string basePath = string.IsNullOrWhiteSpace(objectPath) ? null : objectPath.TrimEnd('/') + "/";
-        if (string.IsNullOrEmpty(basePath))
-            yield break;
-
-        terrainDownloadsInFlight.Add(textureId);
-
-        string[] exts = { "jpg", "png" };
-        Texture2D texFound = null;
-        foreach (var ext in exts)
-        {
-            string url = $"{basePath}textures/terrain{textureId}.{ext}";
-            using (var req = UnityWebRequestTexture.GetTexture(url))
-            {
-                yield return req.SendWebRequest();
-
-#if UNITY_2020_1_OR_NEWER
-                bool hasError = req.result != UnityWebRequest.Result.Success;
-#else
-                bool hasError = req.isNetworkError || req.isHttpError;
-#endif
-
-                if (!hasError)
-                {
-                    texFound = DownloadHandlerTexture.GetContent(req);
-                    break;
-                }
-            }
-        }
-
-        if (texFound != null)
-        {
-            texFound.wrapMode = TextureWrapMode.Repeat;
-            target.mainTexture = texFound;
-            if (target.HasProperty("_BaseMap"))
-                target.SetTexture("_BaseMap", texFound);
-        }
-        else
-        {
-            Debug.LogWarning($"[VP] Failed to download terrain texture {textureId} (.jpg/.png)");
-        }
-
-        terrainDownloadsInFlight.Remove(textureId);
-    }
 
     private void OnGUI()
     {
