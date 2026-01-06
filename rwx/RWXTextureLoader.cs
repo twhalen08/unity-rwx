@@ -20,6 +20,7 @@ namespace RWXLoader
         private RWXAssetManager assetManager;
         private string currentObjectPath;
         private string objectPathPassword;
+        private bool DebugLogging => assetManager != null && assetManager.enableDebugLogs;
 
         private void Start()
         {
@@ -59,7 +60,13 @@ namespace RWXLoader
         private bool IsMaskFile(string fileName)
         {
             string lowerName = fileName.ToLower();
-            return lowerName.Contains("mask") || lowerName.Contains("_m") || fileName.EndsWith("m.bmp") || lowerName.Contains("tl01m");
+            string baseName = Path.GetFileNameWithoutExtension(fileName).ToLower();
+            return lowerName.Contains("mask")
+                || lowerName.Contains("_m")
+                || fileName.EndsWith("m.bmp", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
+                || lowerName.Contains("tl01m");
         }
 
         private bool TryDecompressGzip(byte[] data, out byte[] decompressedData)
@@ -300,7 +307,7 @@ namespace RWXLoader
             }
 
             // Try multiple file extensions
-            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".bmp.gz", ".bmp.zip", ".zip", ".tga", ".dds", ".dds.gz" };
             
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
@@ -421,6 +428,62 @@ namespace RWXLoader
                     effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
                 }
 
+                if (effectiveFileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var zipStream = new MemoryStream(workingData))
+                    using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
+                    {
+                        string targetBase = Path.GetFileNameWithoutExtension(fileName);
+                        ZipArchiveEntry entry = null;
+
+                        // Prefer an entry whose basename matches the zip name, otherwise first file
+                        foreach (var e in archive.Entries)
+                        {
+                            if (string.IsNullOrEmpty(e.Name))
+                            {
+                                continue;
+                            }
+
+                            string entryBase = Path.GetFileNameWithoutExtension(e.Name);
+                            if (entryBase.Equals(targetBase, StringComparison.OrdinalIgnoreCase))
+                            {
+                                entry = e;
+                                break;
+                            }
+
+                            // Fallback: pick the first BMP/PNG/JPG if we haven't chosen one yet
+                            if (entry == null)
+                            {
+                                string ext = Path.GetExtension(e.Name);
+                                if (ext.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                    ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    entry = e;
+                                }
+                            }
+                        }
+
+                if (entry == null)
+                {
+                    if (DebugLogging)
+                    {
+                        Debug.LogWarning($"[RWXTextureLoader] No entries found in zip '{effectiveFileName}' when attempting to load texture.");
+                    }
+                    return null;
+                }
+
+                using (var entryStream = entry.Open())
+                using (var ms = new MemoryStream())
+                        {
+                            entryStream.CopyTo(ms);
+                            workingData = ms.ToArray();
+                            effectiveFileName = entry.Name;
+                        }
+                    }
+                }
+
                 if (effectiveFileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
                 {
                     Texture2D ddsTexture = LoadDdsTexture(workingData, effectiveFileName);
@@ -445,7 +508,7 @@ namespace RWXLoader
                     Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
-                    if (effectiveFileName.EndsWith(".bmp"))
+                    if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
                     {
                         RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
                         if (bmpDecoder != null)
@@ -552,10 +615,16 @@ namespace RWXLoader
                 if (isMask)
                 {
                     possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_tl01m.bmp"
-                        baseName + ".bmp",   // e.g., "t_tl01m.bmp"
-                        baseName + ".BMP",   // uppercase variant
-                        baseName,            // just the base name
+                        textureNameWithExt,     // e.g., "t_tl01m.bmp"
+                        baseName + ".bmp",      // e.g., "t_tl01m.bmp"
+                        baseName + ".BMP",      // uppercase variant
+                        baseName + ".bmp.gz",   // gzipped BMP
+                        baseName + ".BMP.GZ",   // uppercase gzipped BMP
+                        baseName + ".bmp.zip",  // zipped BMP
+                        baseName + ".BMP.ZIP",  // uppercase zipped BMP
+                        baseName + ".zip",      // plain zipped BMP
+                        baseName + ".ZIP",      // uppercase plain zipped BMP
+                        baseName,               // just the base name
                     };
                 }
                 else
@@ -597,6 +666,15 @@ namespace RWXLoader
                         onComplete?.Invoke(texture);
                         yield break;
                     }
+                    else if (DebugLogging)
+                    {
+                        Debug.LogWarning($"[RWXTextureLoader] Failed to decode texture data from '{foundFileName}' inside '{zipFileName}'.");
+                    }
+                }
+                else if (DebugLogging)
+                {
+                    string triedNames = string.Join(", ", possibleNames);
+                    Debug.LogWarning($"[RWXTextureLoader] Could not find any matching entries in '{zipFileName}'. Tried: {triedNames}");
                 }
             }
             finally
@@ -623,35 +701,51 @@ namespace RWXLoader
         {
             // Ensure texture has proper extension for remote download
             string textureNameWithExt = EnsureTextureExtension(textureName, isMask);
+            string baseName = Path.GetFileNameWithoutExtension(textureNameWithExt);
 
-            bool downloadSuccess = false;
-            string localTexturePath = "";
-
-            yield return assetManager.DownloadTexture(currentObjectPath, textureNameWithExt, (success, result) =>
+                var candidateNames = new List<string> { textureNameWithExt };
+            if (isMask)
             {
-                downloadSuccess = success;
-                localTexturePath = result;
-            }, objectPathPassword);
+                candidateNames.Add(baseName + ".bmp.gz");
+                candidateNames.Add(baseName + ".BMP.GZ");
+                candidateNames.Add(baseName + ".bmp.zip");
+                candidateNames.Add(baseName + ".BMP.ZIP");
+                candidateNames.Add(baseName + ".zip");
+                candidateNames.Add(baseName + ".ZIP");
+            }
 
-            if (downloadSuccess && File.Exists(localTexturePath))
+            foreach (string candidate in candidateNames)
             {
-                byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
-                if (texture != null)
+                bool downloadSuccess = false;
+                string localTexturePath = "";
+
+                yield return assetManager.DownloadTexture(currentObjectPath, candidate, (success, result) =>
                 {
-                    string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
-                    textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
-                    onComplete?.Invoke(texture);
-                }
-                else
+                    downloadSuccess = success;
+                    localTexturePath = result;
+                }, objectPathPassword);
+
+                if (downloadSuccess && File.Exists(localTexturePath))
                 {
-                    onComplete?.Invoke(null);
+                    byte[] fileData = File.ReadAllBytes(localTexturePath);
+                    Texture2D texture = LoadTextureFromBytes(fileData, candidate, isMask, isDoubleSided);
+                    if (texture != null)
+                    {
+                        string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
+                        textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
+                        onComplete?.Invoke(texture);
+                        yield break;
+                    }
                 }
             }
-            else
+
+            if (DebugLogging)
             {
-                onComplete?.Invoke(null);
+                string attempted = string.Join(", ", candidateNames);
+                Debug.LogWarning($"[RWXTextureLoader] Remote download failed for '{textureName}' (mask={isMask}). Tried: {attempted}");
             }
+
+            onComplete?.Invoke(null);
         }
 
         /// <summary>
