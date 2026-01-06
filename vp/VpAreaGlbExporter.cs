@@ -179,7 +179,8 @@ public class VpAreaGlbExporter : MonoBehaviour
             TerrainNodeCellSpan = terrainNodeCellSpan,
             TerrainHeightOffset = terrainHeightOffset,
             TerrainMaterialTemplate = terrainMaterialTemplate,
-            ObjectPath = objectPath
+            ObjectPath = objectPath,
+            ObjectPathPassword = objectPathPassword
         };
     }
 
@@ -400,7 +401,9 @@ public class VpAreaGlbExporter : MonoBehaviour
         var colliderStates = colliders.Select(c => (collider: c, enabled: c.enabled)).ToList();
         foreach (var c in colliders) c.enabled = false;
 
-        bool exported = TryExportWithUnityGLTF(root, path) || TryExportWithSiccity(root, path);
+        bool exported = TryExportWithGltfast(root, path)
+            || TryExportWithUnityGLTF(root, path)
+            || TryExportWithSiccity(root, path);
 
         foreach (var pair in colliderStates)
             pair.collider.enabled = pair.enabled;
@@ -469,6 +472,109 @@ public class VpAreaGlbExporter : MonoBehaviour
                 {
                     Log($"[VP Export] UnityGLTF export attempt failed via {method.Name}: {ex.Message}");
                 }
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryExportWithGltfast(GameObject root, string path)
+    {
+        var exportType = Type.GetType("GLTFast.GltfExport, glTFast") ?? Type.GetType("GLTFast.GltfExport");
+        if (exportType == null)
+            return false;
+
+        object exportInstance = null;
+        try
+        {
+            exportInstance = Activator.CreateInstance(exportType);
+        }
+        catch (Exception ex)
+        {
+            Log($"[VP Export] glTFast: failed to create exporter: {ex.Message}");
+            return false;
+        }
+
+        object exportSettings = null;
+        var exportSettingsType = Type.GetType("GLTFast.Export.ExportSettings, glTFast") ?? Type.GetType("GLTFast.Export.ExportSettings");
+        if (exportSettingsType != null)
+        {
+            try
+            {
+                exportSettings = Activator.CreateInstance(exportSettingsType);
+                var formatProp = exportSettingsType.GetProperty("Format");
+                if (formatProp != null && formatProp.PropertyType.IsEnum)
+                {
+                    var enumValue = Enum.Parse(formatProp.PropertyType, "Glb", ignoreCase: true);
+                    formatProp.SetValue(exportSettings, enumValue);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[VP Export] glTFast: failed to prepare export settings: {ex.Message}");
+            }
+        }
+
+        bool added = false;
+        foreach (var method in exportType.GetMethods().Where(m => m.Name == "AddScene"))
+        {
+            try
+            {
+                var parameters = method.GetParameters();
+                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(GameObject))
+                {
+                    var result = method.Invoke(exportInstance, new object[] { root });
+                    added = result is bool b ? b : true;
+                }
+                else if (parameters.Length == 1 && parameters[0].ParameterType == typeof(GameObject[]))
+                {
+                    var result = method.Invoke(exportInstance, new object[] { new[] { root } });
+                    added = result is bool b ? b : true;
+                }
+                else if (parameters.Length == 2 && parameters[0].ParameterType == typeof(GameObject) && exportSettings != null && parameters[1].ParameterType.IsInstanceOfType(exportSettings))
+                {
+                    var result = method.Invoke(exportInstance, new object[] { root, exportSettings });
+                    added = result is bool b ? b : true;
+                }
+                else if (parameters.Length == 2 && parameters[0].ParameterType == typeof(GameObject[]) && exportSettings != null && parameters[1].ParameterType.IsInstanceOfType(exportSettings))
+                {
+                    var result = method.Invoke(exportInstance, new object[] { new[] { root }, exportSettings });
+                    added = result is bool b ? b : true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[VP Export] glTFast AddScene failed via {method}: {ex.Message}");
+            }
+
+            if (added)
+                break;
+        }
+
+        if (!added)
+            return false;
+
+        var saveMethods = new[]
+        {
+            ("SaveToFileAndDispose", new[] { typeof(string) }),
+            ("SaveToFile", new[] { typeof(string) })
+        };
+
+        foreach (var (name, sig) in saveMethods)
+        {
+            var method = exportType.GetMethod(name, sig);
+            if (method == null)
+                continue;
+
+            try
+            {
+                var result = method.Invoke(exportInstance, new object[] { path });
+                if (result == null || (result is bool b && b))
+                    return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"[VP Export] glTFast {name} failed: {ex.Message}");
             }
         }
 

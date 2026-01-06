@@ -292,7 +292,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             TerrainNodeCellSpan = terrainNodeCellSpan,
             TerrainHeightOffset = terrainHeightOffset,
             TerrainMaterialTemplate = terrainMaterialTemplate,
-            ObjectPath = objectPath
+            ObjectPath = objectPath,
+            ObjectPathPassword = objectPathPassword
         };
 
         if (streamTerrain && terrainMaterialTemplate == null)
@@ -310,6 +311,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             terrainBuilder.TerrainHeightOffset = terrainHeightOffset;
             terrainBuilder.TerrainMaterialTemplate = terrainMaterialTemplate;
             terrainBuilder.ObjectPath = objectPath;
+            terrainBuilder.ObjectPathPassword = objectPathPassword;
         }
 
         if (streamTerrain && terrainRoot == null)

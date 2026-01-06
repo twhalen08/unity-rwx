@@ -39,6 +39,7 @@ public class VpTerrainBuilder
     public Material TerrainMaterialTemplate { get; set; }
         = new Material(Shader.Find("Standard")) { name = "VP Terrain Material" };
     public string ObjectPath { get; set; } = string.Empty;
+    public string ObjectPathPassword { get; set; } = string.Empty;
 
     public IReadOnlyDictionary<(int cx, int cz), TerrainCellCacheEntry> TerrainCellCache => terrainCellCache;
     public bool HasActiveDownloads => terrainDownloadsInFlight.Count > 0;
@@ -330,6 +331,12 @@ public class VpTerrainBuilder
         foreach (var ext in exts)
         {
             string url = $"{basePath}textures/terrain{textureId}.{ext}";
+
+            if (!string.IsNullOrWhiteSpace(ObjectPathPassword))
+            {
+                string separator = url.Contains("?") ? "&" : "?";
+                url = $"{url}{separator}password={UnityWebRequest.EscapeURL(ObjectPathPassword)}";
+            }
             using (var req = UnityWebRequestTexture.GetTexture(url))
             {
                 yield return req.SendWebRequest();
