@@ -481,11 +481,19 @@ public class VpAreaGlbExporter : MonoBehaviour
 
     private bool TryExportWithGltfast(GameObject root, string path)
     {
-        var exportType = Type.GetType("GLTFast.GltfExport, glTFast") ?? Type.GetType("GLTFast.GltfExport");
+        Type exportType = FindType(
+            "GLTFast.Export.GltfExport, glTFast",
+            "GLTFast.GltfExport, glTFast",
+            "GLTFast.Export.GltfExport",
+            "GLTFast.GltfExport");
         if (exportType == null)
         {
             Log("[VP Export] glTFast exporter not found, falling back.");
             return false;
+        }
+        else
+        {
+            Log($"[VP Export] glTFast exporter detected: {exportType.FullName}");
         }
 
         object exportInstance = null;
@@ -500,11 +508,14 @@ public class VpAreaGlbExporter : MonoBehaviour
         }
 
         object exportSettings = null;
-        var exportSettingsType = Type.GetType("GLTFast.Export.ExportSettings, glTFast") ?? Type.GetType("GLTFast.Export.ExportSettings");
+        Type exportSettingsType = FindType(
+            "GLTFast.Export.ExportSettings, glTFast",
+            "GLTFast.Export.ExportSettings");
         if (exportSettingsType != null)
         {
             try
             {
+                Log($"[VP Export] glTFast ExportSettings detected: {exportSettingsType.FullName}");
                 exportSettings = Activator.CreateInstance(exportSettingsType);
                 var formatProp = exportSettingsType.GetProperty("Format");
                 if (formatProp != null && formatProp.PropertyType.IsEnum)
@@ -524,7 +535,11 @@ public class VpAreaGlbExporter : MonoBehaviour
         }
 
         bool added = false;
-        foreach (var method in exportType.GetMethods().Where(m => m.Name == "AddScene"))
+        var addSceneMethods = exportType.GetMethods().Where(m => m.Name == "AddScene").ToList();
+        if (addSceneMethods.Count == 0)
+            Log("[VP Export] glTFast AddScene method not found; falling back.");
+
+        foreach (var method in addSceneMethods)
         {
             try
             {
@@ -593,6 +608,33 @@ public class VpAreaGlbExporter : MonoBehaviour
         }
 
         return false;
+    }
+
+    private Type FindType(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var t = Type.GetType(name);
+            if (t != null) return t;
+        }
+
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            foreach (var name in names)
+            {
+                var t = asm.GetType(name, false);
+                if (t != null) return t;
+            }
+
+            try
+            {
+                var match = asm.GetTypes().FirstOrDefault(t => names.Any(n => t.FullName == n || t.Name == n || t.FullName?.EndsWith(n, StringComparison.OrdinalIgnoreCase) == true));
+                if (match != null) return match;
+            }
+            catch { }
+        }
+
+        return null;
     }
 
     private bool TryExportWithSiccity(GameObject root, string path)
