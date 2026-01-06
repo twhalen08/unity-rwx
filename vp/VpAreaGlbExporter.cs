@@ -48,6 +48,7 @@ public class VpAreaGlbExporter : MonoBehaviour
 
     [Header("Logging")]
     public bool logProgress = true;
+    public bool autoStartOnPlay = true;
 
     private VirtualParadiseClient vpClient;
     private VpTerrainBuilder terrainBuilder;
@@ -64,6 +65,15 @@ public class VpAreaGlbExporter : MonoBehaviour
         _ = ExportAsync();
     }
 
+    private void Start()
+    {
+        if (autoStartOnPlay)
+        {
+            Log($"[VP Export] Auto-starting export. Center=({centerCellX},{centerCellZ}) Radius={radiusCells} IncludeModels={includeModels} IncludeTerrain={includeTerrain}");
+            _ = ExportAsync();
+        }
+    }
+
     public async Task ExportAsync()
     {
         if (exporting)
@@ -76,6 +86,7 @@ public class VpAreaGlbExporter : MonoBehaviour
 
         try
         {
+            Log("[VP Export] Preparing export pipeline...");
             SetupModelLoader();
             SetupTerrainBuilder();
 
@@ -121,6 +132,7 @@ public class VpAreaGlbExporter : MonoBehaviour
             }
         };
 
+        Log($"[VP Export] Connecting to world '{worldName}' as {userName}...");
         await vpClient.LoginAndEnterAsync("", true);
         Log($"[VP Export] Connected & entered '{worldName}' as {userName}");
     }
@@ -495,10 +507,9 @@ public class VpAreaGlbExporter : MonoBehaviour
 
     private void Log(string message)
     {
-        if (!logProgress)
-            return;
+        if (logProgress)
+            Debug.Log(message);
 
-        Debug.Log(message);
         OnLog?.Invoke(message);
     }
 }
