@@ -45,6 +45,7 @@ public class VpAreaGlbExporter : MonoBehaviour
     public float terrainHeightOffset = -0.01f;
     public Material terrainMaterialTemplate;
     public bool addTerrainColliders = false;
+    private readonly Dictionary<(int tx, int tz), TerrainNode[]> terrainTileNodes = new();
 
     [Header("Logging")]
     public bool logProgress = true;
@@ -159,6 +160,14 @@ public class VpAreaGlbExporter : MonoBehaviour
 
     private void SetupTerrainBuilder()
     {
+        if (includeTerrain && terrainMaterialTemplate == null)
+        {
+            terrainMaterialTemplate = new Material(Shader.Find("Standard"))
+            {
+                name = "VP Terrain Material"
+            };
+        }
+
         terrainBuilder = new VpTerrainBuilder(
             GetUnityUnitsPerVpCell,
             GetUnityUnitsPerVpUnit,
@@ -172,14 +181,6 @@ public class VpAreaGlbExporter : MonoBehaviour
             TerrainMaterialTemplate = terrainMaterialTemplate,
             ObjectPath = objectPath
         };
-
-        if (includeTerrain && terrainMaterialTemplate == null)
-        {
-            terrainMaterialTemplate = new Material(Shader.Find("Standard"))
-            {
-                name = "VP Terrain Material"
-            };
-        }
     }
 
     private async Task LoadCellsAndModels()
@@ -188,22 +189,32 @@ public class VpAreaGlbExporter : MonoBehaviour
         {
             for (int cx = centerCellX - radiusCells; cx <= centerCellX + radiusCells; cx++)
             {
-                var cell = await vpClient.QueryCellAsync(cx, cz);
-                var cellRoot = new GameObject($"Cell_{cx}_{cz}");
-                cellRoot.transform.SetParent(modelsRoot.transform, false);
-
-                foreach (var obj in cell.Objects)
+                try
                 {
-                    if (string.IsNullOrEmpty(obj.Model))
-                        continue;
+                    Log($"[VP Export] Loading cell ({cx},{cz})...");
+                    var cell = await vpClient.QueryCellAsync(cx, cz);
+                    var cellRoot = new GameObject($"Cell_{cx}_{cz}");
+                    cellRoot.transform.SetParent(modelsRoot.transform, false);
 
-                    await SpawnModelAsync(
-                        obj.Model,
-                        obj.Action,
-                        obj.Position,
-                        obj.Rotation,
-                        obj.Angle,
-                        cellRoot.transform);
+                    foreach (var obj in cell.Objects)
+                    {
+                        if (string.IsNullOrEmpty(obj.Model))
+                            continue;
+
+                        await SpawnModelAsync(
+                            obj.Model,
+                            obj.Action,
+                            obj.Position,
+                            obj.Rotation,
+                            obj.Angle,
+                            cellRoot.transform);
+                    }
+
+                    Log($"[VP Export] Finished cell ({cx},{cz}) with {cell.Objects.Count} objects.");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[VP Export] Failed to load cell ({cx},{cz}): {ex.Message}");
                 }
             }
         }
@@ -277,30 +288,102 @@ public class VpAreaGlbExporter : MonoBehaviour
 
     private async Task BuildTerrainTileAsync(int tileX, int tileZ)
     {
-        terrainBuilder.TerrainTileCellSpan = terrainTileCellSpan;
-        terrainBuilder.TerrainNodeCellSpan = terrainNodeCellSpan;
-        terrainBuilder.TerrainHeightOffset = terrainHeightOffset;
-        terrainBuilder.TerrainMaterialTemplate = terrainMaterialTemplate;
-        terrainBuilder.ObjectPath = objectPath;
+        try
+        {
+            terrainBuilder.TerrainTileCellSpan = terrainTileCellSpan;
+            terrainBuilder.TerrainNodeCellSpan = terrainNodeCellSpan;
+            terrainBuilder.TerrainHeightOffset = terrainHeightOffset;
+            terrainBuilder.TerrainMaterialTemplate = terrainMaterialTemplate;
+            terrainBuilder.ObjectPath = objectPath;
 
-        var nodes = await vpClient.QueryTerrainAsync(tileX, tileZ, Enumerable.Repeat(-1, 16).ToArray());
-        var mesh = terrainBuilder.BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
-        if (mesh == null)
+            Log($"[VP Export] Loading terrain tile ({tileX},{tileZ})...");
+            var nodes = await vpClient.QueryTerrainAsync(tileX, tileZ, Enumerable.Repeat(-1, 16).ToArray());
+            terrainTileNodes[(tileX, tileZ)] = nodes;
+
+            var mesh = terrainBuilder.BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
+            if (mesh == null)
+            {
+                Log($"[VP Export] Terrain tile ({tileX},{tileZ}) returned no mesh.");
+                return;
+            }
+
+            var go = new GameObject($"Terrain_{tileX}_{tileZ}");
+            go.transform.SetParent(terrainRoot.transform, false);
+
+            var mf = go.AddComponent<MeshFilter>();
+            mf.sharedMesh = mesh;
+
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.sharedMaterials = materials.ToArray();
+
+            if (addTerrainColliders)
+            {
+                var mc = go.AddComponent<MeshCollider>();
+                mc.sharedMesh = mesh;
+            }
+
+            RebuildNeighborTile(tileX - 1, tileZ);
+            RebuildNeighborTile(tileX + 1, tileZ);
+            RebuildNeighborTile(tileX, tileZ - 1);
+            RebuildNeighborTile(tileX, tileZ + 1);
+        }
+        catch (Exception ex)
+        {
+            Log($"[VP Export] Failed to build terrain tile ({tileX},{tileZ}): {ex.Message}");
+        }
+    }
+
+    private void RebuildNeighborTile(int tileX, int tileZ)
+    {
+        var key = (tileX, tileZ);
+        if (!terrainTileNodes.TryGetValue(key, out var nodes))
             return;
 
-        var go = new GameObject($"Terrain_{tileX}_{tileZ}");
-        go.transform.SetParent(terrainRoot.transform, false);
-
-        var mf = go.AddComponent<MeshFilter>();
-        mf.sharedMesh = mesh;
-
-        var mr = go.AddComponent<MeshRenderer>();
-        mr.sharedMaterials = materials.ToArray();
-
-        if (addTerrainColliders)
+        try
         {
-            var mc = go.AddComponent<MeshCollider>();
-            mc.sharedMesh = mesh;
+            var mesh = terrainBuilder.BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
+            if (mesh == null)
+                return;
+
+            var existing = terrainRoot.transform.Find($"Terrain_{tileX}_{tileZ}");
+            GameObject go;
+
+            if (existing != null)
+            {
+                go = existing.gameObject;
+                var mf = go.GetComponent<MeshFilter>() ?? go.AddComponent<MeshFilter>();
+                mf.sharedMesh = mesh;
+
+                var mr = go.GetComponent<MeshRenderer>() ?? go.AddComponent<MeshRenderer>();
+                mr.sharedMaterials = materials.ToArray();
+
+                if (addTerrainColliders)
+                {
+                    var mc = go.GetComponent<MeshCollider>() ?? go.AddComponent<MeshCollider>();
+                    mc.sharedMesh = mesh;
+                }
+            }
+            else
+            {
+                go = new GameObject($"Terrain_{tileX}_{tileZ}");
+                go.transform.SetParent(terrainRoot.transform, false);
+
+                var mf = go.AddComponent<MeshFilter>();
+                mf.sharedMesh = mesh;
+
+                var mr = go.AddComponent<MeshRenderer>();
+                mr.sharedMaterials = materials.ToArray();
+
+                if (addTerrainColliders)
+                {
+                    var mc = go.AddComponent<MeshCollider>();
+                    mc.sharedMesh = mesh;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"[VP Export] Failed to rebuild neighbor terrain ({tileX},{tileZ}): {ex.Message}");
         }
     }
 
