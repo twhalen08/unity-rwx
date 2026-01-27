@@ -946,8 +946,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         loadedObject.transform.SetParent(null, false);
         loadedObject.SetActive(false);
 
+        UnityEngine.Vector3 camPos = GetCameraWorldPos();
+        pendingInstances.Sort((a, b) =>
+            ComputeModelPriority(a.position, camPos).CompareTo(ComputeModelPriority(b.position, camPos)));
+
         var spawnedInstances = new List<SpawnedModelInstance>();
         int index = 0;
+        float spawnStart = Time.realtimeSinceStartup;
 
         while (index < pendingInstances.Count)
         {
@@ -992,6 +997,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 createActions = createActions,
                 activateActions = activateActions
             });
+
+            float elapsedMs = (Time.realtimeSinceStartup - spawnStart) * 1000f;
+            if (elapsedMs >= modelWorkBudgetMs)
+            {
+                yield return null;
+                spawnStart = Time.realtimeSinceStartup;
+            }
         }
 
         if (spawnedInstances.Count == 0)
