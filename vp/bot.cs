@@ -119,25 +119,36 @@ public class VPWorldAreaLoader : MonoBehaviour
 
     private IEnumerator QueryAndBuildAreaProgressively()
     {
+        var cellTasks = new Dictionary<(int cellX, int cellY), Task<QueryCellResult>>();
+
         for (int dx = -radius; dx <= radius; dx++)
         {
             for (int dy = -radius; dy <= radius; dy++)
             {
-                var cellTask = vpClient.QueryCellAsync(centerX + dx, centerY + dy);
-                yield return WaitForTask(cellTask);
-
-                if (cellTask.IsFaulted || cellTask.IsCanceled)
-                {
-                    string message = cellTask.IsFaulted
-                        ? cellTask.Exception?.GetBaseException().Message
-                        : "Query was cancelled";
-                    Debug.LogWarning($"[VP] Failed to query cell ({centerX + dx}, {centerY + dy}): {message}");
-                    continue;
-                }
-
-                ProcessCell(cellTask.Result);
-                yield return null;
+                int cellX = centerX + dx;
+                int cellY = centerY + dy;
+                cellTasks[(cellX, cellY)] = vpClient.QueryCellAsync(cellX, cellY);
             }
+        }
+
+        var queryAllTask = Task.WhenAll(cellTasks.Values);
+        yield return WaitForTask(queryAllTask);
+
+        foreach (var kvp in cellTasks)
+        {
+            var cellTask = kvp.Value;
+
+            if (cellTask.IsFaulted || cellTask.IsCanceled)
+            {
+                string message = cellTask.IsFaulted
+                    ? cellTask.Exception?.GetBaseException().Message
+                    : "Query was cancelled";
+                Debug.LogWarning($"[VP] Failed to query cell ({kvp.Key.cellX}, {kvp.Key.cellY}): {message}");
+                continue;
+            }
+
+            ProcessCell(cellTask.Result);
+            yield return null;
         }
 
         while (pendingModelLoads.Count > 0 || loadQueueCoroutine != null)
