@@ -274,8 +274,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public string action;
     }
 
+    private struct SpawnedModelInstance
+    {
+        public (int cx, int cy) cell;
+        public GameObject instance;
+        public List<VpActionCommand> createActions;
+        public List<VpActionCommand> activateActions;
+    }
+
     // Model priority heap: smallest priority loads first
     private readonly MinHeap<PendingModelLoad> modelHeap = new MinHeap<PendingModelLoad>();
+    private readonly Dictionary<string, List<PendingModelLoad>> pendingModelGroups = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
 
     private int inFlightCellQueries = 0;
     private int inFlightModelLoads = 0;
@@ -434,25 +443,36 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             {
                 var req = modelHeap.PopMin();
 
+                if (!pendingModelGroups.TryGetValue(req.modelName, out var pendingInstances) ||
+                    pendingInstances == null ||
+                    pendingInstances.Count == 0)
+                {
+                    continue;
+                }
+
                 if (dropModelsFromUnloadedCells)
                 {
-                    if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
+                    bool hasValidInstance = false;
+                    for (int i = 0; i < pendingInstances.Count; i++)
+                    {
+                        if (cellRoots.TryGetValue(pendingInstances[i].cell, out var cellRoot) && cellRoot != null)
+                        {
+                            hasValidInstance = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasValidInstance)
+                    {
+                        pendingInstances.Clear();
+                        pendingModelGroups.Remove(req.modelName);
                         continue;
-
-                    inFlightModelLoads++;
-                    startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, cellRoot.transform));
+                    }
                 }
-                else
-                {
-                    Transform parent = null;
-                    if (cellRoots.TryGetValue(req.cell, out var cellRoot) && cellRoot != null)
-                        parent = cellRoot.transform;
 
-                    inFlightModelLoads++;
-                    startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, parent));
-                }
+                inFlightModelLoads++;
+                startedThisFrame++;
+                StartCoroutine(LoadOneModelBudgeted(req.modelName, pendingInstances));
             }
 
             yield return null;
@@ -550,8 +570,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 action = obj.Action
             };
 
-            float pri = ComputeModelPriority(pos, camPos);
-            modelHeap.Push(req, pri);
+            if (!pendingModelGroups.TryGetValue(modelName, out var group))
+            {
+                group = new List<PendingModelLoad>();
+                pendingModelGroups[modelName] = group;
+            }
+
+            group.Add(req);
+
+            if (group.Count == 1)
+            {
+                float pri = ComputeModelPriority(pos, camPos);
+                modelHeap.Push(req, pri);
+            }
         }
     }
 
@@ -877,27 +908,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     // Model load + actions (budgeted)
     // -------------------------
-    private IEnumerator LoadOneModelBudgeted(PendingModelLoad req, Transform parent)
+    private IEnumerator LoadOneModelBudgeted(string modelName, List<PendingModelLoad> pendingInstances)
     {
-        string modelId = Path.GetFileNameWithoutExtension(req.modelName);
+        string modelId = Path.GetFileNameWithoutExtension(modelName);
 
         bool completed = false;
         GameObject loadedObject = null;
         string errorMessage = null;
-        List<VpActionCommand> createActions = null;
-        List<VpActionCommand> activateActions = null;
+        const bool activateOnInstantiate = false;
 
-        if (!string.IsNullOrWhiteSpace(req.action))
-        {
-            VpActionParser.Parse(req.action, out createActions, out activateActions);
-        }
-
-        createActions ??= new List<VpActionCommand>();
-        activateActions ??= new List<VpActionCommand>();
-
-        bool activateOnInstantiate = createActions.Count == 0;
-
-        modelLoader.parentTransform = parent;
+        modelLoader.parentTransform = null;
 
         modelLoader.LoadModelFromRemote(
             modelId,
@@ -919,104 +939,168 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         if (loadedObject == null)
         {
-            Debug.LogError($"RWX load failed: {req.modelName} (normalized='{modelId}') → {errorMessage}");
+            Debug.LogError($"RWX load failed: {modelName} (normalized='{modelId}') → {errorMessage}");
             yield break;
         }
 
-        // Phase 1: cheap transform setup
-        loadedObject.transform.localPosition = req.position;
-        loadedObject.transform.localRotation = req.rotation;
-        ApplyModelBaseScale(loadedObject);
-        EnsureModelColliders(loadedObject);
+        loadedObject.transform.SetParent(null, false);
+        loadedObject.SetActive(false);
+
+        var spawnedInstances = new List<SpawnedModelInstance>();
+        int index = 0;
+
+        while (index < pendingInstances.Count)
+        {
+            var req = pendingInstances[index];
+            index++;
+
+            Transform instanceParent = null;
+            if (dropModelsFromUnloadedCells)
+            {
+                if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
+                    continue;
+                instanceParent = cellRoot.transform;
+            }
+            else
+            {
+                if (cellRoots.TryGetValue(req.cell, out var cellRoot) && cellRoot != null)
+                    instanceParent = cellRoot.transform;
+            }
+
+            var instance = Instantiate(loadedObject);
+            instance.transform.SetParent(instanceParent, false);
+            instance.transform.localPosition = req.position;
+            instance.transform.localRotation = req.rotation;
+            ApplyModelBaseScale(instance);
+            EnsureModelColliders(instance);
+
+            List<VpActionCommand> createActions = null;
+            List<VpActionCommand> activateActions = null;
+
+            if (!string.IsNullOrWhiteSpace(req.action))
+            {
+                VpActionParser.Parse(req.action, out createActions, out activateActions);
+            }
+
+            createActions ??= new List<VpActionCommand>();
+            activateActions ??= new List<VpActionCommand>();
+
+            spawnedInstances.Add(new SpawnedModelInstance
+            {
+                cell = req.cell,
+                instance = instance,
+                createActions = createActions,
+                activateActions = activateActions
+            });
+        }
+
+        if (spawnedInstances.Count == 0)
+        {
+            Destroy(loadedObject);
+            pendingInstances.Clear();
+            pendingModelGroups.Remove(modelName);
+            yield break;
+        }
 
         // Give Unity a frame before heavier work
         yield return null;
 
-        // If the cell vanished while we were loading, discard the object (optional)
-        if (dropModelsFromUnloadedCells)
+        for (int i = 0; i < spawnedInstances.Count; i++)
         {
-            if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
-            {
-                Destroy(loadedObject);
-                yield break;
-            }
-        }
+            var spawned = spawnedInstances[i];
+            var instance = spawned.instance;
 
-        // Phase 2: apply actions (time-sliced)
-        if (createActions.Count > 0 || activateActions.Count > 0)
-        {
-            if (logCreateActions && createActions.Count > 0)
-                Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
-
-            if (!sliceActionApplication)
+            if (dropModelsFromUnloadedCells)
             {
-                foreach (var a in createActions)
-                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
-            }
-            else
-            {
-                PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
-
-                if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                if (!cellRoots.TryGetValue(spawned.cell, out var cellRoot) || cellRoot == null)
                 {
-                    var preprocessJob = new PreprocessActionJob
-                    {
-                        inputs = preprocessInputs,
-                        outputs = preprocessOutputs
-                    };
-
-                    int batchSize = math.max(1, preprocessInputs.Length / 4);
-                    preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
-
-                    preprocessedActionResults.Clear();
-                    for (int i = 0; i < preprocessOutputs.Length; i++)
-                        preprocessedActionResults.Add(preprocessOutputs[i]);
-                }
-
-                if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
-                if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
-
-                float start = Time.realtimeSinceStartup;
-
-                for (int i = 0; i < actionApplySteps.Count; i++)
-                {
-                    var step = actionApplySteps[i];
-
-                    if (step.isPreprocessed)
-                    {
-                        if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
-                            ApplyPreprocessedCreateAction(loadedObject, preprocessedActionResults[step.preprocessedIndex]);
-                    }
-                    else if (step.command != null)
-                    {
-                        VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
-                    }
-
-                    float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
-                    if (elapsedMs >= modelWorkBudgetMs)
-                    {
-                        yield return null;
-                        start = Time.realtimeSinceStartup;
-                    }
+                    Destroy(instance);
+                    continue;
                 }
             }
 
-            // Activate actions are stored (cheap)
-            if (activateActions.Count > 0)
-            {
-                var act = loadedObject.GetComponent<VpActivateActions>();
-                if (act == null) act = loadedObject.AddComponent<VpActivateActions>();
-                act.actions.AddRange(activateActions);
+            var createActions = spawned.createActions;
+            var activateActions = spawned.activateActions;
 
-                if (logActivateActions)
-                    Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
+            if (createActions.Count > 0 || activateActions.Count > 0)
+            {
+                if (logCreateActions && createActions.Count > 0)
+                    Debug.Log($"[VP Create] {instance.name} will run {createActions.Count} actions");
+
+                if (!sliceActionApplication)
+                {
+                    foreach (var a in createActions)
+                        VpActionExecutor.ExecuteCreate(instance, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+                }
+                else
+                {
+                    PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
+
+                    if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                    {
+                        var preprocessJob = new PreprocessActionJob
+                        {
+                            inputs = preprocessInputs,
+                            outputs = preprocessOutputs
+                        };
+
+                        int batchSize = math.max(1, preprocessInputs.Length / 4);
+                        preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
+
+                        preprocessedActionResults.Clear();
+                        for (int j = 0; j < preprocessOutputs.Length; j++)
+                            preprocessedActionResults.Add(preprocessOutputs[j]);
+                    }
+
+                    if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
+                    if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
+
+                    float start = Time.realtimeSinceStartup;
+
+                    for (int j = 0; j < actionApplySteps.Count; j++)
+                    {
+                        var step = actionApplySteps[j];
+
+                        if (step.isPreprocessed)
+                        {
+                            if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
+                                ApplyPreprocessedCreateAction(instance, preprocessedActionResults[step.preprocessedIndex]);
+                        }
+                        else if (step.command != null)
+                        {
+                            VpActionExecutor.ExecuteCreate(instance, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
+                        }
+
+                        float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
+                        if (elapsedMs >= modelWorkBudgetMs)
+                        {
+                            yield return null;
+                            start = Time.realtimeSinceStartup;
+                        }
+                    }
+                }
+
+                // Activate actions are stored (cheap)
+                if (activateActions.Count > 0)
+                {
+                    var act = instance.GetComponent<VpActivateActions>();
+                    if (act == null) act = instance.AddComponent<VpActivateActions>();
+                    act.actions.AddRange(activateActions);
+
+                    if (logActivateActions)
+                        Debug.Log($"[VP Activate] {instance.name} stored {activateActions.Count} actions");
+                }
+            }
+
+            if (instance != null && !instance.activeSelf)
+            {
+                instance.SetActive(true);
             }
         }
 
-        if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
-        {
-            loadedObject.SetActive(true);
-        }
+        Destroy(loadedObject);
+        pendingInstances.Clear();
+        pendingModelGroups.Remove(modelName);
     }
 
     // -------------------------
@@ -1030,6 +1114,24 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             pri -= frustumBonus; // smaller is earlier
 
         return pri;
+    }
+
+    private float ComputeModelGroupPriority(string modelName, UnityEngine.Vector3 camPos, UnityEngine.Vector3 fallbackPos)
+    {
+        if (pendingModelGroups.TryGetValue(modelName, out var group) && group != null && group.Count > 0)
+        {
+            float best = float.MaxValue;
+            for (int i = 0; i < group.Count; i++)
+            {
+                float pri = ComputeModelPriority(group[i].position, camPos);
+                if (pri < best)
+                    best = pri;
+            }
+
+            return best;
+        }
+
+        return ComputeModelPriority(fallbackPos, camPos);
     }
 
     private float ComputeTerrainPriority(int centerCellX, int centerCellY, int tileX, int tileZ)
@@ -1070,7 +1172,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         for (int i = 0; i < items.Count; i++)
         {
             var req = items[i];
-            float pri = ComputeModelPriority(req.position, camPos);
+            if (!pendingModelGroups.TryGetValue(req.modelName, out var group) || group == null || group.Count == 0)
+                continue;
+
+            float pri = ComputeModelGroupPriority(req.modelName, camPos, req.position);
             modelHeap.Push(req, pri);
         }
     }
