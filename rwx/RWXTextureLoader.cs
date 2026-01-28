@@ -3,6 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Threading.Tasks;
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_SERVER
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+#endif
 using UnityEngine;
 
 namespace RWXLoader
@@ -12,6 +18,18 @@ namespace RWXLoader
     /// </summary>
     public class RWXTextureLoader : MonoBehaviour
     {
+        private struct DecodedTextureData
+        {
+            public int Width;
+            public int Height;
+            public TextureFormat Format;
+            public byte[] PixelData;
+            public bool HasMipMaps;
+            public bool IsDds;
+            public bool IsBlockCompressed;
+            public int BytesPerPixel;
+        }
+
         [Header("Settings")]
         public string textureFolder = "Textures";
         public string textureExtension = ".jpg";
@@ -87,197 +105,445 @@ namespace RWXLoader
             // Basic DDS loader supporting common compressed formats
             try
             {
-                if (data == null || data.Length < 128)
+                if (!TryPrepareDdsTextureData(data, out DecodedTextureData decodedData))
                 {
                     return null;
                 }
 
-                if (!(data[0] == 'D' && data[1] == 'D' && data[2] == 'S' && data[3] == ' '))
-                {
-                    return null;
-                }
-
-                int height = BitConverter.ToInt32(data, 12);
-                int width = BitConverter.ToInt32(data, 16);
-                int mipMapCount = Math.Max(1, BitConverter.ToInt32(data, 28));
-                string fourCC = System.Text.Encoding.ASCII.GetString(data, 84, 4);
-                int pixelFormatFlags = BitConverter.ToInt32(data, 80);
-                int rgbBitCount = BitConverter.ToInt32(data, 88);
-                int alphaMask = BitConverter.ToInt32(data, 104);
-                int headerSize = 128;
-
-                TextureFormat format;
-                bool isBlockCompressed = true;
-                int bytesPerPixel = 0;
-                if (fourCC == "DX10" && data.Length >= 148)
-                {
-                    // DX10 header provides DXGI format
-                    int dxgiFormat = BitConverter.ToInt32(data, 128);
-                    switch (dxgiFormat)
-                    {
-                        case 71: // BC1_UNORM
-                            format = TextureFormat.DXT1;
-                            break;
-                        case 74: // BC2_UNORM
-                            format = TextureFormat.DXT5; // Closest supported in Unity runtime
-                            break;
-                        case 77: // BC3_UNORM
-                            format = TextureFormat.DXT5;
-                            break;
-                        case 80: // BC5_UNORM
-                            format = TextureFormat.BC5;
-                            break;
-                        case 98: // BC7_UNORM
-                            format = TextureFormat.BC7;
-                            break;
-                        case 28: // R8G8B8A8_UNORM (uncompressed)
-                        case 87: // R8G8B8A8_UNORM_SRGB
-                            format = TextureFormat.RGBA32;
-                            isBlockCompressed = false;
-                            bytesPerPixel = 4;
-                            break;
-                        case 80: // BC5_UNORM
-                            format = TextureFormat.BC5;
-                            break;
-                        case 98: // BC7_UNORM
-                            format = TextureFormat.BC7;
-                            break;
-                        default:
-                            return null;
-                    }
-                    headerSize = 148; // DDS header + DX10 header
-                }
-                else
-                {
-                    switch (fourCC)
-                    {
-                        case "DXT1":
-                            format = TextureFormat.DXT1;
-                            break;
-                        case "DXT3":
-                            format = TextureFormat.DXT5; // Unity doesn't expose DXT3 separately at runtime; use DXT5 fallback
-                            break;
-                        case "DXT5":
-                            format = TextureFormat.DXT5;
-                            break;
-                        case "ATI2":
-                        case "BC5 ":
-                            format = TextureFormat.BC5;
-                            break;
-                        case "DX10": // DX10 without extra header (unlikely, but guard)
-                            format = TextureFormat.RGBA32;
-                            isBlockCompressed = false;
-                            bytesPerPixel = 4;
-                            break;
-                        case "ARGB": // Uncompressed legacy
-                            format = TextureFormat.RGBA32;
-                            isBlockCompressed = false;
-                            bytesPerPixel = 4;
-                            break;
-                        default:
-                        {
-                            // Handle uncompressed DDS without a FourCC (RGB/RGBA)
-                            const int DDPF_RGB = 0x40;
-                            if (string.IsNullOrWhiteSpace(fourCC) && (pixelFormatFlags & DDPF_RGB) == DDPF_RGB && rgbBitCount == 32)
-                            {
-                                format = TextureFormat.RGBA32;
-                                isBlockCompressed = false;
-                                bytesPerPixel = 4;
-                                break;
-                            }
-
-                            return null; // Unsupported DDS format
-                        }
-                    }
-                }
-
-                if (!SystemInfo.SupportsTextureFormat(format))
-                {
-                    // Fallbacks for platforms lacking BC5/BC7
-                    if ((format == TextureFormat.BC5 || format == TextureFormat.BC7) && SystemInfo.SupportsTextureFormat(TextureFormat.DXT5))
-                    {
-                        format = TextureFormat.DXT5;
-                    }
-                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
-                    {
-                        format = TextureFormat.DXT1;
-                    }
-                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
-                    {
-                        format = TextureFormat.RGBA32;
-                        isBlockCompressed = false;
-                        bytesPerPixel = 4;
-                    }
-                    else
-                    {
-                        return null;
-                    }
-                }
-
-                if (data.Length <= headerSize)
-                {
-                    return null;
-                }
-
-                byte[] dxtData = new byte[data.Length - headerSize];
-                Buffer.BlockCopy(data, headerSize, dxtData, 0, dxtData.Length);
-
-                // Ensure mipmap count matches available data to avoid LoadRawTextureData failures
-                int blockSize = (format == TextureFormat.DXT1) ? 8 : 16;
-                int computedMipCount = 0;
-                int offset = 0;
-                int mipWidth = width;
-                int mipHeight = height;
-
-                while (computedMipCount < mipMapCount)
-                {
-                    int mipSize;
-                    if (isBlockCompressed)
-                    {
-                        int blockCountX = Math.Max(1, (mipWidth + 3) / 4);
-                        int blockCountY = Math.Max(1, (mipHeight + 3) / 4);
-                        mipSize = blockCountX * blockCountY * blockSize;
-                    }
-                    else
-                    {
-                        mipSize = mipWidth * mipHeight * Math.Max(1, bytesPerPixel);
-                    }
-
-                    if (offset + mipSize > dxtData.Length)
-                    {
-                        break;
-                    }
-
-                    offset += mipSize;
-                    computedMipCount++;
-                    mipWidth = Math.Max(1, mipWidth / 2);
-                    mipHeight = Math.Max(1, mipHeight / 2);
-                }
-
-                if (computedMipCount == 0)
-                {
-                    return null;
-                }
-
-                int usedDataLength = offset;
-                if (usedDataLength < dxtData.Length)
-                {
-                    byte[] trimmedData = new byte[usedDataLength];
-                    Buffer.BlockCopy(dxtData, 0, trimmedData, 0, usedDataLength);
-                    dxtData = trimmedData;
-                }
-
-                bool hasMipMaps = computedMipCount > 1;
-                Texture2D texture = new Texture2D(width, height, format, hasMipMaps);
-                texture.LoadRawTextureData(dxtData);
-                texture.Apply(false, true);
-                texture.name = Path.GetFileNameWithoutExtension(fileName);
-                return texture;
+                return CreateTextureFromDdsData(decodedData, fileName);
             }
             catch
             {
                 return null;
             }
+        }
+
+        private Texture2D CreateTextureFromDdsData(DecodedTextureData decodedData, string fileName)
+        {
+            TextureFormat format = decodedData.Format;
+
+            if (!SystemInfo.SupportsTextureFormat(format))
+            {
+                if ((format == TextureFormat.BC5 || format == TextureFormat.BC7) && SystemInfo.SupportsTextureFormat(TextureFormat.DXT5))
+                {
+                    format = TextureFormat.DXT5;
+                }
+                else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
+                {
+                    format = TextureFormat.DXT1;
+                }
+                else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
+                {
+                    format = TextureFormat.RGBA32;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            Texture2D texture = new Texture2D(decodedData.Width, decodedData.Height, format, decodedData.HasMipMaps);
+            texture.LoadRawTextureData(decodedData.PixelData);
+            texture.Apply(false, true);
+            texture.name = Path.GetFileNameWithoutExtension(fileName);
+            return texture;
+        }
+
+        private bool TryPrepareDdsTextureData(byte[] data, out DecodedTextureData decodedData)
+        {
+            decodedData = default;
+
+            if (data == null || data.Length < 128)
+            {
+                return false;
+            }
+
+            if (!(data[0] == 'D' && data[1] == 'D' && data[2] == 'S' && data[3] == ' '))
+            {
+                return false;
+            }
+
+            int height = BitConverter.ToInt32(data, 12);
+            int width = BitConverter.ToInt32(data, 16);
+            int mipMapCount = Math.Max(1, BitConverter.ToInt32(data, 28));
+            string fourCC = System.Text.Encoding.ASCII.GetString(data, 84, 4);
+            int pixelFormatFlags = BitConverter.ToInt32(data, 80);
+            int rgbBitCount = BitConverter.ToInt32(data, 88);
+            int headerSize = 128;
+
+            TextureFormat format;
+            bool isBlockCompressed = true;
+            int bytesPerPixel = 0;
+            if (fourCC == "DX10" && data.Length >= 148)
+            {
+                int dxgiFormat = BitConverter.ToInt32(data, 128);
+                switch (dxgiFormat)
+                {
+                    case 71: // BC1_UNORM
+                        format = TextureFormat.DXT1;
+                        break;
+                    case 74: // BC2_UNORM
+                    case 77: // BC3_UNORM
+                        format = TextureFormat.DXT5;
+                        break;
+                    case 80: // BC5_UNORM
+                        format = TextureFormat.BC5;
+                        break;
+                    case 98: // BC7_UNORM
+                        format = TextureFormat.BC7;
+                        break;
+                    case 28: // R8G8B8A8_UNORM (uncompressed)
+                    case 87: // R8G8B8A8_UNORM_SRGB
+                        format = TextureFormat.RGBA32;
+                        isBlockCompressed = false;
+                        bytesPerPixel = 4;
+                        break;
+                    default:
+                        return false;
+                }
+                headerSize = 148;
+            }
+            else
+            {
+                switch (fourCC)
+                {
+                    case "DXT1":
+                        format = TextureFormat.DXT1;
+                        break;
+                    case "DXT3":
+                    case "DXT5":
+                        format = TextureFormat.DXT5;
+                        break;
+                    case "ATI2":
+                    case "BC5 ":
+                        format = TextureFormat.BC5;
+                        break;
+                    case "DX10":
+                    case "ARGB":
+                        format = TextureFormat.RGBA32;
+                        isBlockCompressed = false;
+                        bytesPerPixel = 4;
+                        break;
+                    default:
+                    {
+                        const int DDPF_RGB = 0x40;
+                        if (string.IsNullOrWhiteSpace(fourCC) && (pixelFormatFlags & DDPF_RGB) == DDPF_RGB && rgbBitCount == 32)
+                        {
+                            format = TextureFormat.RGBA32;
+                            isBlockCompressed = false;
+                            bytesPerPixel = 4;
+                            break;
+                        }
+
+                        return false;
+                    }
+                }
+            }
+
+            if (data.Length <= headerSize)
+            {
+                return false;
+            }
+
+            byte[] dxtData = new byte[data.Length - headerSize];
+            Buffer.BlockCopy(data, headerSize, dxtData, 0, dxtData.Length);
+
+            int blockSize = (format == TextureFormat.DXT1) ? 8 : 16;
+            int computedMipCount = 0;
+            int offset = 0;
+            int mipWidth = width;
+            int mipHeight = height;
+
+            while (computedMipCount < mipMapCount)
+            {
+                int mipSize;
+                if (isBlockCompressed)
+                {
+                    int blockCountX = Math.Max(1, (mipWidth + 3) / 4);
+                    int blockCountY = Math.Max(1, (mipHeight + 3) / 4);
+                    mipSize = blockCountX * blockCountY * blockSize;
+                }
+                else
+                {
+                    mipSize = mipWidth * mipHeight * Math.Max(1, bytesPerPixel);
+                }
+
+                if (offset + mipSize > dxtData.Length)
+                {
+                    break;
+                }
+
+                offset += mipSize;
+                computedMipCount++;
+                mipWidth = Math.Max(1, mipWidth / 2);
+                mipHeight = Math.Max(1, mipHeight / 2);
+            }
+
+            if (computedMipCount == 0)
+            {
+                return false;
+            }
+
+            int usedDataLength = offset;
+            if (usedDataLength < dxtData.Length)
+            {
+                byte[] trimmedData = new byte[usedDataLength];
+                Buffer.BlockCopy(dxtData, 0, trimmedData, 0, usedDataLength);
+                dxtData = trimmedData;
+            }
+
+            decodedData = new DecodedTextureData
+            {
+                Width = width,
+                Height = height,
+                Format = format,
+                PixelData = dxtData,
+                HasMipMaps = computedMipCount > 1,
+                IsDds = true,
+                IsBlockCompressed = isBlockCompressed,
+                BytesPerPixel = bytesPerPixel
+            };
+
+            return true;
+        }
+
+        private bool TryDecodeTextureData(byte[] data, string fileName, out DecodedTextureData decodedData)
+        {
+            decodedData = default;
+            string effectiveFileName = fileName;
+            byte[] workingData = data;
+
+            if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+            {
+                workingData = decompressedData;
+                effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
+            }
+
+            if (effectiveFileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
+            {
+                return TryPrepareDdsTextureData(workingData, out decodedData);
+            }
+
+            if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
+            {
+                if (TryDecodeBmpToRgba32(workingData, out int bmpWidth, out int bmpHeight, out byte[] bmpPixels))
+                {
+                    decodedData = new DecodedTextureData
+                    {
+                        Width = bmpWidth,
+                        Height = bmpHeight,
+                        Format = TextureFormat.RGBA32,
+                        PixelData = bmpPixels,
+                        HasMipMaps = false,
+                        IsDds = false,
+                        IsBlockCompressed = false,
+                        BytesPerPixel = 4
+                    };
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (TryDecodeImageToRgba32(workingData, out int width, out int height, out byte[] pixels))
+            {
+                decodedData = new DecodedTextureData
+                {
+                    Width = width,
+                    Height = height,
+                    Format = TextureFormat.RGBA32,
+                    PixelData = pixels,
+                    HasMipMaps = false,
+                    IsDds = false,
+                    IsBlockCompressed = false,
+                    BytesPerPixel = 4
+                };
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryDecodeBmpToRgba32(byte[] bmpData, out int width, out int height, out byte[] pixels)
+        {
+            width = 0;
+            height = 0;
+            pixels = Array.Empty<byte>();
+
+            if (bmpData.Length < 54 || bmpData[0] != 0x42 || bmpData[1] != 0x4D)
+            {
+                return false;
+            }
+
+            int dataOffset = BitConverter.ToInt32(bmpData, 10);
+            int widthValue = BitConverter.ToInt32(bmpData, 18);
+            int heightValue = BitConverter.ToInt32(bmpData, 22);
+            short bitsPerPixel = BitConverter.ToInt16(bmpData, 28);
+            int compression = BitConverter.ToInt32(bmpData, 30);
+
+            if (compression != 0)
+            {
+                return false;
+            }
+
+            if (bitsPerPixel != 1 && bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32)
+            {
+                return false;
+            }
+
+            int absHeight = Math.Abs(heightValue);
+            width = widthValue;
+            height = absHeight;
+            pixels = new byte[width * height * 4];
+
+            bool isBottomUp = heightValue > 0;
+
+            if (bitsPerPixel == 1)
+            {
+                int rowSizeInBytes = (width + 7) / 8;
+                int paddedRowSize = ((rowSizeInBytes + 3) / 4) * 4;
+
+                for (int y = 0; y < absHeight; y++)
+                {
+                    int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+                    int rowStart = dataOffset + (sourceY * paddedRowSize);
+
+                    for (int x = 0; x < width; x++)
+                    {
+                        int byteIndex = rowStart + (x / 8);
+                        int bitIndex = 7 - (x % 8);
+
+                        if (byteIndex >= bmpData.Length)
+                        {
+                            return false;
+                        }
+
+                        bool isWhite = ((bmpData[byteIndex] >> bitIndex) & 1) == 1;
+                        byte grayValue = isWhite ? (byte)255 : (byte)0;
+
+                        int destIndex = (y * width + x) * 4;
+                        pixels[destIndex] = grayValue;
+                        pixels[destIndex + 1] = grayValue;
+                        pixels[destIndex + 2] = grayValue;
+                        pixels[destIndex + 3] = 255;
+                    }
+                }
+            }
+            else
+            {
+                int bytesPerPixel = bitsPerPixel / 8;
+                int rowSize = ((width * bitsPerPixel + 31) / 32) * 4;
+
+                for (int y = 0; y < absHeight; y++)
+                {
+                    int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+
+                    for (int x = 0; x < width; x++)
+                    {
+                        int pixelIndex = dataOffset + (sourceY * rowSize) + (x * bytesPerPixel);
+
+                        if (pixelIndex + bytesPerPixel > bmpData.Length)
+                        {
+                            return false;
+                        }
+
+                        byte r;
+                        byte g;
+                        byte b;
+                        byte a = 255;
+
+                        if (bitsPerPixel == 8)
+                        {
+                            byte gray = bmpData[pixelIndex];
+                            r = gray;
+                            g = gray;
+                            b = gray;
+                        }
+                        else if (bitsPerPixel == 24)
+                        {
+                            b = bmpData[pixelIndex];
+                            g = bmpData[pixelIndex + 1];
+                            r = bmpData[pixelIndex + 2];
+                        }
+                        else
+                        {
+                            b = bmpData[pixelIndex];
+                            g = bmpData[pixelIndex + 1];
+                            r = bmpData[pixelIndex + 2];
+                            a = bmpData[pixelIndex + 3];
+                        }
+
+                        int destIndex = (y * width + x) * 4;
+                        pixels[destIndex] = r;
+                        pixels[destIndex + 1] = g;
+                        pixels[destIndex + 2] = b;
+                        pixels[destIndex + 3] = a;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private bool TryDecodeImageToRgba32(byte[] imageData, out int width, out int height, out byte[] rgbaPixels)
+        {
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_SERVER
+            try
+            {
+                using (var stream = new MemoryStream(imageData))
+                using (var bitmap = new Bitmap(stream))
+                {
+                    width = bitmap.Width;
+                    height = bitmap.Height;
+                    var rect = new Rectangle(0, 0, width, height);
+                    var bitmapData = bitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                    int stride = bitmapData.Stride;
+                    int absStride = Math.Abs(stride);
+                    byte[] source = new byte[absStride * height];
+                    Marshal.Copy(bitmapData.Scan0, source, 0, source.Length);
+                    bitmap.UnlockBits(bitmapData);
+
+                    rgbaPixels = new byte[width * height * 4];
+                    bool isBottomUp = stride > 0;
+
+                    for (int y = 0; y < height; y++)
+                    {
+                        int sourceY = isBottomUp ? (height - 1 - y) : y;
+                        int sourceRowStart = sourceY * absStride;
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            int sourceIndex = sourceRowStart + (x * 4);
+                            int destIndex = (y * width + x) * 4;
+
+                            byte b = source[sourceIndex];
+                            byte g = source[sourceIndex + 1];
+                            byte r = source[sourceIndex + 2];
+                            byte a = source[sourceIndex + 3];
+
+                            rgbaPixels[destIndex] = r;
+                            rgbaPixels[destIndex + 1] = g;
+                            rgbaPixels[destIndex + 2] = b;
+                            rgbaPixels[destIndex + 3] = a;
+                        }
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                width = 0;
+                height = 0;
+                rgbaPixels = Array.Empty<byte>();
+                return false;
+            }
+#else
+            width = 0;
+            height = 0;
+            rgbaPixels = Array.Empty<byte>();
+            return false;
+#endif
         }
 
         /// <summary>
@@ -474,6 +740,129 @@ namespace RWXLoader
         }
 
         /// <summary>
+        /// Loads texture from file path asynchronously with double-sided support
+        /// </summary>
+        public IEnumerator LoadTextureFromFileAsync(string filePath, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            if (!File.Exists(filePath))
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            Task<byte[]> readTask = Task.Run(() => File.ReadAllBytes(filePath));
+            while (!readTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (readTask.IsFaulted)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            byte[] fileData = readTask.Result;
+            string fileName = Path.GetFileName(filePath);
+            string effectiveFileName = fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ? Path.GetFileNameWithoutExtension(fileName) : fileName;
+            bool isMask = IsMaskFile(effectiveFileName);
+
+            yield return LoadTextureFromBytesAsync(fileData, fileName, isMask, isDoubleSided, onComplete);
+        }
+
+        /// <summary>
+        /// Loads texture from byte array asynchronously
+        /// </summary>
+        public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, System.Action<Texture2D> onComplete)
+        {
+            return LoadTextureFromBytesAsync(data, fileName, isMask, false, onComplete);
+        }
+
+        /// <summary>
+        /// Loads texture from byte array asynchronously with double-sided support
+        /// </summary>
+        public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            string effectiveFileName = fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) ? Path.GetFileNameWithoutExtension(fileName) : fileName;
+            byte[] fallbackData = data;
+            if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+            {
+                fallbackData = decompressedData;
+            }
+            Task<DecodedTextureData?> decodeTask = Task.Run(() =>
+            {
+                if (TryDecodeTextureData(data, fileName, out DecodedTextureData decodedData))
+                {
+                    return (DecodedTextureData?)decodedData;
+                }
+
+                return null;
+            });
+
+            while (!decodeTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (decodeTask.IsFaulted)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            DecodedTextureData? decodedResult = decodeTask.Result;
+            if (!decodedResult.HasValue)
+            {
+                string lowerFileName = effectiveFileName.ToLowerInvariant();
+                if (!lowerFileName.EndsWith(".png") && !lowerFileName.EndsWith(".jpg") && !lowerFileName.EndsWith(".jpeg") && !lowerFileName.EndsWith(".bmp"))
+                {
+                    Texture2D fallbackTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (fallbackTexture.LoadImage(fallbackData))
+                    {
+                        fallbackTexture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
+                        onComplete?.Invoke(fallbackTexture);
+                        yield break;
+                    }
+
+                    Object.DestroyImmediate(fallbackTexture);
+                }
+
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            DecodedTextureData decodedDataResult = decodedResult.Value;
+            Texture2D texture = null;
+            if (decodedDataResult.IsDds)
+            {
+                texture = CreateTextureFromDdsData(decodedDataResult, effectiveFileName);
+            }
+            else
+            {
+                texture = new Texture2D(decodedDataResult.Width, decodedDataResult.Height, TextureFormat.RGBA32, false);
+                texture.LoadRawTextureData(decodedDataResult.PixelData);
+                texture.Apply();
+                texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
+            }
+
+            if (texture == null && effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
+            {
+                RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
+                if (bmpDecoder != null)
+                {
+                    texture = bmpDecoder.DecodeBmpTexture(fallbackData, effectiveFileName);
+                }
+            }
+
+            if (texture != null)
+            {
+                texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
+            }
+
+            onComplete?.Invoke(texture);
+        }
+
+        /// <summary>
         /// Loads texture/mask from ZIP archive first, then falls back to individual download
         /// </summary>
         public IEnumerator LoadTextureFromZipOrRemote(string textureName, bool isMask, System.Action<Texture2D> onComplete)
@@ -590,8 +979,12 @@ namespace RWXLoader
                 
                 if (textureData != null && textureData.Length > 0)
                 {
-                    // Try to create texture from byte data
-                    Texture2D texture = LoadTextureFromBytes(textureData, foundFileName, isMask, isDoubleSided);
+                    Texture2D texture = null;
+                    yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, (loadedTexture) =>
+                    {
+                        texture = loadedTexture;
+                    });
+
                     if (texture != null)
                     {
                         onComplete?.Invoke(texture);
@@ -636,7 +1029,12 @@ namespace RWXLoader
             if (downloadSuccess && File.Exists(localTexturePath))
             {
                 byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
+                Texture2D texture = null;
+                yield return LoadTextureFromBytesAsync(fileData, textureNameWithExt, isMask, isDoubleSided, (loadedTexture) =>
+                {
+                    texture = loadedTexture;
+                });
+
                 if (texture != null)
                 {
                     string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
