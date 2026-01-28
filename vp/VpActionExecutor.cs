@@ -347,10 +347,6 @@ public static class VpActionExecutor
             return 0;
 
         Material material = renderer.sharedMaterial;
-        if (material == null && renderer.material != null)
-        {
-            material = renderer.material;
-        }
 
         string tagValue = material?.GetTag("RwxTag", false, "0") ?? "0";
         if (int.TryParse(tagValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
