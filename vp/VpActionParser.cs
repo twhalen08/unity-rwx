@@ -5,6 +5,20 @@ using UnityEngine;
 public static class VpActionParser
 {
 
+    private sealed class CachedActionLists
+    {
+        public readonly List<VpActionCommand> create;
+        public readonly List<VpActionCommand> activate;
+
+        public CachedActionLists(List<VpActionCommand> create, List<VpActionCommand> activate)
+        {
+            this.create = create;
+            this.activate = activate;
+        }
+    }
+
+    private static readonly Dictionary<string, CachedActionLists> CachedParsedActions = new(StringComparer.Ordinal);
+    private static readonly List<VpActionCommand> EmptyActions = new();
 
     private enum Phase
     {
@@ -13,13 +27,30 @@ public static class VpActionParser
         Activate
     }
 
-    public static void Parse(string action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions)
+    public static void Parse(string action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions, bool cloneLists = false)
     {
-        createActions = new List<VpActionCommand>();
-        activateActions = new List<VpActionCommand>();
+        createActions = EmptyActions;
+        activateActions = EmptyActions;
 
         if (string.IsNullOrWhiteSpace(action))
             return;
+
+        if (CachedParsedActions.TryGetValue(action, out var cached))
+        {
+            if (cloneLists)
+            {
+                createActions = CloneActions(cached.create);
+                activateActions = CloneActions(cached.activate);
+                return;
+            }
+
+            createActions = cached.create;
+            activateActions = cached.activate;
+            return;
+        }
+
+        var parsedCreate = new List<VpActionCommand>();
+        var parsedActivate = new List<VpActionCommand>();
 
         Phase current = Phase.None;
 
@@ -51,7 +82,7 @@ public static class VpActionParser
 
                 // Inline command: remainder is the actual command
                 var cmdTokens = tokens.GetRange(1, tokens.Count - 1);
-                AddCommand(current, cmdTokens, seg, createActions, activateActions);
+                AddCommand(current, cmdTokens, seg, parsedCreate, parsedActivate);
                 continue;
             }
 
@@ -63,8 +94,20 @@ public static class VpActionParser
                 continue;
             }
 
-            AddCommand(current, tokens, seg, createActions, activateActions);
+            AddCommand(current, tokens, seg, parsedCreate, parsedActivate);
         }
+
+        CachedParsedActions[action] = new CachedActionLists(parsedCreate, parsedActivate);
+
+        if (cloneLists)
+        {
+            createActions = CloneActions(parsedCreate);
+            activateActions = CloneActions(parsedActivate);
+            return;
+        }
+
+        createActions = parsedCreate;
+        activateActions = parsedActivate;
     }
 
     private static void AddCommand(
@@ -122,6 +165,34 @@ public static class VpActionParser
         }
 
         return cmd;
+    }
+
+    private static List<VpActionCommand> CloneActions(List<VpActionCommand> source)
+    {
+        if (source == null || source.Count == 0)
+            return new List<VpActionCommand>();
+
+        var clone = new List<VpActionCommand>(source.Count);
+        for (int i = 0; i < source.Count; i++)
+        {
+            var cmd = source[i];
+            if (cmd == null)
+            {
+                clone.Add(null);
+                continue;
+            }
+
+            var cmdClone = new VpActionCommand
+            {
+                raw = cmd.raw,
+                verb = cmd.verb,
+                positional = cmd.positional != null ? new List<string>(cmd.positional) : new List<string>(),
+                kv = cmd.kv != null ? new Dictionary<string, string>(cmd.kv) : new Dictionary<string, string>()
+            };
+            clone.Add(cmdClone);
+        }
+
+        return clone;
     }
 
     private static bool TrySplitKeyValue(string token, out string key, out string value)
