@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace RWXLoader
 {
@@ -126,6 +127,18 @@ namespace RWXLoader
             bool isMask = isMaskOverride ?? IsMaskFile(effectiveFileName);
 
             return PrepareTextureData(fileData, fileName, isMask);
+        }
+
+        private static bool RequiresMainThreadDecode(string fileName)
+        {
+            return fileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith(".dds.gz", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ToFileUri(string filePath)
+        {
+            return new Uri(filePath).AbsoluteUri;
         }
 
         private Texture2D LoadDdsTexture(byte[] data, string fileName)
@@ -565,6 +578,27 @@ namespace RWXLoader
 
         private IEnumerator LoadTextureFromFileAsync(string filePath, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
+            if (!RequiresMainThreadDecode(filePath))
+            {
+                using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(ToFileUri(filePath)))
+                {
+                    yield return request.SendWebRequest();
+                    if (request.result != UnityWebRequest.Result.Success)
+                    {
+                        onComplete?.Invoke(null);
+                        yield break;
+                    }
+
+                    Texture2D texture = DownloadHandlerTexture.GetContent(request);
+                    if (texture != null)
+                    {
+                        texture.name = Path.GetFileNameWithoutExtension(filePath);
+                    }
+                    onComplete?.Invoke(texture);
+                    yield break;
+                }
+            }
+
             Task<PreparedTextureData> task = Task.Run(() => ReadTextureDataFromFile(filePath));
             while (!task.IsCompleted)
             {
@@ -744,20 +778,39 @@ namespace RWXLoader
 
             if (downloadSuccess && File.Exists(localTexturePath))
             {
-                Task<PreparedTextureData> task = Task.Run(() => ReadTextureDataFromFile(localTexturePath, isMask));
-                while (!task.IsCompleted)
+                Texture2D texture = null;
+                if (!RequiresMainThreadDecode(localTexturePath))
                 {
-                    yield return null;
+                    using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(ToFileUri(localTexturePath)))
+                    {
+                        yield return request.SendWebRequest();
+                        if (request.result == UnityWebRequest.Result.Success)
+                        {
+                            texture = DownloadHandlerTexture.GetContent(request);
+                            if (texture != null)
+                            {
+                                texture.name = Path.GetFileNameWithoutExtension(localTexturePath);
+                            }
+                        }
+                    }
                 }
-
-                if (task.IsFaulted)
+                else
                 {
-                    onComplete?.Invoke(null);
-                    yield break;
-                }
+                    Task<PreparedTextureData> task = Task.Run(() => ReadTextureDataFromFile(localTexturePath, isMask));
+                    while (!task.IsCompleted)
+                    {
+                        yield return null;
+                    }
 
-                PreparedTextureData prepared = task.Result;
-                Texture2D texture = CreateTextureFromPreparedData(prepared, isDoubleSided);
+                    if (task.IsFaulted)
+                    {
+                        onComplete?.Invoke(null);
+                        yield break;
+                    }
+
+                    PreparedTextureData prepared = task.Result;
+                    texture = CreateTextureFromPreparedData(prepared, isDoubleSided);
+                }
                 if (texture != null)
                 {
                     string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
