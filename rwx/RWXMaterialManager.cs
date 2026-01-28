@@ -90,6 +90,8 @@ namespace RWXLoader
             Material material;
             bool isDoubleSided = rwxMaterial.materialMode == MaterialMode.Double;
 
+            QueueTextureLoad(rwxMaterial);
+
             // For double-sided materials, use Standard shader since we handle double-sided via triangle duplication
             if (useStandardShader)
             {
@@ -163,6 +165,24 @@ namespace RWXLoader
             return material;
         }
 
+        private void QueueTextureLoad(RWXMaterial rwxMaterial)
+        {
+            if (!enableTextures || textureLoader == null || rwxMaterial == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(rwxMaterial.texture))
+            {
+                textureLoader.QueueTextureLoad(rwxMaterial.texture, false);
+            }
+
+            if (!string.IsNullOrEmpty(rwxMaterial.mask))
+            {
+                textureLoader.QueueTextureLoad(rwxMaterial.mask, true);
+            }
+        }
+
         private IEnumerator LoadTexturesForMaterial(Material material, RWXMaterial rwxMaterial)
         {
             Texture2D mainTexture = null;
@@ -173,21 +193,10 @@ namespace RWXLoader
             // Load main texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
-                {
+                yield return textureLoader.LoadTextureAsync(rwxMaterial.texture, false, false, (texture) => {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
-                        mainTexture = texture;
-                        mainTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
@@ -197,31 +206,14 @@ namespace RWXLoader
             // Load mask texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
-                {
+                yield return textureLoader.LoadTextureAsync(rwxMaterial.mask, true, false, (texture) => {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
-                        maskTexture = texture;
-                        maskTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
                 maskTextureLoaded = true; // No mask to load
-            }
-
-            // Wait for both textures to finish loading
-            while (!mainTextureLoaded || !maskTextureLoaded)
-            {
-                yield return null;
             }
 
             // Apply textures to material
@@ -255,6 +247,8 @@ namespace RWXLoader
                 
                 // Verify the texture was applied
             }
+
+            yield return null;
         }
 
         /// <summary>
