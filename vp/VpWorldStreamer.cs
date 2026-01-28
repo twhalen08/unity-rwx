@@ -272,6 +272,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
+        public int groupVersion;
     }
 
     private struct SpawnedModelInstance
@@ -285,6 +286,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // Model priority heap: smallest priority loads first
     private readonly MinHeap<PendingModelLoad> modelHeap = new MinHeap<PendingModelLoad>();
     private readonly Dictionary<string, List<PendingModelLoad>> pendingModelGroups = new Dictionary<string, List<PendingModelLoad>>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> pendingModelGroupVersions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, float> pendingModelGroupBestPriority = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
 
     private int inFlightCellQueries = 0;
     private int inFlightModelLoads = 0;
@@ -447,6 +450,15 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     pendingInstances == null ||
                     pendingInstances.Count == 0)
                 {
+                    pendingModelGroupBestPriority.Remove(req.modelName);
+                    pendingModelGroupVersions.Remove(req.modelName);
+                    pendingModelGroups.Remove(req.modelName);
+                    continue;
+                }
+
+                if (!pendingModelGroupVersions.TryGetValue(req.modelName, out var groupVersion) ||
+                    req.groupVersion != groupVersion)
+                {
                     continue;
                 }
 
@@ -465,6 +477,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                     if (!hasValidInstance)
                     {
                         pendingInstances.Clear();
+                        pendingModelGroupBestPriority.Remove(req.modelName);
+                        pendingModelGroupVersions.Remove(req.modelName);
                         pendingModelGroups.Remove(req.modelName);
                         continue;
                     }
@@ -567,20 +581,31 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 modelName = modelName,
                 position = pos,
                 rotation = rot,
-                action = obj.Action
+                action = obj.Action,
+                groupVersion = 0
             };
 
             if (!pendingModelGroups.TryGetValue(modelName, out var group))
             {
                 group = new List<PendingModelLoad>();
                 pendingModelGroups[modelName] = group;
+                pendingModelGroupVersions[modelName] = 0;
             }
 
             group.Add(req);
 
-            if (group.Count == 1)
+            float pri = ComputeModelPriority(pos, camPos);
+            if (!pendingModelGroupBestPriority.TryGetValue(modelName, out var bestPri) || pri < bestPri)
             {
-                float pri = ComputeModelPriority(pos, camPos);
+                int nextVersion = pendingModelGroupVersions[modelName] + 1;
+                pendingModelGroupVersions[modelName] = nextVersion;
+                pendingModelGroupBestPriority[modelName] = pri;
+                req.groupVersion = nextVersion;
+                modelHeap.Push(req, pri);
+            }
+            else if (group.Count == 1)
+            {
+                pendingModelGroupBestPriority[modelName] = pri;
                 modelHeap.Push(req, pri);
             }
         }
@@ -1010,6 +1035,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             Destroy(loadedObject);
             pendingInstances.Clear();
+            pendingModelGroupBestPriority.Remove(modelName);
+            pendingModelGroupVersions.Remove(modelName);
             pendingModelGroups.Remove(modelName);
             yield break;
         }
@@ -1112,6 +1139,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         Destroy(loadedObject);
         pendingInstances.Clear();
+        pendingModelGroupBestPriority.Remove(modelName);
+        pendingModelGroupVersions.Remove(modelName);
         pendingModelGroups.Remove(modelName);
     }
 
@@ -1126,24 +1155,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             pri -= frustumBonus; // smaller is earlier
 
         return pri;
-    }
-
-    private float ComputeModelGroupPriority(string modelName, UnityEngine.Vector3 camPos, UnityEngine.Vector3 fallbackPos)
-    {
-        if (pendingModelGroups.TryGetValue(modelName, out var group) && group != null && group.Count > 0)
-        {
-            float best = float.MaxValue;
-            for (int i = 0; i < group.Count; i++)
-            {
-                float pri = ComputeModelPriority(group[i].position, camPos);
-                if (pri < best)
-                    best = pri;
-            }
-
-            return best;
-        }
-
-        return ComputeModelPriority(fallbackPos, camPos);
     }
 
     private float ComputeTerrainPriority(int centerCellX, int centerCellY, int tileX, int tileZ)
@@ -1178,17 +1189,41 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     {
         UnityEngine.Vector3 camPos = GetCameraWorldPos();
 
-        var items = modelHeap.DumpItems();
         modelHeap.Clear();
+        pendingModelGroupBestPriority.Clear();
 
-        for (int i = 0; i < items.Count; i++)
+        foreach (var kvp in pendingModelGroups)
         {
-            var req = items[i];
-            if (!pendingModelGroups.TryGetValue(req.modelName, out var group) || group == null || group.Count == 0)
+            var group = kvp.Value;
+            if (group == null || group.Count == 0)
                 continue;
 
-            float pri = ComputeModelGroupPriority(req.modelName, camPos, req.position);
-            modelHeap.Push(req, pri);
+            float bestPri = float.MaxValue;
+            int bestIndex = -1;
+
+            for (int i = 0; i < group.Count; i++)
+            {
+                float pri = ComputeModelPriority(group[i].position, camPos);
+                if (pri < bestPri)
+                {
+                    bestPri = pri;
+                    bestIndex = i;
+                }
+            }
+
+            if (bestIndex < 0)
+                continue;
+
+            int nextVersion = pendingModelGroupVersions.TryGetValue(kvp.Key, out var version)
+                ? version + 1
+                : 1;
+
+            pendingModelGroupVersions[kvp.Key] = nextVersion;
+            pendingModelGroupBestPriority[kvp.Key] = bestPri;
+
+            var req = group[bestIndex];
+            req.groupVersion = nextVersion;
+            modelHeap.Push(req, bestPri);
         }
     }
 
