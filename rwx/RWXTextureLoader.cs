@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace RWXLoader
@@ -12,14 +13,29 @@ namespace RWXLoader
     /// </summary>
     public class RWXTextureLoader : MonoBehaviour
     {
+        private class PreparedTextureData
+        {
+            public byte[] Data;
+            public string FileName;
+        }
+
         [Header("Settings")]
         public string textureFolder = "Textures";
         public string textureExtension = ".jpg";
 
         private readonly Dictionary<string, Texture2D> textureCache = new Dictionary<string, Texture2D>();
+        private readonly Queue<TextureLoadRequest> pendingLoads = new Queue<TextureLoadRequest>();
+        private Coroutine pendingLoadCoroutine;
         private RWXAssetManager assetManager;
         private string currentObjectPath;
         private string objectPathPassword;
+
+        private struct TextureLoadRequest
+        {
+            public string TextureName;
+            public bool IsMask;
+            public bool IsDoubleSided;
+        }
 
         private void Start()
         {
@@ -34,6 +50,48 @@ namespace RWXLoader
             {
                 assetManager = RWXAssetManager.Instance;
             }
+        }
+
+        public void QueueTextureLoad(string textureName, bool isMask)
+        {
+            QueueTextureLoad(textureName, isMask, false);
+        }
+
+        public void QueueTextureLoad(string textureName, bool isMask, bool isDoubleSided)
+        {
+            if (string.IsNullOrEmpty(textureName))
+            {
+                return;
+            }
+
+            if (TryGetCachedTexture(textureName, isDoubleSided, out _))
+            {
+                return;
+            }
+
+            pendingLoads.Enqueue(new TextureLoadRequest
+            {
+                TextureName = textureName,
+                IsMask = isMask,
+                IsDoubleSided = isDoubleSided
+            });
+
+            if (pendingLoadCoroutine == null)
+            {
+                pendingLoadCoroutine = StartCoroutine(ProcessTextureQueue());
+            }
+        }
+
+        private IEnumerator ProcessTextureQueue()
+        {
+            while (pendingLoads.Count > 0)
+            {
+                TextureLoadRequest request = pendingLoads.Dequeue();
+                yield return LoadTextureAsync(request.TextureName, request.IsMask, request.IsDoubleSided, null);
+                yield return null;
+            }
+
+            pendingLoadCoroutine = null;
         }
 
         /// <summary>
@@ -280,28 +338,157 @@ namespace RWXLoader
             }
         }
 
-        /// <summary>
-        /// Loads texture synchronously from local files
-        /// </summary>
-        public Texture2D LoadTextureSync(string textureName)
+        private PreparedTextureData PrepareTextureData(byte[] data, string fileName)
         {
-            return LoadTextureSync(textureName, false);
+            if (data == null || data.Length == 0)
+            {
+                return null;
+            }
+
+            string effectiveFileName = fileName;
+            byte[] workingData = data;
+
+            if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+            {
+                workingData = decompressedData;
+                effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
+            }
+
+            return new PreparedTextureData
+            {
+                Data = workingData,
+                FileName = effectiveFileName
+            };
         }
 
-        /// <summary>
-        /// Loads texture synchronously from local files with double-sided support
-        /// </summary>
-        public Texture2D LoadTextureSync(string textureName, bool isDoubleSided)
+        private Texture2D CreateTextureFromPreparedData(byte[] data, string fileName, bool isMask, bool isDoubleSided)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(fileName) || data == null || data.Length == 0)
+                {
+                    return null;
+                }
+
+                if (fileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
+                {
+                    Texture2D ddsTexture = LoadDdsTexture(data, fileName);
+                    if (ddsTexture != null)
+                    {
+                        return ddsTexture;
+                    }
+                }
+
+                // Create texture with appropriate format
+                Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+
+                // Try to load the image data
+                if (texture.LoadImage(data))
+                {
+                    // Set the texture name for debugging
+                    texture.name = Path.GetFileNameWithoutExtension(fileName);
+                    return texture;
+                }
+                else
+                {
+                    Object.DestroyImmediate(texture);
+
+                    // For BMP files, try custom decoder
+                    if (fileName.EndsWith(".bmp"))
+                    {
+                        RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
+                        if (bmpDecoder != null)
+                        {
+                            // FIXED: Use regular BMP decoder without rotation for all textures and masks
+                            // The automatic rotation was causing mask orientation issues
+                            texture = bmpDecoder.DecodeBmpTexture(data, fileName);
+
+                            // Set the texture name for debugging
+                            if (texture != null)
+                            {
+                                texture.name = Path.GetFileNameWithoutExtension(fileName);
+                            }
+
+                            return texture;
+                        }
+                    }
+
+                    return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private Task<PreparedTextureData> LoadTextureDataFromFileAsync(string filePath)
+        {
+            return Task.Run(() =>
+            {
+                if (!File.Exists(filePath))
+                {
+                    return null;
+                }
+
+                byte[] fileData = File.ReadAllBytes(filePath);
+                string fileName = Path.GetFileName(filePath);
+                return PrepareTextureData(fileData, fileName);
+            });
+        }
+
+        private IEnumerator LoadTextureFromFileAsync(string filePath, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            Task<PreparedTextureData> loadTask = LoadTextureDataFromFileAsync(filePath);
+            while (!loadTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (loadTask.IsFaulted || loadTask.Result == null)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            PreparedTextureData prepared = loadTask.Result;
+            bool isMask = IsMaskFile(prepared.FileName);
+            Texture2D texture = CreateTextureFromPreparedData(prepared.Data, prepared.FileName, isMask, isDoubleSided);
+            onComplete?.Invoke(texture);
+        }
+
+        private IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            Task<PreparedTextureData> prepareTask = Task.Run(() => PrepareTextureData(data, fileName));
+            while (!prepareTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (prepareTask.IsFaulted || prepareTask.Result == null)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            PreparedTextureData prepared = prepareTask.Result;
+            Texture2D texture = CreateTextureFromPreparedData(prepared.Data, prepared.FileName, isMask, isDoubleSided);
+            onComplete?.Invoke(texture);
+        }
+
+        private bool TryGetCachedTexture(string textureName, bool isDoubleSided, out Texture2D cachedTexture)
         {
             string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
-            if (textureCache.TryGetValue(cacheKey, out Texture2D cachedTexture))
-            {
-                return cachedTexture;
-            }
+            return textureCache.TryGetValue(cacheKey, out cachedTexture);
+        }
+
+        private bool TryFindTextureFilePath(string textureName, out string filePath)
+        {
+            filePath = null;
 
             // Try multiple file extensions
             string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
-            
+
             // Try multiple base paths (including cached textures)
             List<string> basePathsList = new List<string>
             {
@@ -318,20 +505,15 @@ namespace RWXLoader
                 string texturesCachePath = Path.Combine(cachePath, "textures");
                 basePathsList.Insert(0, texturesCachePath);
             }
-            
+
             foreach (string basePath in basePathsList)
             {
-
                 // First try with the texture name as-is (in case it already has extension)
                 string directPath = Path.Combine(basePath, textureName);
                 if (File.Exists(directPath))
                 {
-                    Texture2D texture = LoadTextureFromFile(directPath, isDoubleSided);
-                    if (texture != null)
-                    {
-                        textureCache[cacheKey] = texture;
-                        return texture;
-                    }
+                    filePath = directPath;
+                    return true;
                 }
 
                 // Then try adding extensions if the texture name doesn't have one
@@ -342,14 +524,42 @@ namespace RWXLoader
                         string fullPath = Path.Combine(basePath, textureName + ext);
                         if (File.Exists(fullPath))
                         {
-                            Texture2D texture = LoadTextureFromFile(fullPath, isDoubleSided);
-                            if (texture != null)
-                            {
-                                textureCache[cacheKey] = texture;
-                                return texture;
-                            }
+                            filePath = fullPath;
+                            return true;
                         }
                     }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Loads texture synchronously from local files
+        /// </summary>
+        public Texture2D LoadTextureSync(string textureName)
+        {
+            return LoadTextureSync(textureName, false);
+        }
+
+        /// <summary>
+        /// Loads texture synchronously from local files with double-sided support
+        /// </summary>
+        public Texture2D LoadTextureSync(string textureName, bool isDoubleSided)
+        {
+            if (TryGetCachedTexture(textureName, isDoubleSided, out Texture2D cachedTexture))
+            {
+                return cachedTexture;
+            }
+
+            if (TryFindTextureFilePath(textureName, out string filePath))
+            {
+                Texture2D texture = LoadTextureFromFile(filePath, isDoubleSided);
+                if (texture != null)
+                {
+                    string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
+                    textureCache[cacheKey] = texture;
+                    return texture;
                 }
             }
 
@@ -412,64 +622,100 @@ namespace RWXLoader
         {
             try
             {
-                string effectiveFileName = fileName;
-                byte[] workingData = data;
-
-                if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+                PreparedTextureData prepared = PrepareTextureData(data, fileName);
+                if (prepared == null)
                 {
-                    workingData = decompressedData;
-                    effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
-                }
-
-                if (effectiveFileName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
-                {
-                    Texture2D ddsTexture = LoadDdsTexture(workingData, effectiveFileName);
-                    if (ddsTexture != null)
-                    {
-                        return ddsTexture;
-                    }
-                }
-
-                // Create texture with appropriate format
-                Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-
-                // Try to load the image data
-                if (texture.LoadImage(workingData))
-                {
-                    // Set the texture name for debugging
-                    texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
-                    return texture;
-                }
-                else
-                {
-                    Object.DestroyImmediate(texture);
-                    
-                    // For BMP files, try custom decoder
-                    if (effectiveFileName.EndsWith(".bmp"))
-                    {
-                        RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
-                        if (bmpDecoder != null)
-                        {
-                            // FIXED: Use regular BMP decoder without rotation for all textures and masks
-                            // The automatic rotation was causing mask orientation issues
-                            texture = bmpDecoder.DecodeBmpTexture(workingData, effectiveFileName);
-                            
-                            // Set the texture name for debugging
-                            if (texture != null)
-                            {
-                                texture.name = Path.GetFileNameWithoutExtension(effectiveFileName);
-                            }
-                            
-                            return texture;
-                        }
-                    }
-                    
                     return null;
                 }
+
+                return CreateTextureFromPreparedData(prepared.Data, prepared.FileName, isMask, isDoubleSided);
             }
             catch (System.Exception e)
             {
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Loads texture asynchronously from local files or remote sources
+        /// </summary>
+        public IEnumerator LoadTextureAsync(string textureName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            if (TryGetCachedTexture(textureName, isDoubleSided, out Texture2D cachedTexture))
+            {
+                onComplete?.Invoke(cachedTexture);
+                yield break;
+            }
+
+            if (TryFindTextureFilePath(textureName, out string filePath))
+            {
+                yield return LoadTextureFromFileAsync(filePath, isDoubleSided, (texture) =>
+                {
+                    if (texture != null)
+                    {
+                        string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
+                        textureCache[cacheKey] = texture;
+                    }
+
+                    onComplete?.Invoke(texture);
+                });
+                yield break;
+            }
+
+            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
+        }
+
+        /// <summary>
+        /// Preloads a set of textures to warm the cache
+        /// </summary>
+        public IEnumerator PreloadTextures(IEnumerable<string> textureNames, IEnumerable<string> maskNames)
+        {
+            if (textureNames != null)
+            {
+                foreach (string textureName in textureNames)
+                {
+                    if (string.IsNullOrEmpty(textureName))
+                    {
+                        continue;
+                    }
+
+                    bool completed = false;
+                    yield return LoadTextureAsync(textureName, false, false, (texture) =>
+                    {
+                        completed = true;
+                    });
+
+                    while (!completed)
+                    {
+                        yield return null;
+                    }
+
+                    yield return null;
+                }
+            }
+
+            if (maskNames != null)
+            {
+                foreach (string maskName in maskNames)
+                {
+                    if (string.IsNullOrEmpty(maskName))
+                    {
+                        continue;
+                    }
+
+                    bool completed = false;
+                    yield return LoadTextureAsync(maskName, true, false, (texture) =>
+                    {
+                        completed = true;
+                    });
+
+                    while (!completed)
+                    {
+                        yield return null;
+                    }
+
+                    yield return null;
+                }
             }
         }
 
@@ -591,7 +837,12 @@ namespace RWXLoader
                 if (textureData != null && textureData.Length > 0)
                 {
                     // Try to create texture from byte data
-                    Texture2D texture = LoadTextureFromBytes(textureData, foundFileName, isMask, isDoubleSided);
+                    Texture2D texture = null;
+                    yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, (loadedTexture) =>
+                    {
+                        texture = loadedTexture;
+                    });
+
                     if (texture != null)
                     {
                         onComplete?.Invoke(texture);
@@ -635,8 +886,12 @@ namespace RWXLoader
 
             if (downloadSuccess && File.Exists(localTexturePath))
             {
-                byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
+                Texture2D texture = null;
+                yield return LoadTextureFromFileAsync(localTexturePath, isDoubleSided, (loadedTexture) =>
+                {
+                    texture = loadedTexture;
+                });
+
                 if (texture != null)
                 {
                     string cacheKey = textureName + (isDoubleSided ? "_DS" : "");

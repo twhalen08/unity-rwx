@@ -267,6 +267,7 @@ namespace RWXLoader
 
             // Set up material manager to load textures from remote
             materialManager.SetTextureSource(objectPath, password);
+            StartTexturePreload(rwxContent);
 
             // Reset parser state for new model
             parser?.Reset();
@@ -291,6 +292,68 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        private void StartTexturePreload(string rwxContent)
+        {
+            if (string.IsNullOrEmpty(rwxContent) || materialManager == null || materialManager.textureLoader == null)
+            {
+                return;
+            }
+
+            HashSet<string> textureNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> maskNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            CollectTextureNames(rwxContent, textureNames, maskNames);
+
+            if (textureNames.Count == 0 && maskNames.Count == 0)
+            {
+                return;
+            }
+
+            StartCoroutine(materialManager.textureLoader.PreloadTextures(textureNames, maskNames));
+        }
+
+        private void CollectTextureNames(string rwxContent, HashSet<string> textures, HashSet<string> masks)
+        {
+            string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string line in lines)
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                if (!trimmed.StartsWith("texture", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string[] tokens = trimmed.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length < 2)
+                {
+                    continue;
+                }
+
+                string textureName = tokens[1];
+                if (!string.Equals(textureName, "null", StringComparison.OrdinalIgnoreCase))
+                {
+                    textures.Add(textureName);
+                }
+
+                for (int i = 2; i + 1 < tokens.Length; i++)
+                {
+                    if (string.Equals(tokens[i], "mask", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string maskName = tokens[i + 1];
+                        if (!string.Equals(maskName, "null", StringComparison.OrdinalIgnoreCase))
+                        {
+                            masks.Add(maskName);
+                        }
+                    }
+                }
+            }
         }
 
         private string FindFirstRwxEntry(ZipArchive archive)
