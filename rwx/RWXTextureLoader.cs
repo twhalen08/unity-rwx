@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Threading.Tasks;
@@ -13,6 +14,9 @@ namespace RWXLoader
     /// </summary>
     public class RWXTextureLoader : MonoBehaviour
     {
+        [Header("Debug")]
+        public bool enableDebugLogs = false;
+
         private struct PreparedTextureData
         {
             public string EffectiveFileName;
@@ -904,6 +908,7 @@ namespace RWXLoader
                 yield break;
             }
 
+            var readWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
             Task<byte[]> readTask = Task.Run(() => File.ReadAllBytes(filePath));
             while (!readTask.IsCompleted)
             {
@@ -917,6 +922,11 @@ namespace RWXLoader
             }
 
             byte[] fileData = readTask.Result;
+            if (readWatch != null)
+            {
+                readWatch.Stop();
+                Debug.Log($"[RWXTextureLoader] Read '{filePath}' in {readWatch.ElapsedMilliseconds}ms");
+            }
             string fileName = Path.GetFileName(filePath);
             string effectiveFileName = fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
                 ? Path.GetFileNameWithoutExtension(fileName)
@@ -926,10 +936,16 @@ namespace RWXLoader
             yield return null;
 
             Texture2D texture = null;
+            var decodeWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
             yield return LoadTextureFromBytesAsync(fileData, fileName, isMask, isDoubleSided, loaded =>
             {
                 texture = loaded;
             });
+            if (decodeWatch != null)
+            {
+                decodeWatch.Stop();
+                Debug.Log($"[RWXTextureLoader] Decode '{fileName}' in {decodeWatch.ElapsedMilliseconds}ms");
+            }
 
             onComplete?.Invoke(texture);
         }
@@ -993,6 +1009,7 @@ namespace RWXLoader
 
         public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
+            var prepWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
             Task<PreparedTextureData> prepareTask = Task.Run(() => PrepareTextureData(data, fileName));
 
             while (!prepareTask.IsCompleted)
@@ -1007,6 +1024,12 @@ namespace RWXLoader
             }
 
             yield return null;
+
+            if (prepWatch != null)
+            {
+                prepWatch.Stop();
+                Debug.Log($"[RWXTextureLoader] Prepare '{fileName}' in {prepWatch.ElapsedMilliseconds}ms");
+            }
 
             Texture2D texture = CreateTextureFromPreparedData(prepareTask.Result, isMask, isDoubleSided);
             onComplete?.Invoke(texture);
@@ -1076,6 +1099,7 @@ namespace RWXLoader
                 yield break;
             }
 
+            var zipReadWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
             // For masks, try multiple possible file names inside the ZIP
             string[] possibleNames;
             if (isMask)
@@ -1148,6 +1172,12 @@ namespace RWXLoader
                         assetManager.UnloadZipArchive(localZipPath);
                     }
                 }
+            }
+
+            if (zipReadWatch != null)
+            {
+                zipReadWatch.Stop();
+                Debug.Log($"[RWXTextureLoader] Read zip '{localZipPath}' in {zipReadWatch.ElapsedMilliseconds}ms (found '{foundFileName ?? "none"}')");
             }
 
             if (textureData != null && textureData.Length > 0)
