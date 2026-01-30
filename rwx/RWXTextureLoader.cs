@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -1027,25 +1028,28 @@ namespace RWXLoader
                 prepareSemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
             }
 
-            Task<PreparedTextureResult> prepareTask = Task.Run(() =>
-            {
-                prepareSemaphore.Wait();
-                try
+            Task<PreparedTextureResult> prepareTask = Task.Factory.StartNew(() =>
                 {
-                    var prepStopwatch = Stopwatch.StartNew();
-                    PreparedTextureData prepared = PrepareTextureData(data, fileName);
-                    prepStopwatch.Stop();
-                    return new PreparedTextureResult
+                    prepareSemaphore.Wait();
+                    try
                     {
-                        Data = prepared,
-                        PreparationMs = prepStopwatch.ElapsedMilliseconds
-                    };
-                }
-                finally
-                {
-                    prepareSemaphore.Release();
-                }
-            });
+                        var prepStopwatch = Stopwatch.StartNew();
+                        PreparedTextureData prepared = PrepareTextureData(data, fileName);
+                        prepStopwatch.Stop();
+                        return new PreparedTextureResult
+                        {
+                            Data = prepared,
+                            PreparationMs = prepStopwatch.ElapsedMilliseconds
+                        };
+                    }
+                    finally
+                    {
+                        prepareSemaphore.Release();
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
 
             while (!prepareTask.IsCompleted)
             {
