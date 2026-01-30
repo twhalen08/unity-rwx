@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -64,7 +65,16 @@ namespace RWXLoader
         private RWXAssetManager assetManager;
         private string currentObjectPath;
         private string objectPathPassword;
-        private SemaphoreSlim prepareSemaphore;
+        private ConcurrentQueue<PrepareJob> prepareQueue;
+        private AutoResetEvent prepareSignal;
+        private List<Thread> prepareWorkers;
+
+        private class PrepareJob
+        {
+            public byte[] Data;
+            public string FileName;
+            public TaskCompletionSource<PreparedTextureResult> Completion;
+        }
 
         private void Start()
         {
@@ -1022,41 +1032,23 @@ namespace RWXLoader
         public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
             var prepWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
-            if (prepareSemaphore == null)
+            EnsurePrepareWorkers();
+
+            var completion = new TaskCompletionSource<PreparedTextureResult>();
+            prepareQueue.Enqueue(new PrepareJob
             {
-                int maxConcurrent = Mathf.Max(1, maxConcurrentPreparations);
-                prepareSemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
-            }
+                Data = data,
+                FileName = fileName,
+                Completion = completion
+            });
+            prepareSignal.Set();
 
-            Task<PreparedTextureResult> prepareTask = Task.Factory.StartNew(() =>
-                {
-                    prepareSemaphore.Wait();
-                    try
-                    {
-                        var prepStopwatch = Stopwatch.StartNew();
-                        PreparedTextureData prepared = PrepareTextureData(data, fileName);
-                        prepStopwatch.Stop();
-                        return new PreparedTextureResult
-                        {
-                            Data = prepared,
-                            PreparationMs = prepStopwatch.ElapsedMilliseconds
-                        };
-                    }
-                    finally
-                    {
-                        prepareSemaphore.Release();
-                    }
-                },
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default);
-
-            while (!prepareTask.IsCompleted)
+            while (!completion.Task.IsCompleted)
             {
                 yield return null;
             }
 
-            if (prepareTask.IsFaulted)
+            if (completion.Task.IsFaulted)
             {
                 onComplete?.Invoke(null);
                 yield break;
@@ -1065,7 +1057,7 @@ namespace RWXLoader
             yield return null;
 
             long wallMs = prepWatch?.ElapsedMilliseconds ?? 0;
-            PreparedTextureResult result = prepareTask.Result;
+            PreparedTextureResult result = completion.Task.Result;
             if (prepWatch != null)
             {
                 prepWatch.Stop();
@@ -1081,6 +1073,58 @@ namespace RWXLoader
                 Debug.Log($"[RWXTextureLoader] Create '{fileName}' in {createWatch.ElapsedMilliseconds}ms");
             }
             onComplete?.Invoke(texture);
+        }
+
+        private void EnsurePrepareWorkers()
+        {
+            if (prepareWorkers != null)
+            {
+                return;
+            }
+
+            int workerCount = Mathf.Max(1, maxConcurrentPreparations);
+            prepareQueue = new ConcurrentQueue<PrepareJob>();
+            prepareSignal = new AutoResetEvent(false);
+            prepareWorkers = new List<Thread>(workerCount);
+
+            for (int i = 0; i < workerCount; i++)
+            {
+                var thread = new Thread(PrepareWorkerLoop)
+                {
+                    IsBackground = true,
+                    Name = $"RWXTexturePrep-{i}"
+                };
+                prepareWorkers.Add(thread);
+                thread.Start();
+            }
+        }
+
+        private void PrepareWorkerLoop()
+        {
+            while (true)
+            {
+                if (!prepareQueue.TryDequeue(out PrepareJob job))
+                {
+                    prepareSignal.WaitOne();
+                    continue;
+                }
+
+                try
+                {
+                    var prepStopwatch = Stopwatch.StartNew();
+                    PreparedTextureData prepared = PrepareTextureData(job.Data, job.FileName);
+                    prepStopwatch.Stop();
+                    job.Completion.TrySetResult(new PreparedTextureResult
+                    {
+                        Data = prepared,
+                        PreparationMs = prepStopwatch.ElapsedMilliseconds
+                    });
+                }
+                catch (Exception ex)
+                {
+                    job.Completion.TrySetException(ex);
+                }
+            }
         }
 
         /// <summary>
