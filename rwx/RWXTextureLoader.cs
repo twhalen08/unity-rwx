@@ -711,6 +711,40 @@ namespace RWXLoader
                 yield break;
             }
 
+            Task<string> findTask = Task.Run(() => FindLocalTexturePath(textureName));
+            while (!findTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (findTask.IsFaulted)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            string localPath = findTask.Result;
+            if (!string.IsNullOrEmpty(localPath))
+            {
+                Texture2D texture = null;
+                yield return LoadTextureLocalAsync(localPath, isDoubleSided, loaded =>
+                {
+                    texture = loaded;
+                });
+
+                if (texture != null)
+                {
+                    textureCache[cacheKey] = texture;
+                    onComplete?.Invoke(texture);
+                    yield break;
+                }
+            }
+
+            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
+        }
+
+        private string FindLocalTexturePath(string textureName)
+        {
             string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
             List<string> basePathsList = new List<string>
             {
@@ -732,18 +766,7 @@ namespace RWXLoader
                 string directPath = Path.Combine(basePath, textureName);
                 if (File.Exists(directPath))
                 {
-                    Texture2D texture = null;
-                    yield return LoadTextureLocalAsync(directPath, isDoubleSided, loaded =>
-                    {
-                        texture = loaded;
-                    });
-
-                    if (texture != null)
-                    {
-                        textureCache[cacheKey] = texture;
-                        onComplete?.Invoke(texture);
-                        yield break;
-                    }
+                    return directPath;
                 }
 
                 if (string.IsNullOrEmpty(Path.GetExtension(textureName)))
@@ -753,24 +776,13 @@ namespace RWXLoader
                         string fullPath = Path.Combine(basePath, textureName + ext);
                         if (File.Exists(fullPath))
                         {
-                            Texture2D texture = null;
-                            yield return LoadTextureLocalAsync(fullPath, isDoubleSided, loaded =>
-                            {
-                                texture = loaded;
-                            });
-
-                            if (texture != null)
-                            {
-                                textureCache[cacheKey] = texture;
-                                onComplete?.Invoke(texture);
-                                yield break;
-                            }
+                            return fullPath;
                         }
                     }
                 }
             }
 
-            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
+            return null;
         }
 
         /// <summary>
