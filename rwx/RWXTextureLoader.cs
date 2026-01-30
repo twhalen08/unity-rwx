@@ -31,6 +31,12 @@ namespace RWXLoader
             public BmpPreparedData BmpData;
         }
 
+        private struct PreparedTextureResult
+        {
+            public PreparedTextureData Data;
+            public long PreparationMs;
+        }
+
         private struct DdsPreparedData
         {
             public int Width;
@@ -1021,12 +1027,19 @@ namespace RWXLoader
                 prepareSemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
             }
 
-            Task<PreparedTextureData> prepareTask = Task.Run(() =>
+            Task<PreparedTextureResult> prepareTask = Task.Run(() =>
             {
                 prepareSemaphore.Wait();
                 try
                 {
-                    return PrepareTextureData(data, fileName);
+                    var prepStopwatch = Stopwatch.StartNew();
+                    PreparedTextureData prepared = PrepareTextureData(data, fileName);
+                    prepStopwatch.Stop();
+                    return new PreparedTextureResult
+                    {
+                        Data = prepared,
+                        PreparationMs = prepStopwatch.ElapsedMilliseconds
+                    };
                 }
                 finally
                 {
@@ -1047,13 +1060,22 @@ namespace RWXLoader
 
             yield return null;
 
+            long wallMs = prepWatch?.ElapsedMilliseconds ?? 0;
+            PreparedTextureResult result = prepareTask.Result;
             if (prepWatch != null)
             {
                 prepWatch.Stop();
-                Debug.Log($"[RWXTextureLoader] Prepare '{fileName}' in {prepWatch.ElapsedMilliseconds}ms");
+                long queueMs = wallMs - result.PreparationMs;
+                Debug.Log($"[RWXTextureLoader] Prepare '{fileName}' wall={wallMs}ms prep={result.PreparationMs}ms queue={queueMs}ms");
             }
 
-            Texture2D texture = CreateTextureFromPreparedData(prepareTask.Result, isMask, isDoubleSided);
+            var createWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+            Texture2D texture = CreateTextureFromPreparedData(result.Data, isMask, isDoubleSided);
+            if (createWatch != null)
+            {
+                createWatch.Stop();
+                Debug.Log($"[RWXTextureLoader] Create '{fileName}' in {createWatch.ElapsedMilliseconds}ms");
+            }
             onComplete?.Invoke(texture);
         }
 
