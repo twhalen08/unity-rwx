@@ -37,7 +37,7 @@ namespace RWXLoader
         {
             public int Width;
             public int Height;
-            public Color32[] Pixels;
+            public byte[] RawData;
             public string TextureName;
         }
 
@@ -507,7 +507,7 @@ namespace RWXLoader
 
                 int absHeight = Math.Abs(height);
                 int absWidth = Math.Abs(width);
-                Color32[] pixels = new Color32[absWidth * absHeight];
+                byte[] rawData = new byte[absWidth * absHeight * 4];
 
                 bool isBottomUp = height > 0;
 
@@ -534,8 +534,11 @@ namespace RWXLoader
 
                             bool isWhite = ((bmpData[byteIndex] >> bitIndex) & 1) == 1;
                             byte gray = (byte)(isWhite ? 255 : 0);
-                            int targetIndex = y * absWidth + x;
-                            pixels[targetIndex] = new Color32(gray, gray, gray, 255);
+                            int targetIndex = (y * absWidth + x) * 4;
+                            rawData[targetIndex] = gray;
+                            rawData[targetIndex + 1] = gray;
+                            rawData[targetIndex + 2] = gray;
+                            rawData[targetIndex + 3] = 255;
                         }
                     }
                 }
@@ -562,8 +565,11 @@ namespace RWXLoader
                             byte r = bmpData[pixelIndex + 2];
                             byte a = bytesPerPixel == 4 ? bmpData[pixelIndex + 3] : (byte)255;
 
-                            int targetIndex = y * absWidth + x;
-                            pixels[targetIndex] = new Color32(r, g, b, a);
+                            int targetIndex = (y * absWidth + x) * 4;
+                            rawData[targetIndex] = r;
+                            rawData[targetIndex + 1] = g;
+                            rawData[targetIndex + 2] = b;
+                            rawData[targetIndex + 3] = a;
                         }
                     }
                 }
@@ -572,7 +578,7 @@ namespace RWXLoader
                 {
                     Width = absWidth,
                     Height = absHeight,
-                    Pixels = pixels,
+                    RawData = rawData,
                     TextureName = Path.GetFileNameWithoutExtension(fileName)
                 };
 
@@ -674,8 +680,8 @@ namespace RWXLoader
             {
                 var bmp = prepared.BmpData;
                 Texture2D bmpTexture = new Texture2D(bmp.Width, bmp.Height, TextureFormat.RGBA32, false);
-                bmpTexture.SetPixels32(bmp.Pixels);
-                bmpTexture.Apply();
+                bmpTexture.LoadRawTextureData(bmp.RawData);
+                bmpTexture.Apply(false, false);
                 bmpTexture.name = bmp.TextureName;
                 return bmpTexture;
             }
