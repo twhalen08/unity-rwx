@@ -409,28 +409,6 @@ namespace RWXLoader
                     }
                 }
 
-                if (!SystemInfo.SupportsTextureFormat(format))
-                {
-                    if ((format == TextureFormat.BC5 || format == TextureFormat.BC7) && SystemInfo.SupportsTextureFormat(TextureFormat.DXT5))
-                    {
-                        format = TextureFormat.DXT5;
-                    }
-                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
-                    {
-                        format = TextureFormat.DXT1;
-                    }
-                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
-                    {
-                        format = TextureFormat.RGBA32;
-                        isBlockCompressed = false;
-                        bytesPerPixel = 4;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-
                 if (data.Length <= headerSize)
                 {
                     return false;
@@ -864,7 +842,7 @@ namespace RWXLoader
         {
             try
             {
-                PreparedTextureData prepared = Task.Run(() => PrepareTextureData(data, fileName)).GetAwaiter().GetResult();
+                PreparedTextureData prepared = PrepareTextureData(data, fileName);
                 return CreateTextureFromPreparedData(prepared, isMask, isDoubleSided);
             }
             catch (System.Exception e)
@@ -875,14 +853,18 @@ namespace RWXLoader
 
         public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
-            Task<PreparedTextureData> prepareTask = Task.Run(() => PrepareTextureData(data, fileName));
+            Task<Texture2D> loadTask = Task.Run(() =>
+            {
+                PreparedTextureData prepared = PrepareTextureData(data, fileName);
+                return CreateTextureFromPreparedData(prepared, isMask, isDoubleSided);
+            });
 
-            while (!prepareTask.IsCompleted)
+            while (!loadTask.IsCompleted)
             {
                 yield return null;
             }
 
-            if (prepareTask.IsFaulted)
+            if (loadTask.IsFaulted)
             {
                 onComplete?.Invoke(null);
                 yield break;
@@ -890,8 +872,7 @@ namespace RWXLoader
 
             yield return null;
 
-            Texture2D texture = CreateTextureFromPreparedData(prepareTask.Result, isMask, isDoubleSided);
-            onComplete?.Invoke(texture);
+            onComplete?.Invoke(loadTask.Result);
         }
 
         /// <summary>

@@ -272,33 +272,27 @@ public static class VpActionExecutor
         bool isDds = ext == ".dds" || localPath.EndsWith(".dds.gz", StringComparison.OrdinalIgnoreCase);
 
         Texture2D tex = null;
+        RWXTextureLoader loader = host.GetComponent<RWXTextureLoader>();
+        if (loader == null) loader = host.gameObject.AddComponent<RWXTextureLoader>();
 
-        if (isDds)
+        string fileName = Path.GetFileName(localPath);
+        yield return loader.LoadTextureFromBytesAsync(bytes, fileName, isMask: false, isDoubleSided: false, loaded =>
         {
-            RWXTextureLoader loader = host.GetComponent<RWXTextureLoader>();
-            if (loader == null) loader = host.gameObject.AddComponent<RWXTextureLoader>();
+            tex = loaded;
+        });
 
-            string fileName = Path.GetFileName(localPath);
-            yield return loader.LoadTextureFromBytesAsync(bytes, fileName, isMask: false, isDoubleSided: false, loaded =>
-            {
-                tex = loaded;
-            });
-
-            if (tex == null)
+        if (tex == null)
+        {
+            if (isDds)
             {
                 string sig4 = bytes.Length >= 4 ? System.Text.Encoding.ASCII.GetString(bytes, 0, 4) : "????";
                 Debug.LogWarning($"[VP] DDS decode failed for '{textureName}' at '{localPath}' sig='{sig4}' len={bytes.Length}. Check DDSDBG logs from RWXTextureLoader.");
-                yield break;
             }
-        }
-        else
-        {
-            tex = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain: true);
-            if (!tex.LoadImage(bytes))
+            else
             {
                 Debug.LogWarning($"[VP] Unity couldn't decode texture '{textureName}' at '{localPath}'");
-                yield break;
             }
+            yield break;
         }
 
         yield return null;
