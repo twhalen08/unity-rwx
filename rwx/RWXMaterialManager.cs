@@ -173,11 +173,11 @@ namespace RWXLoader
             // Load main texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                yield return textureLoader.LoadTextureAsync(rwxMaterial.texture, false, (texture) =>
+                StartCoroutine(textureLoader.LoadTextureAsync(rwxMaterial.texture, false, (texture) =>
                 {
                     mainTexture = texture;
                     mainTextureLoaded = true;
-                });
+                }));
             }
             else
             {
@@ -187,11 +187,11 @@ namespace RWXLoader
             // Load mask texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                yield return textureLoader.LoadTextureAsync(rwxMaterial.mask, true, (texture) =>
+                StartCoroutine(textureLoader.LoadTextureAsync(rwxMaterial.mask, true, (texture) =>
                 {
                     maskTexture = texture;
                     maskTextureLoaded = true;
-                });
+                }));
             }
             else
             {
