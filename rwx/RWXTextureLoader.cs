@@ -17,6 +17,10 @@ namespace RWXLoader
         [Header("Debug")]
         public bool enableDebugLogs = false;
 
+        [Header("Performance")]
+        [Min(1)]
+        public int maxConcurrentPreparations = 2;
+
         private struct PreparedTextureData
         {
             public string EffectiveFileName;
@@ -53,6 +57,7 @@ namespace RWXLoader
         private RWXAssetManager assetManager;
         private string currentObjectPath;
         private string objectPathPassword;
+        private SemaphoreSlim prepareSemaphore;
 
         private void Start()
         {
@@ -1010,7 +1015,24 @@ namespace RWXLoader
         public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
             var prepWatch = enableDebugLogs ? System.Diagnostics.Stopwatch.StartNew() : null;
-            Task<PreparedTextureData> prepareTask = Task.Run(() => PrepareTextureData(data, fileName));
+            if (prepareSemaphore == null)
+            {
+                int maxConcurrent = Mathf.Max(1, maxConcurrentPreparations);
+                prepareSemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+            }
+
+            Task<PreparedTextureData> prepareTask = Task.Run(() =>
+            {
+                prepareSemaphore.Wait();
+                try
+                {
+                    return PrepareTextureData(data, fileName);
+                }
+                finally
+                {
+                    prepareSemaphore.Release();
+                }
+            });
 
             while (!prepareTask.IsCompleted)
             {
