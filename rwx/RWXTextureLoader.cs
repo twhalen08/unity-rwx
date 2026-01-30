@@ -1011,8 +1011,12 @@ namespace RWXLoader
                 
                 if (textureData != null && textureData.Length > 0)
                 {
-                    // Try to create texture from byte data
-                    Texture2D texture = LoadTextureFromBytes(textureData, foundFileName, isMask, isDoubleSided);
+                    Texture2D texture = null;
+                    yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, loaded =>
+                    {
+                        texture = loaded;
+                    });
+
                     if (texture != null)
                     {
                         onComplete?.Invoke(texture);
