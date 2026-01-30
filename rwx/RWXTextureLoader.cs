@@ -768,6 +768,55 @@ namespace RWXLoader
         }
 
         /// <summary>
+        /// Loads texture from file path asynchronously with double-sided support
+        /// </summary>
+        public IEnumerator LoadTextureLocalAsync(string filePath, System.Action<Texture2D> onComplete)
+        {
+            return LoadTextureLocalAsync(filePath, false, onComplete);
+        }
+
+        /// <summary>
+        /// Loads texture from file path asynchronously with double-sided support
+        /// </summary>
+        public IEnumerator LoadTextureLocalAsync(string filePath, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            Task<byte[]> readTask = Task.Run(() => File.ReadAllBytes(filePath));
+            while (!readTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (readTask.IsFaulted)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            byte[] fileData = readTask.Result;
+            string fileName = Path.GetFileName(filePath);
+            string effectiveFileName = fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFileNameWithoutExtension(fileName)
+                : fileName;
+            bool isMask = IsMaskFile(effectiveFileName);
+
+            yield return null;
+
+            Texture2D texture = null;
+            yield return LoadTextureFromBytesAsync(fileData, fileName, isMask, isDoubleSided, loaded =>
+            {
+                texture = loaded;
+            });
+
+            onComplete?.Invoke(texture);
+        }
+
+        /// <summary>
         /// Loads texture from file path with double-sided support
         /// </summary>
         public Texture2D LoadTextureFromFile(string filePath, bool isDoubleSided)
