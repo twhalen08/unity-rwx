@@ -1076,79 +1076,164 @@ namespace RWXLoader
                 yield break;
             }
 
-            // Load the ZIP archive
-            var archive = assetManager.LoadZipArchive(localZipPath);
-            if (archive == null)
+            // For masks, try multiple possible file names inside the ZIP
+            string[] possibleNames;
+            if (isMask)
             {
-                onComplete?.Invoke(null);
-                yield break;
+                possibleNames = new string[] {
+                    textureNameWithExt,  // e.g., "t_tl01m.bmp"
+                    baseName + ".bmp",   // e.g., "t_tl01m.bmp"
+                    baseName + ".BMP",   // uppercase variant
+                    baseName,            // just the base name
+                };
+            }
+            else
+            {
+                possibleNames = new string[] {
+                    textureNameWithExt,  // e.g., "t_leaves12.jpg"
+                    baseName + ".jpg",   // e.g., "t_leaves12.jpg"
+                    baseName + ".JPG",   // uppercase variant
+                    baseName + ".jpeg",  // alternative extension
+                    baseName + ".png",   // alternative extension
+                    baseName + ".dds",   // DDS texture
+                    baseName + ".DDS",   // uppercase DDS
+                    baseName + ".dds.gz",// compressed DDS
+                    baseName + ".DDS.GZ",// uppercase compressed DDS
+                    baseName,            // just the base name
+                };
+            }
+
+            byte[] textureData = null;
+            string foundFileName = null;
+
+            if (string.IsNullOrEmpty(objectPathPassword))
+            {
+                Task<(byte[] data, string foundName)> readTask = Task.Run(() =>
+                {
+                    byte[] data = ReadBytesFromZipPath(localZipPath, possibleNames, out string foundName);
+                    return (data, foundName);
+                });
+
+                while (!readTask.IsCompleted)
+                {
+                    yield return null;
+                }
+
+                if (!readTask.IsFaulted)
+                {
+                    textureData = readTask.Result.data;
+                    foundFileName = readTask.Result.foundName;
+                }
+            }
+            else
+            {
+                // Encrypted zips must use SharpZipLib path on the main thread.
+                var archive = assetManager.LoadZipArchive(localZipPath);
+                if (archive != null)
+                {
+                    try
+                    {
+                        foreach (string fileName in possibleNames)
+                        {
+                            textureData = assetManager.ReadBytesFromZip(archive, fileName, localZipPath, objectPathPassword);
+                            if (textureData != null && textureData.Length > 0)
+                            {
+                                foundFileName = fileName;
+                                break;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        assetManager.UnloadZipArchive(localZipPath);
+                    }
+                }
+            }
+
+            if (textureData != null && textureData.Length > 0)
+            {
+                Texture2D texture = null;
+                yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, loaded =>
+                {
+                    texture = loaded;
+                });
+
+                if (texture != null)
+                {
+                    onComplete?.Invoke(texture);
+                    yield break;
+                }
+            }
+
+            onComplete?.Invoke(null);
+        }
+
+        private byte[] ReadBytesFromZipPath(string zipPath, string[] possibleNames, out string foundFileName)
+        {
+            foundFileName = null;
+            if (string.IsNullOrEmpty(zipPath) || possibleNames == null || possibleNames.Length == 0)
+            {
+                return null;
             }
 
             try
             {
-                // For masks, try multiple possible file names inside the ZIP
-                string[] possibleNames;
-                if (isMask)
+                using var fs = File.OpenRead(zipPath);
+                using var archive = new ZipArchive(fs, ZipArchiveMode.Read);
+                foreach (var entry in archive.Entries)
                 {
-                    possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_tl01m.bmp"
-                        baseName + ".bmp",   // e.g., "t_tl01m.bmp"
-                        baseName + ".BMP",   // uppercase variant
-                        baseName,            // just the base name
-                    };
-                }
-                else
-                {
-                    possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_leaves12.jpg"
-                        baseName + ".jpg",   // e.g., "t_leaves12.jpg"
-                        baseName + ".JPG",   // uppercase variant
-                        baseName + ".jpeg",  // alternative extension
-                        baseName + ".png",   // alternative extension
-                        baseName + ".dds",   // DDS texture
-                        baseName + ".DDS",   // uppercase DDS
-                        baseName + ".dds.gz",// compressed DDS
-                        baseName + ".DDS.GZ",// uppercase compressed DDS
-                        baseName,            // just the base name
-                    };
-                }
-
-                byte[] textureData = null;
-                string foundFileName = null;
-
-                // Try each possible file name
-                foreach (string fileName in possibleNames)
-                {
-                    textureData = assetManager.ReadBytesFromZip(archive, fileName, localZipPath, objectPathPassword);
-                    if (textureData != null && textureData.Length > 0)
+                    if (entry == null)
                     {
-                        foundFileName = fileName;
-                        break;
+                        continue;
                     }
-                }
-                
-                if (textureData != null && textureData.Length > 0)
-                {
-                    Texture2D texture = null;
-                    yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, loaded =>
-                    {
-                        texture = loaded;
-                    });
 
-                    if (texture != null)
+                    string entryName = entry.FullName ?? string.Empty;
+                    string entryFileName = Path.GetFileName(entryName);
+                    string entryNameNoExt = Path.GetFileNameWithoutExtension(entryName);
+                    string entryFileNameNoExt = Path.GetFileNameWithoutExtension(entryFileName);
+
+                    foreach (string candidate in possibleNames)
                     {
-                        onComplete?.Invoke(texture);
-                        yield break;
+                        if (string.IsNullOrEmpty(candidate))
+                        {
+                            continue;
+                        }
+
+                        string decodedCandidate = Uri.UnescapeDataString(candidate);
+                        string candidateFileName = Path.GetFileName(candidate);
+                        string candidateFileNameDecoded = Path.GetFileName(decodedCandidate);
+                        string candidateNoExt = Path.GetFileNameWithoutExtension(candidate);
+                        string candidateDecodedNoExt = Path.GetFileNameWithoutExtension(decodedCandidate);
+
+                        bool match =
+                            string.Equals(entryName, candidate, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryName, decodedCandidate, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryFileName, candidateFileName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryFileName, candidateFileNameDecoded, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryNameNoExt, candidateNoExt, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryNameNoExt, candidateDecodedNoExt, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryFileNameNoExt, candidateNoExt, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(entryFileNameNoExt, candidateDecodedNoExt, StringComparison.OrdinalIgnoreCase);
+
+                        if (!match)
+                        {
+                            continue;
+                        }
+
+                        using var stream = entry.Open();
+                        using var ms = new MemoryStream();
+                        stream.CopyTo(ms);
+                        foundFileName = candidate;
+                        return ms.ToArray();
                     }
                 }
             }
-            finally
+            catch
             {
-                // Clean up the ZIP archive
-                assetManager.UnloadZipArchive(localZipPath);
+                return null;
             }
 
-            onComplete?.Invoke(null);
+            return null;
         }
 
         /// <summary>
@@ -1178,23 +1263,22 @@ namespace RWXLoader
 
             if (downloadSuccess && File.Exists(localTexturePath))
             {
-                byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
+                Texture2D texture = null;
+                yield return LoadTextureLocalAsync(localTexturePath, isDoubleSided, loaded =>
+                {
+                    texture = loaded;
+                });
+
                 if (texture != null)
                 {
                     string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
                     textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
                     onComplete?.Invoke(texture);
-                }
-                else
-                {
-                    onComplete?.Invoke(null);
+                    yield break;
                 }
             }
-            else
-            {
-                onComplete?.Invoke(null);
-            }
+
+            onComplete?.Invoke(null);
         }
 
         /// <summary>
