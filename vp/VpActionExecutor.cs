@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Threading.Tasks;
 using RWXLoader;
 using UnityEngine;
 
@@ -248,16 +249,23 @@ public static class VpActionExecutor
             yield break;
         }
 
-        byte[] bytes;
-        try
+        Task<byte[]> readTask = Task.Run(() => File.ReadAllBytes(localPath));
+
+        while (!readTask.IsCompleted)
         {
-            bytes = File.ReadAllBytes(localPath);
+            yield return null;
         }
-        catch (Exception e)
+
+        if (readTask.IsFaulted)
         {
-            Debug.LogWarning($"[VP] texture read failed '{localPath}': {e.Message}");
+            string message = readTask.Exception?.GetBaseException().Message ?? "Unknown error";
+            Debug.LogWarning($"[VP] texture read failed '{localPath}': {message}");
             yield break;
         }
+
+        byte[] bytes = readTask.Result;
+
+        yield return null;
 
         // ---------- IMPORTANT: DDS must NOT use Texture2D.LoadImage ----------
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
@@ -267,18 +275,17 @@ public static class VpActionExecutor
 
         if (isDds)
         {
-            // Ensure we have a RWXTextureLoader component to decode DDS
             RWXTextureLoader loader = host.GetComponent<RWXTextureLoader>();
             if (loader == null) loader = host.gameObject.AddComponent<RWXTextureLoader>();
 
-            // Pass filename so loader knows if it’s .dds.gz and will gzip-decompress
             string fileName = Path.GetFileName(localPath);
-
-            tex = loader.LoadTextureFromBytes(bytes, fileName, isMask: false, isDoubleSided: false);
+            yield return loader.LoadTextureFromBytesAsync(bytes, fileName, isMask: false, isDoubleSided: false, loaded =>
+            {
+                tex = loaded;
+            });
 
             if (tex == null)
             {
-                // Extra hint: are we even looking at DDS bytes?
                 string sig4 = bytes.Length >= 4 ? System.Text.Encoding.ASCII.GetString(bytes, 0, 4) : "????";
                 Debug.LogWarning($"[VP] DDS decode failed for '{textureName}' at '{localPath}' sig='{sig4}' len={bytes.Length}. Check DDSDBG logs from RWXTextureLoader.");
                 yield break;
@@ -286,7 +293,6 @@ public static class VpActionExecutor
         }
         else
         {
-            // Normal images (jpg/png/bmp...) can use Unity decode
             tex = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain: true);
             if (!tex.LoadImage(bytes))
             {
@@ -294,6 +300,8 @@ public static class VpActionExecutor
                 yield break;
             }
         }
+
+        yield return null;
 
         tex.name = Path.GetFileNameWithoutExtension(localPath);
 
