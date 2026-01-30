@@ -711,40 +711,6 @@ namespace RWXLoader
                 yield break;
             }
 
-            Task<string> findTask = Task.Run(() => FindLocalTexturePath(textureName));
-            while (!findTask.IsCompleted)
-            {
-                yield return null;
-            }
-
-            if (findTask.IsFaulted)
-            {
-                onComplete?.Invoke(null);
-                yield break;
-            }
-
-            string localPath = findTask.Result;
-            if (!string.IsNullOrEmpty(localPath))
-            {
-                Texture2D texture = null;
-                yield return LoadTextureLocalAsync(localPath, isDoubleSided, loaded =>
-                {
-                    texture = loaded;
-                });
-
-                if (texture != null)
-                {
-                    textureCache[cacheKey] = texture;
-                    onComplete?.Invoke(texture);
-                    yield break;
-                }
-            }
-
-            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
-        }
-
-        private string FindLocalTexturePath(string textureName)
-        {
             string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
             List<string> basePathsList = new List<string>
             {
@@ -761,6 +727,37 @@ namespace RWXLoader
                 basePathsList.Insert(0, texturesCachePath);
             }
 
+            Task<string> findTask = Task.Run(() => FindLocalTexturePath(textureName, basePathsList, extensions));
+            while (!findTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (!findTask.IsFaulted)
+            {
+                string localPath = findTask.Result;
+                if (!string.IsNullOrEmpty(localPath))
+                {
+                    Texture2D texture = null;
+                    yield return LoadTextureLocalAsync(localPath, isDoubleSided, loaded =>
+                    {
+                        texture = loaded;
+                    });
+
+                    if (texture != null)
+                    {
+                        textureCache[cacheKey] = texture;
+                        onComplete?.Invoke(texture);
+                        yield break;
+                    }
+                }
+            }
+
+            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
+        }
+
+        private string FindLocalTexturePath(string textureName, List<string> basePathsList, string[] extensions)
+        {
             foreach (string basePath in basePathsList)
             {
                 string directPath = Path.Combine(basePath, textureName);
@@ -783,6 +780,27 @@ namespace RWXLoader
             }
 
             return null;
+        }
+
+        private string FindLocalTexturePath(string textureName)
+        {
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
+            List<string> basePathsList = new List<string>
+            {
+                Path.Combine(Application.streamingAssetsPath, textureFolder),
+                Path.Combine(Application.persistentDataPath, textureFolder),
+                Path.Combine(Application.dataPath, textureFolder),
+                textureFolder
+            };
+
+            if (!string.IsNullOrEmpty(currentObjectPath) && assetManager != null)
+            {
+                string cachePath = assetManager.GetCachePath(currentObjectPath);
+                string texturesCachePath = Path.Combine(cachePath, "textures");
+                basePathsList.Insert(0, texturesCachePath);
+            }
+
+            return FindLocalTexturePath(textureName, basePathsList, extensions);
         }
 
         /// <summary>
