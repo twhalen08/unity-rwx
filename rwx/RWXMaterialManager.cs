@@ -173,21 +173,11 @@ namespace RWXLoader
             // Load main texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
+                yield return textureLoader.LoadTextureAsync(rwxMaterial.texture, false, (texture) =>
                 {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
-                        mainTexture = texture;
-                        mainTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
@@ -197,21 +187,11 @@ namespace RWXLoader
             // Load mask texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
+                yield return textureLoader.LoadTextureAsync(rwxMaterial.mask, true, (texture) =>
                 {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
-                        maskTexture = texture;
-                        maskTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {

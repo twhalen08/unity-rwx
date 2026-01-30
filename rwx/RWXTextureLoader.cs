@@ -692,6 +692,88 @@ namespace RWXLoader
         }
 
         /// <summary>
+        /// Loads texture asynchronously from local files or remote sources.
+        /// </summary>
+        public IEnumerator LoadTextureAsync(string textureName, bool isMask, System.Action<Texture2D> onComplete)
+        {
+            return LoadTextureAsync(textureName, isMask, false, onComplete);
+        }
+
+        /// <summary>
+        /// Loads texture asynchronously from local files or remote sources with double-sided support.
+        /// </summary>
+        public IEnumerator LoadTextureAsync(string textureName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
+        {
+            string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
+            if (textureCache.TryGetValue(cacheKey, out Texture2D cachedTexture))
+            {
+                onComplete?.Invoke(cachedTexture);
+                yield break;
+            }
+
+            string[] extensions = { textureExtension, ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds", ".dds.gz" };
+            List<string> basePathsList = new List<string>
+            {
+                Path.Combine(Application.streamingAssetsPath, textureFolder),
+                Path.Combine(Application.persistentDataPath, textureFolder),
+                Path.Combine(Application.dataPath, textureFolder),
+                textureFolder
+            };
+
+            if (!string.IsNullOrEmpty(currentObjectPath) && assetManager != null)
+            {
+                string cachePath = assetManager.GetCachePath(currentObjectPath);
+                string texturesCachePath = Path.Combine(cachePath, "textures");
+                basePathsList.Insert(0, texturesCachePath);
+            }
+
+            foreach (string basePath in basePathsList)
+            {
+                string directPath = Path.Combine(basePath, textureName);
+                if (File.Exists(directPath))
+                {
+                    Texture2D texture = null;
+                    yield return LoadTextureLocalAsync(directPath, isDoubleSided, loaded =>
+                    {
+                        texture = loaded;
+                    });
+
+                    if (texture != null)
+                    {
+                        textureCache[cacheKey] = texture;
+                        onComplete?.Invoke(texture);
+                        yield break;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(Path.GetExtension(textureName)))
+                {
+                    foreach (string ext in extensions)
+                    {
+                        string fullPath = Path.Combine(basePath, textureName + ext);
+                        if (File.Exists(fullPath))
+                        {
+                            Texture2D texture = null;
+                            yield return LoadTextureLocalAsync(fullPath, isDoubleSided, loaded =>
+                            {
+                                texture = loaded;
+                            });
+
+                            if (texture != null)
+                            {
+                                textureCache[cacheKey] = texture;
+                                onComplete?.Invoke(texture);
+                                yield break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            yield return LoadTextureFromZipOrRemote(textureName, isMask, isDoubleSided, onComplete);
+        }
+
+        /// <summary>
         /// Loads texture synchronously from local files with double-sided support
         /// </summary>
         public Texture2D LoadTextureSync(string textureName, bool isDoubleSided)
