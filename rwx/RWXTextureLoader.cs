@@ -632,7 +632,29 @@ namespace RWXLoader
             if (prepared.HasDdsData)
             {
                 var dds = prepared.DdsData;
-                Texture2D texture = new Texture2D(dds.Width, dds.Height, dds.Format, dds.HasMipMaps);
+                TextureFormat format = dds.Format;
+
+                if (!SystemInfo.SupportsTextureFormat(format))
+                {
+                    if ((format == TextureFormat.BC5 || format == TextureFormat.BC7) && SystemInfo.SupportsTextureFormat(TextureFormat.DXT5))
+                    {
+                        format = TextureFormat.DXT5;
+                    }
+                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.DXT1))
+                    {
+                        format = TextureFormat.DXT1;
+                    }
+                    else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
+                    {
+                        format = TextureFormat.RGBA32;
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
+
+                Texture2D texture = new Texture2D(dds.Width, dds.Height, format, dds.HasMipMaps);
                 texture.LoadRawTextureData(dds.RawData);
                 texture.Apply(false, true);
                 texture.name = dds.TextureName;
@@ -853,18 +875,14 @@ namespace RWXLoader
 
         public IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
         {
-            Task<Texture2D> loadTask = Task.Run(() =>
-            {
-                PreparedTextureData prepared = PrepareTextureData(data, fileName);
-                return CreateTextureFromPreparedData(prepared, isMask, isDoubleSided);
-            });
+            Task<PreparedTextureData> prepareTask = Task.Run(() => PrepareTextureData(data, fileName));
 
-            while (!loadTask.IsCompleted)
+            while (!prepareTask.IsCompleted)
             {
                 yield return null;
             }
 
-            if (loadTask.IsFaulted)
+            if (prepareTask.IsFaulted)
             {
                 onComplete?.Invoke(null);
                 yield break;
@@ -872,7 +890,8 @@ namespace RWXLoader
 
             yield return null;
 
-            onComplete?.Invoke(loadTask.Result);
+            Texture2D texture = CreateTextureFromPreparedData(prepareTask.Result, isMask, isDoubleSided);
+            onComplete?.Invoke(texture);
         }
 
         /// <summary>
