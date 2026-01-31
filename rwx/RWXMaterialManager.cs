@@ -243,7 +243,7 @@ namespace RWXLoader
                 
                 // CRITICAL FIX: Update all MeshRenderers that use this material
                 // Unity creates material instances when assigning to renderers, so we need to update those instances
-                UpdateMaterialInstances(material, rwxMaterial);
+                yield return UpdateMaterialInstancesCoroutine(material, rwxMaterial);
                 
                 // Verify the texture was applied
             }
@@ -255,7 +255,7 @@ namespace RWXLoader
         /// Updates all MeshRenderer instances that use this exact material with the new texture
         /// This is critical because Unity creates material instances when assigning to renderers
         /// </summary>
-        private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
+        private IEnumerator UpdateMaterialInstancesCoroutine(Material sourceMaterial, RWXMaterial rwxMaterial)
         {
             // Get the exact material signature to match only the correct materials
             string materialSignature = rwxMaterial.GetMaterialSignature();
@@ -263,6 +263,8 @@ namespace RWXLoader
             // Find all MeshRenderers in the scene that might be using this material
             MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
             int updatedRenderers = 0;
+            int processed = 0;
+            const int BatchSize = 50;
             
             foreach (MeshRenderer renderer in allRenderers)
             {
@@ -331,8 +333,14 @@ namespace RWXLoader
                         }
                     }
                 }
+
+                processed++;
+                if (processed % BatchSize == 0)
+                {
+                    yield return null;
+                }
             }
-            
+            yield return null;
         }
 
         private int GetMaterialTag(Material material)
