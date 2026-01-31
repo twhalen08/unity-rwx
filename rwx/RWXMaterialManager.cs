@@ -10,6 +10,11 @@ namespace RWXLoader
     /// </summary>
     public class RWXMaterialManager : MonoBehaviour
     {
+        [Header("Performance")]
+        [Min(1)]
+        public int maxConcurrentMaterialLoads = 2;
+
+        private static int s_activeMaterialLoads = 0;
         [Header("Settings")]
         public bool enableTextures = true;
         public bool useStandardShader = true;
@@ -165,6 +170,13 @@ namespace RWXLoader
 
         private IEnumerator LoadTexturesForMaterial(Material material, RWXMaterial rwxMaterial)
         {
+            while (s_activeMaterialLoads >= maxConcurrentMaterialLoads)
+            {
+                yield return null;
+            }
+
+            s_activeMaterialLoads++;
+
             Texture2D mainTexture = null;
             Texture2D maskTexture = null;
             bool mainTextureLoaded = false;
@@ -235,6 +247,8 @@ namespace RWXLoader
                 
                 // Verify the texture was applied
             }
+
+            s_activeMaterialLoads = Mathf.Max(0, s_activeMaterialLoads - 1);
         }
 
         /// <summary>
