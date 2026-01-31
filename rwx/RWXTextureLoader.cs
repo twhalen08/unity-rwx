@@ -69,6 +69,7 @@ namespace RWXLoader
         private ConcurrentQueue<PrepareJob> prepareQueue;
         private AutoResetEvent prepareSignal;
         private List<Thread> prepareWorkers;
+        private readonly Dictionary<string, byte[]> zipEntryCache = new Dictionary<string, byte[]>();
 
         private class PrepareJob
         {
@@ -1225,6 +1226,28 @@ namespace RWXLoader
                 };
             }
 
+            string cacheKey = $"{localZipPath}||{textureNameWithExt}";
+            if (zipEntryCache.TryGetValue(cacheKey, out byte[] cachedData))
+            {
+                if (zipReadWatch != null)
+                {
+                    zipReadWatch.Stop();
+                    Debug.Log($"[RWXTextureLoader] Zip cache hit '{localZipPath}' for '{textureNameWithExt}'");
+                }
+
+                Texture2D cachedTexture = null;
+                yield return LoadTextureFromBytesAsync(cachedData, textureNameWithExt, isMask, isDoubleSided, loaded =>
+                {
+                    cachedTexture = loaded;
+                });
+
+                if (cachedTexture != null)
+                {
+                    onComplete?.Invoke(cachedTexture);
+                    yield break;
+                }
+            }
+
             byte[] textureData = null;
             string foundFileName = null;
 
@@ -1280,6 +1303,10 @@ namespace RWXLoader
 
             if (textureData != null && textureData.Length > 0)
             {
+                if (foundFileName != null)
+                {
+                    zipEntryCache[cacheKey] = textureData;
+                }
                 Texture2D texture = null;
                 yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, loaded =>
                 {
