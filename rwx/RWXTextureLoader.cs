@@ -37,6 +37,7 @@ namespace RWXLoader
         {
             public PreparedTextureData Data;
             public long PreparationMs;
+            public long WorkerQueueMs;
         }
 
         private struct DdsPreparedData
@@ -74,6 +75,7 @@ namespace RWXLoader
             public byte[] Data;
             public string FileName;
             public TaskCompletionSource<PreparedTextureResult> Completion;
+            public long EnqueueTicks;
         }
 
         private void Start()
@@ -1039,7 +1041,8 @@ namespace RWXLoader
             {
                 Data = data,
                 FileName = fileName,
-                Completion = completion
+                Completion = completion,
+                EnqueueTicks = Stopwatch.GetTimestamp()
             });
             prepareSignal.Set();
 
@@ -1061,8 +1064,8 @@ namespace RWXLoader
             if (prepWatch != null)
             {
                 prepWatch.Stop();
-                long queueMs = wallMs - result.PreparationMs;
-                Debug.Log($"[RWXTextureLoader] Prepare '{fileName}' wall={wallMs}ms prep={result.PreparationMs}ms queue={queueMs}ms");
+                long mainThreadMs = wallMs - result.PreparationMs - result.WorkerQueueMs;
+                Debug.Log($"[RWXTextureLoader] Prepare '{fileName}' wall={wallMs}ms workerQueue={result.WorkerQueueMs}ms prep={result.PreparationMs}ms mainThread={mainThreadMs}ms");
             }
 
             var createWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
@@ -1111,13 +1114,16 @@ namespace RWXLoader
 
                 try
                 {
+                    long startTicks = Stopwatch.GetTimestamp();
                     var prepStopwatch = Stopwatch.StartNew();
                     PreparedTextureData prepared = PrepareTextureData(job.Data, job.FileName);
                     prepStopwatch.Stop();
+                    long queueMs = (long)((startTicks - job.EnqueueTicks) * 1000.0 / Stopwatch.Frequency);
                     job.Completion.TrySetResult(new PreparedTextureResult
                     {
                         Data = prepared,
-                        PreparationMs = prepStopwatch.ElapsedMilliseconds
+                        PreparationMs = prepStopwatch.ElapsedMilliseconds,
+                        WorkerQueueMs = queueMs
                     });
                 }
                 catch (Exception ex)
