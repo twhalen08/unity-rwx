@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using UnityEngine;
@@ -131,6 +132,8 @@ namespace RWXLoader
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
 
+            Stopwatch totalWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+
             // Ensure asset manager is initialized
             if (assetManager == null)
             {
@@ -150,6 +153,7 @@ namespace RWXLoader
             string localZipPath = "";
             string downloadError = "";
 
+            Stopwatch downloadWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
             yield return assetManager.DownloadModel(objectPath, modelName, (success, result) =>
             {
                 downloadSuccess = success;
@@ -162,6 +166,11 @@ namespace RWXLoader
                     downloadError = result;
                 }
             }, password);
+            if (downloadWatch != null)
+            {
+                downloadWatch.Stop();
+                Debug.Log($"[RWXLoaderAdvanced] Download '{modelName}' in {downloadWatch.ElapsedMilliseconds}ms");
+            }
 
             if (!downloadSuccess)
             {
@@ -171,7 +180,13 @@ namespace RWXLoader
             }
 
             // Step 2: Load ZIP archive into memory
+            Stopwatch zipWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
             ZipArchive archive = assetManager.LoadZipArchive(localZipPath);
+            if (zipWatch != null)
+            {
+                zipWatch.Stop();
+                Debug.Log($"[RWXLoaderAdvanced] LoadZipArchive '{modelName}' in {zipWatch.ElapsedMilliseconds}ms");
+            }
             if (archive == null)
             {
                 string error = $"Failed to load ZIP archive: {localZipPath}";
@@ -182,6 +197,7 @@ namespace RWXLoader
 
             // Step 3: Find and load RWX file from ZIP
             string rwxFileName = $"{modelName}.rwx";
+            Stopwatch rwxReadWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
             string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
 
             if (string.IsNullOrEmpty(rwxContent))
@@ -202,6 +218,11 @@ namespace RWXLoader
                         Debug.Log($"Fallback RWX file used: {rwxFileName}");
                 }
             }
+            if (rwxReadWatch != null)
+            {
+                rwxReadWatch.Stop();
+                Debug.Log($"[RWXLoaderAdvanced] Read RWX '{rwxFileName}' in {rwxReadWatch.ElapsedMilliseconds}ms");
+            }
 
             if (string.IsNullOrEmpty(rwxContent))
             {
@@ -218,7 +239,13 @@ namespace RWXLoader
             GameObject modelObject = null;
             try
             {
+                Stopwatch parseWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
                 modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
+                if (parseWatch != null)
+                {
+                    parseWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Parse '{modelName}' in {parseWatch.ElapsedMilliseconds}ms");
+                }
             }
             catch (Exception e)
             {
@@ -234,13 +261,22 @@ namespace RWXLoader
                 CachePrefab(objectPath, modelName, modelObject);
 
                 // Instantiate a live copy for the caller
+                Stopwatch instantiateWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
                 modelObject = Instantiate(modelObject, parentTransform);
                 modelObject.name = modelName;
                 modelObject.SetActive(activateOnInstantiate);
+                if (instantiateWatch != null)
+                {
+                    instantiateWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Instantiate '{modelName}' in {instantiateWatch.ElapsedMilliseconds}ms");
+                }
             }
 
             if (enableDebugLogs)
-                Debug.Log($"Successfully loaded model: {modelName}");
+            {
+                totalWatch?.Stop();
+                Debug.Log($"Successfully loaded model: {modelName} in {totalWatch?.ElapsedMilliseconds ?? 0}ms");
+            }
 
             onComplete?.Invoke(modelObject, "Success");
         }
