@@ -895,7 +895,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         createActions ??= new List<VpActionCommand>();
         activateActions ??= new List<VpActionCommand>();
 
-        bool activateOnInstantiate = createActions.Count == 0;
+        bool activateOnInstantiate = false;
 
         modelLoader.parentTransform = parent;
 
@@ -923,7 +923,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield break;
         }
 
-        // Phase 1: cheap transform setup
+        // Phase 1: cheap transform setup (do this before activation to avoid 0,0,0 pops)
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
         ApplyModelBaseScale(loadedObject);
@@ -1013,10 +1013,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         }
 
-        if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
-        {
+        if (loadedObject != null && !loadedObject.activeSelf)
             loadedObject.SetActive(true);
-        }
     }
 
     // -------------------------
