@@ -924,6 +924,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
 
         // Phase 1: cheap transform setup (do this before activation to avoid 0,0,0 pops)
+        loadedObject.transform.SetParent(parent, false);
         loadedObject.transform.localPosition = req.position;
         loadedObject.transform.localRotation = req.rotation;
         ApplyModelBaseScale(loadedObject);
