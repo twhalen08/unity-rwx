@@ -1,8 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
 using UnityEngine;
 
 namespace RWXLoader
@@ -16,6 +18,14 @@ namespace RWXLoader
         
         [Header("Debug")]
         public bool enableDebugLogs = true;
+
+        [Header("Performance")]
+        [Tooltip("Max milliseconds of RWX parsing work per frame before yielding.")]
+        [Min(0.1f)]
+        public float parseFrameBudgetMs = 4f;
+
+        [Tooltip("If true, only one model will parse/build at a time globally (prevents '2 instances' big frames).")]
+        public bool throttleConcurrentLoads = true;
         
         private RWXParser parser;
         private RWXMeshBuilder meshBuilder;
@@ -24,6 +34,7 @@ namespace RWXLoader
 
         private static readonly Dictionary<string, GameObject> modelPrefabCache = new();
         private static Transform cacheContainer;
+        private static readonly SemaphoreSlim _loadGate = new(1, 1);
 
         private void Awake()
         {
@@ -131,6 +142,8 @@ namespace RWXLoader
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
 
+            Stopwatch totalWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+
             // Ensure asset manager is initialized
             if (assetManager == null)
             {
@@ -145,152 +158,259 @@ namespace RWXLoader
                 yield break;
             }
 
-            // Step 1: Download model if not cached
-            bool downloadSuccess = false;
+            if (throttleConcurrentLoads)
+            {
+                var waitTask = _loadGate.WaitAsync();
+                while (!waitTask.IsCompleted)
+                    yield return null;
+            }
+
             string localZipPath = "";
-            string downloadError = "";
+            ZipArchive archive = null;
 
-            yield return assetManager.DownloadModel(objectPath, modelName, (success, result) =>
-            {
-                downloadSuccess = success;
-                if (success)
-                {
-                    localZipPath = result;
-                }
-                else
-                {
-                    downloadError = result;
-                }
-            }, password);
-
-            if (!downloadSuccess)
-            {
-                Debug.LogError($"Failed to download model {modelName}: {downloadError}");
-                onComplete?.Invoke(null, downloadError);
-                yield break;
-            }
-
-            // Step 2: Load ZIP archive into memory
-            ZipArchive archive = assetManager.LoadZipArchive(localZipPath);
-            if (archive == null)
-            {
-                string error = $"Failed to load ZIP archive: {localZipPath}";
-                Debug.LogError(error);
-                onComplete?.Invoke(null, error);
-                yield break;
-            }
-
-            // Step 3: Find and load RWX file from ZIP
-            string rwxFileName = $"{modelName}.rwx";
-            string rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
-
-            if (string.IsNullOrEmpty(rwxContent))
-            {
-                // Try alternative naming conventions
-                rwxFileName = $"{modelName}.RWX";
-                rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
-            }
-
-            if (string.IsNullOrEmpty(rwxContent))
-            {
-                // Some zips contain differently named RWX files; fall back to first RWX entry
-                rwxFileName = FindFirstRwxEntry(archive);
-                if (!string.IsNullOrEmpty(rwxFileName))
-                {
-                    rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
-                    if (enableDebugLogs && !string.IsNullOrEmpty(rwxContent))
-                        Debug.Log($"Fallback RWX file used: {rwxFileName}");
-                }
-            }
-
-            if (string.IsNullOrEmpty(rwxContent))
-            {
-                string error = $"RWX file not found in ZIP; attempted {modelName}.rwx and fallback entries";
-                Debug.LogError(error);
-                onComplete?.Invoke(null, error);
-                yield break;
-            }
-
-            if (enableDebugLogs)
-                Debug.Log($"Found RWX file: {rwxFileName} ({rwxContent.Length} characters)");
-
-            // Step 4: Parse RWX content and create GameObject
-            GameObject modelObject = null;
             try
             {
-                modelObject = ParseRWXFromMemory(rwxContent, modelName, archive, objectPath, password);
-            }
-            catch (Exception e)
-            {
-                string error = $"Failed to parse RWX model: {e.Message}";
-                Debug.LogError(error);
-                onComplete?.Invoke(null, error);
-                yield break;
-            }
+                // Step 1: Download model if not cached
+                bool downloadSuccess = false;
+                string downloadError = "";
 
-            // Cache the parsed prefab so future loads are instant
-            if (modelObject != null)
-            {
+                Stopwatch downloadWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+                yield return assetManager.DownloadModel(objectPath, modelName, (success, result) =>
+                {
+                    downloadSuccess = success;
+                    if (success)
+                        localZipPath = result;
+                    else
+                        downloadError = result;
+                }, password);
+                if (downloadWatch != null)
+                {
+                    downloadWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Download '{modelName}' in {downloadWatch.ElapsedMilliseconds}ms");
+                }
+
+                if (!downloadSuccess)
+                {
+                    Debug.LogError($"Failed to download model {modelName}: {downloadError}");
+                    onComplete?.Invoke(null, downloadError);
+                    yield break;
+                }
+
+                // Step 2: Load ZIP archive into memory
+                Stopwatch zipWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+                try
+                {
+                    archive = assetManager.LoadZipArchive(localZipPath);
+                }
+                catch (Exception e)
+                {
+                    onComplete?.Invoke(null, $"LoadZipArchive failed: {e.Message}");
+                    yield break;
+                }
+                if (zipWatch != null)
+                {
+                    zipWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] LoadZipArchive '{modelName}' in {zipWatch.ElapsedMilliseconds}ms");
+                }
+                if (archive == null)
+                {
+                    string error = $"Failed to load ZIP archive: {localZipPath}";
+                    Debug.LogError(error);
+                    onComplete?.Invoke(null, error);
+                    yield break;
+                }
+
+                // Step 3: Find and load RWX file from ZIP
+                string rwxFileName = $"{modelName}.rwx";
+                Stopwatch rwxReadWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+                string rwxContent = null;
+
+                try
+                {
+                    rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+
+                    if (string.IsNullOrEmpty(rwxContent))
+                    {
+                        rwxFileName = $"{modelName}.RWX";
+                        rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+                    }
+
+                    if (string.IsNullOrEmpty(rwxContent))
+                    {
+                        rwxFileName = FindFirstRwxEntry(archive);
+                        if (!string.IsNullOrEmpty(rwxFileName))
+                            rwxContent = assetManager.ReadTextFromZip(archive, rwxFileName, localZipPath, password);
+                    }
+                }
+                catch (Exception e)
+                {
+                    onComplete?.Invoke(null, $"ReadTextFromZip failed: {e.Message}");
+                    yield break;
+                }
+                if (rwxReadWatch != null)
+                {
+                    rwxReadWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Read RWX '{rwxFileName}' in {rwxReadWatch.ElapsedMilliseconds}ms");
+                }
+
+                if (string.IsNullOrEmpty(rwxContent))
+                {
+                    string error = $"RWX file not found in ZIP; attempted {modelName}.rwx and fallback entries";
+                    Debug.LogError(error);
+                    onComplete?.Invoke(null, error);
+                    yield break;
+                }
+
+                if (enableDebugLogs)
+                    Debug.Log($"Found RWX file: {rwxFileName} ({rwxContent.Length} characters)");
+
+                // Step 4: Parse RWX content and create GameObject
+                GameObject modelObject = null;
+                string parseError = null;
+
+                Stopwatch parseWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
+                yield return ParseRWXFromMemoryCoroutine(
+                    rwxContent,
+                    modelName,
+                    objectPath,
+                    password,
+                    go => modelObject = go,
+                    err => parseError = err,
+                    parseFrameBudgetMs);
+                if (parseWatch != null)
+                {
+                    parseWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Parse '{modelName}' in {parseWatch.ElapsedMilliseconds}ms");
+                }
+
+                if (modelObject == null)
+                {
+                    onComplete?.Invoke(null, parseError ?? "Parse failed (unknown error)");
+                    yield break;
+                }
+
+                // Cache the parsed prefab so future loads are instant
                 CachePrefab(objectPath, modelName, modelObject);
 
                 // Instantiate a live copy for the caller
+                Stopwatch instantiateWatch = enableDebugLogs ? Stopwatch.StartNew() : null;
                 modelObject = Instantiate(modelObject, parentTransform);
                 modelObject.name = modelName;
                 modelObject.SetActive(activateOnInstantiate);
+                if (instantiateWatch != null)
+                {
+                    instantiateWatch.Stop();
+                    Debug.Log($"[RWXLoaderAdvanced] Instantiate '{modelName}' in {instantiateWatch.ElapsedMilliseconds}ms");
+                }
+
+                if (enableDebugLogs)
+                {
+                    totalWatch?.Stop();
+                    Debug.Log($"Successfully loaded model: {modelName} in {totalWatch?.ElapsedMilliseconds ?? 0}ms");
+                }
+
+                onComplete?.Invoke(modelObject, "Success");
             }
+            finally
+            {
+                try
+                {
+                    if (!string.IsNullOrEmpty(localZipPath))
+                        assetManager.UnloadZipArchive(localZipPath);
+                }
+                catch
+                {
+                    // Ignore cleanup exceptions.
+                }
 
-            if (enableDebugLogs)
-                Debug.Log($"Successfully loaded model: {modelName}");
-
-            onComplete?.Invoke(modelObject, "Success");
+                if (throttleConcurrentLoads)
+                {
+                    try { _loadGate.Release(); } catch { }
+                }
+            }
         }
 
         /// <summary>
         /// Parses RWX content from memory and creates a GameObject
         /// </summary>
-        private GameObject ParseRWXFromMemory(string rwxContent, string modelName, ZipArchive archive, string objectPath, string password)
+        private IEnumerator ParseRWXFromMemoryCoroutine(
+            string rwxContent,
+            string modelName,
+            string objectPath,
+            string password,
+            Action<GameObject> onBuilt,
+            Action<string> onError,
+            float budgetMs)
         {
-            // Create root object
-            GameObject rootObject = new GameObject(modelName);
-            
-            // Initialize parse context
-            var context = new RWXParseContext();
-            context.rootObject = rootObject;
-            context.currentObject = rootObject;
-
-            // Ensure components are initialized
             if (materialManager == null || meshBuilder == null || parser == null)
             {
-                Debug.LogError("Components not properly initialized");
-                return null;
+                onError?.Invoke("Components not properly initialized");
+                onBuilt?.Invoke(null);
+                yield break;
             }
 
-            // Set up material manager to load textures from remote
+            GameObject rootObject = new GameObject(modelName);
+
+            var context = new RWXParseContext
+            {
+                rootObject = rootObject,
+                currentObject = rootObject
+            };
+
             materialManager.SetTextureSource(objectPath, password);
+            parser.Reset();
 
-            // Reset parser state for new model
-            parser?.Reset();
+            float sliceStart = Time.realtimeSinceStartup;
+            int linesProcessed = 0;
 
-            // Parse RWX content line by line
-            string[] lines = rwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            
-            if (enableDebugLogs)
-                Debug.Log($"Parsing {lines.Length} lines of RWX content");
-
-            foreach (string line in lines)
+            using (var sr = new StringReader(rwxContent))
             {
-                parser.ProcessLine(line, context);
+                string line;
+                while ((line = sr.ReadLine()) != null)
+                {
+                    if (line.Length == 0)
+                        continue;
+
+                    try
+                    {
+                        parser.ProcessLine(line, context);
+                    }
+                    catch (Exception e)
+                    {
+                        onError?.Invoke($"Parse error line {linesProcessed}: {e.Message}");
+                        Destroy(rootObject);
+                        onBuilt?.Invoke(null);
+                        yield break;
+                    }
+
+                    linesProcessed++;
+
+                    if (((Time.realtimeSinceStartup - sliceStart) * 1000f) >= budgetMs)
+                    {
+                        yield return null;
+                        sliceStart = Time.realtimeSinceStartup;
+                    }
+                }
             }
 
-            // Finalize mesh building
-            meshBuilder.FinalCommit(context);
+            yield return null;
 
-            if (enableDebugLogs)
+            try
             {
-                Debug.Log($"Created model with {context.vertices.Count} vertices");
+                meshBuilder.FinalCommit(context);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"FinalCommit failed: {e.Message}");
+                Destroy(rootObject);
+                onBuilt?.Invoke(null);
+                yield break;
             }
 
-            return rootObject;
+            if (enableDebugLogs)
+                Debug.Log($"Parsed RWX '{modelName}' lines={linesProcessed} vertices={context.vertices.Count}");
+
+            onBuilt?.Invoke(rootObject);
         }
 
         private string FindFirstRwxEntry(ZipArchive archive)
@@ -358,7 +478,41 @@ namespace RWXLoader
                 return null;
             }
 
-            return ParseRWXFromMemory(rwxContent, modelName, archive, null, objectPathPassword);
+            return ParseRWXFromMemorySync_NoSplit(rwxContent, modelName, objectPathPassword);
+        }
+
+        private GameObject ParseRWXFromMemorySync_NoSplit(string rwxContent, string modelName, string password)
+        {
+            if (materialManager == null || meshBuilder == null || parser == null)
+            {
+                Debug.LogError("Components not properly initialized");
+                return null;
+            }
+
+            GameObject rootObject = new GameObject(modelName);
+
+            var context = new RWXParseContext
+            {
+                rootObject = rootObject,
+                currentObject = rootObject
+            };
+
+            materialManager.SetTextureSource(null, password);
+            parser.Reset();
+
+            using (var sr = new StringReader(rwxContent))
+            {
+                string line;
+                while ((line = sr.ReadLine()) != null)
+                {
+                    if (line.Length == 0)
+                        continue;
+                    parser.ProcessLine(line, context);
+                }
+            }
+
+            meshBuilder.FinalCommit(context);
+            return rootObject;
         }
 
         /// <summary>

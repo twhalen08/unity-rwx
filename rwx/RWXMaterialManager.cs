@@ -10,6 +10,11 @@ namespace RWXLoader
     /// </summary>
     public class RWXMaterialManager : MonoBehaviour
     {
+        [Header("Performance")]
+        [Min(1)]
+        public int maxConcurrentMaterialLoads = 2;
+
+        private static int s_activeMaterialLoads = 0;
         [Header("Settings")]
         public bool enableTextures = true;
         public bool useStandardShader = true;
@@ -165,6 +170,13 @@ namespace RWXLoader
 
         private IEnumerator LoadTexturesForMaterial(Material material, RWXMaterial rwxMaterial)
         {
+            while (s_activeMaterialLoads >= maxConcurrentMaterialLoads)
+            {
+                yield return null;
+            }
+
+            s_activeMaterialLoads++;
+
             Texture2D mainTexture = null;
             Texture2D maskTexture = null;
             bool mainTextureLoaded = false;
@@ -173,21 +185,11 @@ namespace RWXLoader
             // Load main texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
+                StartCoroutine(textureLoader.LoadTextureAsync(rwxMaterial.texture, false, (texture) =>
                 {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
-                        mainTexture = texture;
-                        mainTextureLoaded = true;
-                    });
-                }
+                }));
             }
             else
             {
@@ -197,21 +199,11 @@ namespace RWXLoader
             // Load mask texture (simplified - no double-sided flag)
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
+                StartCoroutine(textureLoader.LoadTextureAsync(rwxMaterial.mask, true, (texture) =>
                 {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
-                        maskTexture = texture;
-                        maskTextureLoaded = true;
-                    });
-                }
+                }));
             }
             else
             {
@@ -251,17 +243,19 @@ namespace RWXLoader
                 
                 // CRITICAL FIX: Update all MeshRenderers that use this material
                 // Unity creates material instances when assigning to renderers, so we need to update those instances
-                UpdateMaterialInstances(material, rwxMaterial);
+                yield return UpdateMaterialInstancesCoroutine(material, rwxMaterial);
                 
                 // Verify the texture was applied
             }
+
+            s_activeMaterialLoads = Mathf.Max(0, s_activeMaterialLoads - 1);
         }
 
         /// <summary>
         /// Updates all MeshRenderer instances that use this exact material with the new texture
         /// This is critical because Unity creates material instances when assigning to renderers
         /// </summary>
-        private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
+        private IEnumerator UpdateMaterialInstancesCoroutine(Material sourceMaterial, RWXMaterial rwxMaterial)
         {
             // Get the exact material signature to match only the correct materials
             string materialSignature = rwxMaterial.GetMaterialSignature();
@@ -269,6 +263,8 @@ namespace RWXLoader
             // Find all MeshRenderers in the scene that might be using this material
             MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
             int updatedRenderers = 0;
+            int processed = 0;
+            const int BatchSize = 50;
             
             foreach (MeshRenderer renderer in allRenderers)
             {
@@ -337,8 +333,14 @@ namespace RWXLoader
                         }
                     }
                 }
+
+                processed++;
+                if (processed % BatchSize == 0)
+                {
+                    yield return null;
+                }
             }
-            
+            yield return null;
         }
 
         private int GetMaterialTag(Material material)

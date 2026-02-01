@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace RWXLoader
@@ -7,6 +8,23 @@ namespace RWXLoader
     /// </summary>
     public class RWXTextureProcessor : MonoBehaviour
     {
+        // Cache shader/property IDs (no GC)
+        private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
+        private static readonly int MaskTexId = Shader.PropertyToID("_MaskTex");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+        private static readonly int CutoffId = Shader.PropertyToID("_Cutoff");
+        private static readonly int MaskInvertId = Shader.PropertyToID("_MaskInvert");
+        private static readonly int MaskFlipYId = Shader.PropertyToID("_MaskFlipY");
+
+        private Shader _maskedCutoutShader;
+
+        private void Awake()
+        {
+            _maskedCutoutShader = Shader.Find("RWX/MaskedCutout");
+            if (_maskedCutoutShader == null)
+                Debug.LogError("[RWXTextureProcessor] Shader 'RWX/MaskedCutout' not found. Create it in Assets/Shaders.");
+        }
+
         /// <summary>
         /// Combines a main texture with a mask texture for alpha channel
         /// RWX masks: Black = transparent, White = opaque
@@ -108,60 +126,61 @@ namespace RWXLoader
         /// </summary>
         public void ApplyTexturesWithMask(Material material, Texture2D mainTexture, Texture2D maskTexture, RWXMaterial rwxMaterial)
         {
-            if (mainTexture != null && maskTexture != null)
-            {
-                // Combine main texture with mask for alpha channel
-                Texture2D combinedTexture = CombineTextureWithMask(mainTexture, maskTexture);
-                material.mainTexture = combinedTexture;
-                
-                // For Standard shader, also set the albedo texture
-                if (material.shader.name.Contains("Standard"))
-                {
-                    material.SetTexture("_MainTex", combinedTexture);
-                    material.SetTexture("_AlbedoMap", combinedTexture);
-                }
-                
-            }
-            else if (mainTexture != null)
-            {
-                // Just apply main texture
-                material.mainTexture = mainTexture;
-                
-                // For Standard shader, also set the albedo texture
-                if (material.shader.name.Contains("Standard"))
-                {
-                    material.SetTexture("_MainTex", mainTexture);
-                    material.SetTexture("_AlbedoMap", mainTexture);
-                }
-                
-            }
-            else if (maskTexture != null)
-            {
-                // Use mask as main texture (grayscale)
-                material.mainTexture = maskTexture;
-                
-                // For Standard shader, also set the albedo texture
-                if (material.shader.name.Contains("Standard"))
-                {
-                    material.SetTexture("_MainTex", maskTexture);
-                    material.SetTexture("_AlbedoMap", maskTexture);
-                }
-                
-            }
+            if (material == null) return;
 
-            // Apply tint if enabled
-            if (rwxMaterial.tint)
+            Color tintColor;
+            if (rwxMaterial != null && rwxMaterial.tint)
             {
                 Color baseColor = rwxMaterial.GetEffectiveColor();
-                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
+                tintColor = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
             }
             else
             {
-                material.color = new Color(1f, 1f, 1f, rwxMaterial.opacity);
+                float a = rwxMaterial != null ? rwxMaterial.opacity : 1f;
+                tintColor = new Color(1f, 1f, 1f, a);
             }
-            
-            // Force material to update
-            material.EnableKeyword("_MAINTEX_ON");
+
+            material.SetColor(ColorId, tintColor);
+
+            if (mainTexture != null && maskTexture == null)
+            {
+                material.SetTexture(MainTexId, mainTexture);
+                material.mainTexture = mainTexture;
+                return;
+            }
+
+            if (mainTexture == null && maskTexture != null)
+            {
+                material.SetTexture(MainTexId, maskTexture);
+                material.mainTexture = maskTexture;
+                return;
+            }
+
+            if (mainTexture != null && maskTexture != null)
+            {
+                if (_maskedCutoutShader != null && material.shader != _maskedCutoutShader)
+                    material.shader = _maskedCutoutShader;
+
+                material.SetTexture(MainTexId, mainTexture);
+                material.SetTexture(MaskTexId, maskTexture);
+                material.mainTexture = mainTexture;
+
+                material.SetFloat(MaskFlipYId, 1f);
+
+                bool invert = ShouldInvertMask(maskTexture);
+                material.SetFloat(MaskInvertId, invert ? 1f : 0f);
+
+                material.SetFloat(CutoffId, 0.2f);
+                material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+            }
+        }
+
+        private static bool ShouldInvertMask(Texture2D maskTexture)
+        {
+            if (maskTexture == null) return false;
+            string n = maskTexture.name ?? string.Empty;
+            return n.IndexOf("tbtree", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   n.IndexOf("003m", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>
