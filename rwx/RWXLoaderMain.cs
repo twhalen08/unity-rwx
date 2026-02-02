@@ -113,7 +113,7 @@ namespace RWXLoader
             meshBuilder.FinalCommit(context);
 
             // Apply final scale (RWX uses decameter units)
-            rootObject.transform.localScale = Vector3.one * 10f;
+            rootObject.transform.localScale = UnityEngine.Vector3.one * 10f;
 
             return rootObject;
         }

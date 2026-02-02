@@ -250,7 +250,7 @@ namespace RWXLoader
         private bool ShouldApplyPrototypeFix(string prototypeName, RWXParseContext context)
         {
             // Check if the current transform is at origin (indicating canceling translates)
-            Vector3 currentPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
+            UnityEngine.Vector3 currentPos = new UnityEngine.Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
             bool isAtOrigin = currentPos.magnitude < 0.001f;
             
             // Known problematic patterns
@@ -326,7 +326,7 @@ namespace RWXLoader
             Debug.Log($"🌲 Tree positioning: {prototypeName} - Cube Z: {cubeZ}, Cone Z: {coneZ}, Relative offset: {relativeOffset}");
             
             // Create a translation matrix for the relative offset
-            Matrix4x4 offsetTransform = Matrix4x4.Translate(new Vector3(0, 0, relativeOffset));
+            Matrix4x4 offsetTransform = Matrix4x4.Translate(new UnityEngine.Vector3(0, 0, relativeOffset));
             
             // Apply the offset to the base transform
             return baseTransform * offsetTransform;
@@ -352,7 +352,7 @@ namespace RWXLoader
             Debug.Log($"🔧 Generic numbered prototype fix: {prototypeName} -> Z offset: {zOffset}");
             
             // Create a translation matrix for the Z offset
-            Matrix4x4 offsetTransform = Matrix4x4.Translate(new Vector3(0, 0, zOffset));
+            Matrix4x4 offsetTransform = Matrix4x4.Translate(new UnityEngine.Vector3(0, 0, zOffset));
             
             return baseTransform * offsetTransform;
         }
@@ -449,7 +449,7 @@ namespace RWXLoader
             Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(transform);
             
             // Try to decompose the matrix into TRS components
-            Vector3 position, scale;
+            UnityEngine.Vector3 position, scale;
             Quaternion rotation;
             
             if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
@@ -464,8 +464,8 @@ namespace RWXLoader
             else
             {
                 // Fallback: only extract translation if matrix decomposition fails
-                Vector3 rwxPosition = new Vector3(transform.m03, transform.m13, transform.m23);
-                Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
+                UnityEngine.Vector3 rwxPosition = new UnityEngine.Vector3(transform.m03, transform.m13, transform.m23);
+                UnityEngine.Vector3 fallbackPosition = new UnityEngine.Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
                 
                 instanceObject.transform.localPosition = fallbackPosition;
                 Debug.Log($"🛏️ Applied fallback position: {fallbackPosition:F6}");
@@ -490,28 +490,28 @@ namespace RWXLoader
         /// <summary>
         /// Try to decompose a matrix into TRS components (same logic as in RWXParser)
         /// </summary>
-        private bool TryDecomposeMatrix(Matrix4x4 matrix, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+        private bool TryDecomposeMatrix(Matrix4x4 matrix, out UnityEngine.Vector3 position, out Quaternion rotation, out UnityEngine.Vector3 scale)
         {
-            position = Vector3.zero;
+            position = UnityEngine.Vector3.zero;
             rotation = Quaternion.identity;
-            scale = Vector3.one;
+            scale = UnityEngine.Vector3.one;
             
             try
             {
                 // Extract translation
-                position = new Vector3(matrix.m03, matrix.m13, matrix.m23);
+                position = new UnityEngine.Vector3(matrix.m03, matrix.m13, matrix.m23);
                 
                 // Validate translation
                 if (!IsValidFloat(position.x) || !IsValidFloat(position.y) || !IsValidFloat(position.z))
                 {
                     Debug.LogWarning("Invalid translation values detected, using zero");
-                    position = Vector3.zero;
+                    position = UnityEngine.Vector3.zero;
                 }
                 
                 // Extract scale vectors
-                Vector3 scaleX = new Vector3(matrix.m00, matrix.m10, matrix.m20);
-                Vector3 scaleY = new Vector3(matrix.m01, matrix.m11, matrix.m21);
-                Vector3 scaleZ = new Vector3(matrix.m02, matrix.m12, matrix.m22);
+                UnityEngine.Vector3 scaleX = new UnityEngine.Vector3(matrix.m00, matrix.m10, matrix.m20);
+                UnityEngine.Vector3 scaleY = new UnityEngine.Vector3(matrix.m01, matrix.m11, matrix.m21);
+                UnityEngine.Vector3 scaleZ = new UnityEngine.Vector3(matrix.m02, matrix.m12, matrix.m22);
                 
                 scale.x = scaleX.magnitude;
                 scale.y = scaleY.magnitude;

@@ -136,12 +136,6 @@ namespace RWXLoader
                             isBlockCompressed = false;
                             bytesPerPixel = 4;
                             break;
-                        case 80: // BC5_UNORM
-                            format = TextureFormat.BC5;
-                            break;
-                        case 98: // BC7_UNORM
-                            format = TextureFormat.BC7;
-                            break;
                         default:
                             return null;
                     }
@@ -442,7 +436,7 @@ namespace RWXLoader
                 }
                 else
                 {
-                    Object.DestroyImmediate(texture);
+                    UnityEngine.Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
                     if (effectiveFileName.EndsWith(".bmp"))
@@ -663,7 +657,7 @@ namespace RWXLoader
             {
                 if (texture != null)
                 {
-                    Object.DestroyImmediate(texture);
+                    UnityEngine.Object.DestroyImmediate(texture);
                 }
             }
             textureCache.Clear();

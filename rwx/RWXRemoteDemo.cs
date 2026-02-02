@@ -108,7 +108,7 @@ public class RWXRemoteDemo : MonoBehaviour
             // Position and scale the model
             model.transform.position = transform.position;
             model.transform.rotation = transform.rotation;
-            model.transform.localScale = Vector3.one * modelScale;
+            model.transform.localScale = UnityEngine.Vector3.one * modelScale;
 
             if (enableDebugLogs)
             {
@@ -173,8 +173,8 @@ public class RWXRemoteDemo : MonoBehaviour
     void LogTreeHierarchy(Transform parent, int depth)
     {
         string indent = new string(' ', depth * 2);
-        Vector3 pos = parent.position;
-        Vector3 localPos = parent.localPosition;
+        UnityEngine.Vector3 pos = parent.position;
+        UnityEngine.Vector3 localPos = parent.localPosition;
         
         MeshFilter mf = parent.GetComponent<MeshFilter>();
         MeshRenderer mr = parent.GetComponent<MeshRenderer>();
@@ -399,7 +399,7 @@ public class RWXRemoteDemo : MonoBehaviour
             Debug.Log($"✅ Successfully loaded bed model: {bedObject.name}");
             
             // Position it at origin for easy viewing
-            bedObject.transform.position = Vector3.zero;
+            bedObject.transform.position = UnityEngine.Vector3.zero;
             bedObject.transform.rotation = Quaternion.identity;
             
             // Log the hierarchy
@@ -414,10 +414,10 @@ public class RWXRemoteDemo : MonoBehaviour
     private static void LogGameObjectHierarchy(GameObject obj, int depth)
     {
         string indent = new string(' ', depth * 2);
-        Vector3 pos = obj.transform.position;
-        Vector3 localPos = obj.transform.localPosition;
-        Vector3 localRot = obj.transform.localEulerAngles;
-        Vector3 localScale = obj.transform.localScale;
+        UnityEngine.Vector3 pos = obj.transform.position;
+        UnityEngine.Vector3 localPos = obj.transform.localPosition;
+        UnityEngine.Vector3 localRot = obj.transform.localEulerAngles;
+        UnityEngine.Vector3 localScale = obj.transform.localScale;
         
         MeshFilter mf = obj.GetComponent<MeshFilter>();
         MeshRenderer mr = obj.GetComponent<MeshRenderer>();
@@ -439,7 +439,7 @@ public class RWXRemoteDemo : MonoBehaviour
     void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.cyan;
-        Gizmos.DrawWireCube(transform.position, Vector3.one * 2f);
+        Gizmos.DrawWireCube(transform.position, UnityEngine.Vector3.one * 2f);
         
         Gizmos.color = Color.green;
         Gizmos.DrawRay(transform.position, transform.up * 3f);
@@ -448,7 +448,7 @@ public class RWXRemoteDemo : MonoBehaviour
         if (enableDebugLogs)
         {
             Gizmos.color = Color.yellow;
-            Gizmos.DrawWireSphere(transform.position + Vector3.up * 4f, 0.5f);
+            Gizmos.DrawWireSphere(transform.position + UnityEngine.Vector3.up * 4f, 0.5f);
         }
     }
 

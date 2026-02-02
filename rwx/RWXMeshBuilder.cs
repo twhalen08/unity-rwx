@@ -126,14 +126,14 @@ namespace RWXLoader
             var mesh = new Mesh();
 
             // Convert vertices to arrays with coordinate system conversion
-            var positions = new Vector3[context.vertices.Count];
+            var positions = new UnityEngine.Vector3[context.vertices.Count];
             var uvs = new Vector2[context.vertices.Count];
 
             for (int i = 0; i < context.vertices.Count; i++)
             {
                 // Apply RWX to Unity coordinate system conversion: flip X axis
-                Vector3 rwxPos = context.vertices[i].position;
-                positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
+                UnityEngine.Vector3 rwxPos = context.vertices[i].position;
+                positions[i] = new UnityEngine.Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
                 uvs[i] = context.vertices[i].uv;
             }
 
@@ -161,9 +161,9 @@ namespace RWXLoader
             
             var meshObject = new GameObject(materialName);
             meshObject.transform.SetParent(context.currentObject.transform);
-            meshObject.transform.localPosition = Vector3.zero;
+            meshObject.transform.localPosition = UnityEngine.Vector3.zero;
             meshObject.transform.localRotation = Quaternion.identity;
-            meshObject.transform.localScale = Vector3.one;
+            meshObject.transform.localScale = UnityEngine.Vector3.one;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
             meshFilter.mesh = mesh;
@@ -201,14 +201,14 @@ namespace RWXLoader
             var mesh = new Mesh();
 
             // Convert vertices to arrays with coordinate system conversion
-            var positions = new Vector3[context.vertices.Count];
+            var positions = new UnityEngine.Vector3[context.vertices.Count];
             var uvs = new Vector2[context.vertices.Count];
 
             for (int i = 0; i < context.vertices.Count; i++)
             {
                 // Apply RWX to Unity coordinate system conversion: flip X axis
-                Vector3 rwxPos = context.vertices[i].position;
-                positions[i] = new Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
+                UnityEngine.Vector3 rwxPos = context.vertices[i].position;
+                positions[i] = new UnityEngine.Vector3(-rwxPos.x, rwxPos.y, rwxPos.z);
                 uvs[i] = context.vertices[i].uv;
             }
 
@@ -235,9 +235,9 @@ namespace RWXLoader
             var meshObject = new GameObject(materialName);
             meshObject.transform.SetParent(context.currentObject.transform);
             // FIXED: Explicitly set local position to zero to ensure mesh appears at origin relative to positioned GameObject
-            meshObject.transform.localPosition = Vector3.zero;
+            meshObject.transform.localPosition = UnityEngine.Vector3.zero;
             meshObject.transform.localRotation = Quaternion.identity;
-            meshObject.transform.localScale = Vector3.one;
+            meshObject.transform.localScale = UnityEngine.Vector3.one;
 
             var meshFilter = meshObject.AddComponent<MeshFilter>();
             meshFilter.mesh = mesh;
@@ -276,19 +276,19 @@ namespace RWXLoader
 
         private struct MeshData
         {
-            public Vector3[] positions;
+            public UnityEngine.Vector3[] positions;
             public Vector2[] uvs;
             public int[] triangles;
-            public Vector3[] normals;
+            public UnityEngine.Vector3[] normals;
         }
 
-        private static MeshData BuildMeshData(Vector3[] positions, Vector2[] uvs, int[] triangles, bool isDoubleSided)
+        private static MeshData BuildMeshData(UnityEngine.Vector3[] positions, Vector2[] uvs, int[] triangles, bool isDoubleSided)
         {
             if (isDoubleSided)
             {
-                var doublePositions = new List<Vector3>(triangles.Length * 2);
+                var doublePositions = new List<UnityEngine.Vector3>(triangles.Length * 2);
                 var doubleUvs = new List<Vector2>(triangles.Length * 2);
-                var doubleNormals = new List<Vector3>(triangles.Length * 2);
+                var doubleNormals = new List<UnityEngine.Vector3>(triangles.Length * 2);
                 var doubleTriangles = new List<int>(triangles.Length * 2);
 
                 for (int i = 0; i < triangles.Length; i += 3)
@@ -304,11 +304,11 @@ namespace RWXLoader
                         continue;
                     }
 
-                    Vector3 p0 = positions[i0];
-                    Vector3 p1 = positions[i1];
-                    Vector3 p2 = positions[i2];
+                    UnityEngine.Vector3 p0 = positions[i0];
+                    UnityEngine.Vector3 p1 = positions[i1];
+                    UnityEngine.Vector3 p2 = positions[i2];
 
-                    Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
+                    UnityEngine.Vector3 faceNormal = UnityEngine.Vector3.Cross(p1 - p0, p2 - p0);
                     if (faceNormal.sqrMagnitude < 1e-12f)
                     {
                         continue;
@@ -338,7 +338,7 @@ namespace RWXLoader
                     doublePositions.Add(p2);
                     doublePositions.Add(p1);
 
-                    Vector3 flippedNormal = -faceNormal;
+                    UnityEngine.Vector3 flippedNormal = -faceNormal;
                     doubleUvs.Add(uvs[i0]);
                     doubleUvs.Add(uvs[i2]);
                     doubleUvs.Add(uvs[i1]);
@@ -362,8 +362,8 @@ namespace RWXLoader
             }
 
             // First pass: gather face normals per vertex to detect opposing directions
-            var perVertexNormals = new List<Vector3>[positions.Length];
-            var faceNormals = new Vector3[triangles.Length / 3];
+            var perVertexNormals = new List<UnityEngine.Vector3>[positions.Length];
+            var faceNormals = new UnityEngine.Vector3[triangles.Length / 3];
 
             for (int i = 0; i < triangles.Length; i += 3)
             {
@@ -378,11 +378,11 @@ namespace RWXLoader
                     continue;
                 }
 
-                Vector3 p0 = positions[i0];
-                Vector3 p1 = positions[i1];
-                Vector3 p2 = positions[i2];
+                UnityEngine.Vector3 p0 = positions[i0];
+                UnityEngine.Vector3 p1 = positions[i1];
+                UnityEngine.Vector3 p2 = positions[i2];
 
-                Vector3 faceNormal = Vector3.Cross(p1 - p0, p2 - p0);
+                UnityEngine.Vector3 faceNormal = UnityEngine.Vector3.Cross(p1 - p0, p2 - p0);
 
                 // Skip degenerate triangles
                 if (faceNormal.sqrMagnitude < 1e-12f)
@@ -409,7 +409,7 @@ namespace RWXLoader
                 {
                     for (int b = a + 1; b < list.Count; b++)
                     {
-                        if (Vector3.Dot(list[a], list[b]) < -0.001f)
+                        if (UnityEngine.Vector3.Dot(list[a], list[b]) < -0.001f)
                         {
                             hasOpposingNormals = true;
                             break;
@@ -421,9 +421,9 @@ namespace RWXLoader
             // If opposing normals share vertices (double-sided plane), duplicate vertices per face
             if (hasOpposingNormals)
             {
-                var newPositions = new List<Vector3>(triangles.Length);
+                var newPositions = new List<UnityEngine.Vector3>(triangles.Length);
                 var newUvs = new List<Vector2>(triangles.Length);
-                var newNormals = new List<Vector3>(triangles.Length);
+                var newNormals = new List<UnityEngine.Vector3>(triangles.Length);
                 var newTriangles = new int[triangles.Length];
 
                 for (int i = 0; i < triangles.Length; i += 3)
@@ -439,10 +439,10 @@ namespace RWXLoader
                         continue;
                     }
 
-                    Vector3 faceNormal = faceNormals[i / 3];
+                    UnityEngine.Vector3 faceNormal = faceNormals[i / 3];
                     if (faceNormal.sqrMagnitude < 1e-12f)
                     {
-                        faceNormal = Vector3.up;
+                        faceNormal = UnityEngine.Vector3.up;
                     }
 
                     int newBase = newPositions.Count;
@@ -473,7 +473,7 @@ namespace RWXLoader
             }
 
             // Otherwise keep smooth shading with hemisphere-aligned accumulation
-            var normals = new Vector3[positions.Length];
+            var normals = new UnityEngine.Vector3[positions.Length];
 
             for (int i = 0; i < triangles.Length; i += 3)
             {
@@ -488,7 +488,7 @@ namespace RWXLoader
                     continue;
                 }
 
-                Vector3 faceNormal = faceNormals[i / 3];
+                UnityEngine.Vector3 faceNormal = faceNormals[i / 3];
 
                 if (faceNormal.sqrMagnitude < 1e-12f)
                 {
@@ -508,7 +508,7 @@ namespace RWXLoader
                 }
                 else
                 {
-                    normals[i] = Vector3.up; // sensible fallback
+                    normals[i] = UnityEngine.Vector3.up; // sensible fallback
                 }
             }
 
@@ -521,13 +521,13 @@ namespace RWXLoader
             };
         }
 
-        private static Vector3 AccumulateNormal(Vector3 accumulator, Vector3 faceNormal)
+        private static UnityEngine.Vector3 AccumulateNormal(UnityEngine.Vector3 accumulator, UnityEngine.Vector3 faceNormal)
         {
             if (accumulator.sqrMagnitude > 1e-12f)
             {
                 // If the face normal points into the opposite hemisphere, flip it so vertex
                 // normals don't cancel out when double-sided geometry reuses the same vertices.
-                if (Vector3.Dot(accumulator, faceNormal) < 0f)
+                if (UnityEngine.Vector3.Dot(accumulator, faceNormal) < 0f)
                 {
                     faceNormal = -faceNormal;
                 }
@@ -536,12 +536,12 @@ namespace RWXLoader
             return accumulator + faceNormal;
         }
 
-        private static void AddNormal(List<Vector3>[] buckets, int index, Vector3 normal)
+        private static void AddNormal(List<UnityEngine.Vector3>[] buckets, int index, UnityEngine.Vector3 normal)
         {
             var list = buckets[index];
             if (list == null)
             {
-                list = new List<Vector3>(2);
+                list = new List<UnityEngine.Vector3>(2);
                 buckets[index] = list;
             }
 

@@ -44,7 +44,7 @@ namespace RWXLoader
         private readonly Regex integerRegex = new Regex(@"([-+]?[0-9]+)", DefaultRegexOptions);
         private static readonly Regex textureAttributeRegex = new Regex(@"\b(mask|normal|specular)\s+([A-Za-z0-9_\-\/:.]+)", DefaultRegexOptions);
 
-        internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new Vector3(-1f, 1f, 1f));
+        internal static readonly Matrix4x4 RwxToUnityReflection = Matrix4x4.Scale(new UnityEngine.Vector3(-1f, 1f, 1f));
 
         private RWXMeshBuilder meshBuilder;
         private RWXPrototypeParser prototypeParser;
@@ -199,7 +199,7 @@ namespace RWXLoader
             float z = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
 
             // Store RWX coordinates directly - coordinate conversion will be handled at transform level
-            Vector3 position = new Vector3(x, y, z);
+            UnityEngine.Vector3 position = new UnityEngine.Vector3(x, y, z);
             Vector2 uv = Vector2.zero;
 
             // Check for UV coordinates
@@ -230,7 +230,7 @@ namespace RWXLoader
             {
                 Vector4 homogeneousPos = new Vector4(position.x, position.y, position.z, 1.0f);
                 Vector4 transformedPos = context.currentTransform * homogeneousPos;
-                position = new Vector3(transformedPos.x, transformedPos.y, transformedPos.z);
+                position = new UnityEngine.Vector3(transformedPos.x, transformedPos.y, transformedPos.z);
             }
 
             context.vertices.Add(new RWXVertex(position, uv));
@@ -468,7 +468,7 @@ namespace RWXLoader
             float diffuse = float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture);
             float specular = float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture);
 
-            context.currentMaterial.surface = new Vector3(ambient, diffuse, specular);
+            context.currentMaterial.surface = new UnityEngine.Vector3(ambient, diffuse, specular);
             return true;
         }
 
@@ -483,7 +483,7 @@ namespace RWXLoader
             if (!match.Success) return false;
 
             float ambient = float.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-            context.currentMaterial.surface = new Vector3(ambient, context.currentMaterial.surface.y, context.currentMaterial.surface.z);
+            context.currentMaterial.surface = new UnityEngine.Vector3(ambient, context.currentMaterial.surface.y, context.currentMaterial.surface.z);
             return true;
         }
 
@@ -498,7 +498,7 @@ namespace RWXLoader
             if (!match.Success) return false;
 
             float diffuse = float.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, diffuse, context.currentMaterial.surface.z);
+            context.currentMaterial.surface = new UnityEngine.Vector3(context.currentMaterial.surface.x, diffuse, context.currentMaterial.surface.z);
             return true;
         }
 
@@ -513,7 +513,7 @@ namespace RWXLoader
             if (!match.Success) return false;
 
             float specular = float.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
-            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
+            context.currentMaterial.surface = new UnityEngine.Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
             return true;
         }
 
@@ -674,7 +674,7 @@ namespace RWXLoader
 
             Matrix4x4 unityMatrix = ConvertRWXMatrixToUnity(rwxMatrix, context);
 
-            Vector3 position, scale;
+            UnityEngine.Vector3 position, scale;
             Quaternion rotation;
 
             if (TryDecomposeMatrix(unityMatrix, out position, out rotation, out scale))
@@ -690,8 +690,8 @@ namespace RWXLoader
             }
             else
             {
-                Vector3 rwxPosition = new Vector3(rwxMatrix.m03, rwxMatrix.m13, rwxMatrix.m23);
-                Vector3 fallbackPosition = new Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
+                UnityEngine.Vector3 rwxPosition = new UnityEngine.Vector3(rwxMatrix.m03, rwxMatrix.m13, rwxMatrix.m23);
+                UnityEngine.Vector3 fallbackPosition = new UnityEngine.Vector3(-rwxPosition.x, rwxPosition.y, rwxPosition.z);
 
                 target.transform.localPosition = fallbackPosition;
                 Debug.Log($"   📍 Applied fallback position: {fallbackPosition:F6}");
@@ -754,11 +754,11 @@ namespace RWXLoader
             return sanitized;
         }
         
-        private bool TryDecomposeMatrix(Matrix4x4 matrix, out Vector3 position, out Quaternion rotation, out Vector3 scale)
+        private bool TryDecomposeMatrix(Matrix4x4 matrix, out UnityEngine.Vector3 position, out Quaternion rotation, out UnityEngine.Vector3 scale)
         {
-            position = Vector3.zero;
+            position = UnityEngine.Vector3.zero;
             rotation = Quaternion.identity;
-            scale = Vector3.one;
+            scale = UnityEngine.Vector3.one;
             
             try
             {
@@ -777,19 +777,19 @@ namespace RWXLoader
                 }
                 
                 // Extract translation
-                position = new Vector3(matrix.m03, matrix.m13, matrix.m23);
+                position = new UnityEngine.Vector3(matrix.m03, matrix.m13, matrix.m23);
                 
                 // Validate translation
                 if (!IsValidFloat(position.x) || !IsValidFloat(position.y) || !IsValidFloat(position.z))
                 {
                     Debug.LogWarning("Invalid translation values detected, using zero");
-                    position = Vector3.zero;
+                    position = UnityEngine.Vector3.zero;
                 }
                 
                 // Extract scale vectors
-                Vector3 scaleX = new Vector3(matrix.m00, matrix.m10, matrix.m20);
-                Vector3 scaleY = new Vector3(matrix.m01, matrix.m11, matrix.m21);
-                Vector3 scaleZ = new Vector3(matrix.m02, matrix.m12, matrix.m22);
+                UnityEngine.Vector3 scaleX = new UnityEngine.Vector3(matrix.m00, matrix.m10, matrix.m20);
+                UnityEngine.Vector3 scaleY = new UnityEngine.Vector3(matrix.m01, matrix.m11, matrix.m21);
+                UnityEngine.Vector3 scaleZ = new UnityEngine.Vector3(matrix.m02, matrix.m12, matrix.m22);
                 
                 scale.x = scaleX.magnitude;
                 scale.y = scaleY.magnitude;
@@ -958,9 +958,9 @@ namespace RWXLoader
             Matrix4x4 translation = Matrix4x4.Translate(translationVector);
 
             // Debug translate operations
-            Vector3 oldPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
+            UnityEngine.Vector3 oldPos = new UnityEngine.Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
             context.currentTransform = context.currentTransform * translation;
-            Vector3 newPos = new Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
+            UnityEngine.Vector3 newPos = new UnityEngine.Vector3(context.currentTransform.m03, context.currentTransform.m13, context.currentTransform.m23);
 
             Debug.Log($"🔄 TRANSLATE: ({translationVector.x:F6}, {translationVector.y:F6}, {translationVector.z:F6}) | Old pos: {oldPos:F6} → New pos: {newPos:F6}");
 
@@ -975,8 +975,8 @@ namespace RWXLoader
             // Determine if this is a root-level model orientation rotation
             bool isRootLevelRotation = IsRootLevelModelOrientation(context, axisX, axisY, axisZ, angleDegrees);
             
-            Vector3 rwxAxis = new Vector3(axisX, axisY, axisZ);
-            Vector3 unityAxis = rwxAxis;
+            UnityEngine.Vector3 rwxAxis = new UnityEngine.Vector3(axisX, axisY, axisZ);
+            UnityEngine.Vector3 unityAxis = rwxAxis;
             float unityAngle = angleDegrees;
             
             if (isRootLevelRotation)
@@ -1007,7 +1007,7 @@ namespace RWXLoader
             }
             
             // Create rotation axis vector (normalized)
-            Vector3 axis = unityAxis.normalized;
+            UnityEngine.Vector3 axis = unityAxis.normalized;
             
             // Create rotation quaternion from axis and angle
             Quaternion rotation = Quaternion.AngleAxis(unityAngle, axis);
@@ -1084,7 +1084,7 @@ namespace RWXLoader
 
         private bool ProcessScale(string line, RWXParseContext context)
         {
-            if (!TryParseScaleValues(line.AsSpan(), out Vector3 scaleVector))
+            if (!TryParseScaleValues(line.AsSpan(), out UnityEngine.Vector3 scaleVector))
                 return false;
 
             Matrix4x4 scale = Matrix4x4.Scale(scaleVector);
@@ -1148,7 +1148,7 @@ namespace RWXLoader
             
             if (isInPrototype && isBedRelated)
             {
-                Vector3 translation = new Vector3(matrix.m03, matrix.m13, matrix.m23);
+                UnityEngine.Vector3 translation = new UnityEngine.Vector3(matrix.m03, matrix.m13, matrix.m23);
                 float det = matrix.m00 * (matrix.m11 * matrix.m22 - matrix.m12 * matrix.m21) -
                            matrix.m01 * (matrix.m10 * matrix.m22 - matrix.m12 * matrix.m20) +
                            matrix.m02 * (matrix.m10 * matrix.m21 - matrix.m11 * matrix.m20);
@@ -1227,7 +1227,7 @@ namespace RWXLoader
             float angle = float.Parse(floatMatches[3].Value, CultureInfo.InvariantCulture);
 
             // Create rotation around the specified axis
-            Vector3 axis = new Vector3(x, y, z).normalized;
+            UnityEngine.Vector3 axis = new UnityEngine.Vector3(x, y, z).normalized;
             Quaternion rotation = Quaternion.AngleAxis(angle, axis);
             Matrix4x4 rotationMatrix = Matrix4x4.Rotate(rotation);
             
@@ -1381,7 +1381,7 @@ namespace RWXLoader
                 return false;
             }
 
-            Vector3 position = new Vector3(x, y, z);
+            UnityEngine.Vector3 position = new UnityEngine.Vector3(x, y, z);
             Vector2 uv = Vector2.zero;
 
             int uvStart = index;
@@ -1408,7 +1408,7 @@ namespace RWXLoader
             {
                 Vector4 homogeneousPos = new Vector4(position.x, position.y, position.z, 1.0f);
                 Vector4 transformedPos = context.currentTransform * homogeneousPos;
-                position = new Vector3(transformedPos.x, transformedPos.y, transformedPos.z);
+                position = new UnityEngine.Vector3(transformedPos.x, transformedPos.y, transformedPos.z);
             }
 
             context.vertices.Add(new RWXVertex(position, uv));
@@ -1588,7 +1588,7 @@ namespace RWXLoader
                 return false;
             }
 
-            context.currentMaterial.surface = new Vector3(ambient, diffuse, specular);
+            context.currentMaterial.surface = new UnityEngine.Vector3(ambient, diffuse, specular);
             return true;
         }
 
@@ -1600,7 +1600,7 @@ namespace RWXLoader
             if (!TryReadFloat(line, ref index, out float ambient))
                 return false;
 
-            context.currentMaterial.surface = new Vector3(ambient, context.currentMaterial.surface.y, context.currentMaterial.surface.z);
+            context.currentMaterial.surface = new UnityEngine.Vector3(ambient, context.currentMaterial.surface.y, context.currentMaterial.surface.z);
             return true;
         }
 
@@ -1612,7 +1612,7 @@ namespace RWXLoader
             if (!TryReadFloat(line, ref index, out float diffuse))
                 return false;
 
-            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, diffuse, context.currentMaterial.surface.z);
+            context.currentMaterial.surface = new UnityEngine.Vector3(context.currentMaterial.surface.x, diffuse, context.currentMaterial.surface.z);
             return true;
         }
 
@@ -1624,7 +1624,7 @@ namespace RWXLoader
             if (!TryReadFloat(line, ref index, out float specular))
                 return false;
 
-            context.currentMaterial.surface = new Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
+            context.currentMaterial.surface = new UnityEngine.Vector3(context.currentMaterial.surface.x, context.currentMaterial.surface.y, specular);
             return true;
         }
 
@@ -1644,9 +1644,9 @@ namespace RWXLoader
             return true;
         }
 
-        private bool TryParseTranslateValues(ReadOnlySpan<char> line, out Vector3 translation)
+        private bool TryParseTranslateValues(ReadOnlySpan<char> line, out UnityEngine.Vector3 translation)
         {
-            translation = Vector3.zero;
+            translation = UnityEngine.Vector3.zero;
 
             if (IsCommand(line, "translate", null, out int index))
             {
@@ -1654,7 +1654,7 @@ namespace RWXLoader
                     TryReadFloat(line, ref index, out float y) &&
                     TryReadFloat(line, ref index, out float z))
                 {
-                    translation = new Vector3(x, y, z);
+                    translation = new UnityEngine.Vector3(x, y, z);
                     return true;
                 }
             }
@@ -1665,7 +1665,7 @@ namespace RWXLoader
             var floatMatches = floatRegex.Matches(match.Groups[2].Value);
             if (floatMatches.Count < 3) return false;
 
-            translation = new Vector3(
+            translation = new UnityEngine.Vector3(
                 float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture),
                 float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture),
                 float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture));
@@ -1673,9 +1673,9 @@ namespace RWXLoader
             return true;
         }
 
-        private bool TryParseScaleValues(ReadOnlySpan<char> line, out Vector3 scale)
+        private bool TryParseScaleValues(ReadOnlySpan<char> line, out UnityEngine.Vector3 scale)
         {
-            scale = Vector3.one;
+            scale = UnityEngine.Vector3.one;
 
             if (IsCommand(line, "scale", null, out int index))
             {
@@ -1683,7 +1683,7 @@ namespace RWXLoader
                     TryReadFloat(line, ref index, out float y) &&
                     TryReadFloat(line, ref index, out float z))
                 {
-                    scale = new Vector3(x, y, z);
+                    scale = new UnityEngine.Vector3(x, y, z);
                     return true;
                 }
             }
@@ -1694,7 +1694,7 @@ namespace RWXLoader
             var floatMatches = floatRegex.Matches(match.Groups[2].Value);
             if (floatMatches.Count < 3) return false;
 
-            scale = new Vector3(
+            scale = new UnityEngine.Vector3(
                 float.Parse(floatMatches[0].Value, CultureInfo.InvariantCulture),
                 float.Parse(floatMatches[1].Value, CultureInfo.InvariantCulture),
                 float.Parse(floatMatches[2].Value, CultureInfo.InvariantCulture));

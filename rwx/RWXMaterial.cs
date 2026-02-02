@@ -8,7 +8,7 @@ namespace RWXLoader
     {
         public Color color = Color.white;
         public bool hasExplicitColor = false;
-        public Vector3 surface = new Vector3(0.69f, 0.0f, 0.0f); // Ambience, Diffusion, Specularity
+        public UnityEngine.Vector3 surface = new UnityEngine.Vector3(0.69f, 0.0f, 0.0f); // Ambience, Diffusion, Specularity    
         public float opacity = 1.0f;
         public LightSampling lightSampling = LightSampling.Facet;
         public GeometrySampling geometrySampling = GeometrySampling.Solid;
