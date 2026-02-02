@@ -469,7 +469,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         };
 
-        await vpClient.LoginAndEnterAsync("Crazyeyes14!", true);
+        await vpClient.LoginAndEnterAsync("", true);
         Debug.Log($"[VP] Connected & entered '{worldName}' as {userName}");
     }
 
