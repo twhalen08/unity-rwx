@@ -6,28 +6,29 @@ using System.Linq;
 using System.Threading.Tasks;
 using Unity.Burst;
 using Unity.Collections;
-using UnityEngine;
 using Unity.Jobs;
 using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.Networking;
 using VpNet;
 using RWXLoader;
-using UnityEngine.Networking;
 
 /// <summary>
-/// VPWorldStreamerSmooth
-/// ---------------------
-/// Streams VP cells around a movable camera and prioritizes model loading by:
-///   1) In-frustum first (optional)
-///   2) Then closest-to-camera (distance)
+/// VPWorldStreamerSmooth (Improved + Template Clones + Optional Pooling + 5x5 Batch Spawning)
+/// ---------------------------------------------------------------------------------------
+/// Fixes / features:
+/// - FIX: no more "flash at (0,0,0)" by keeping instances INACTIVE until after placement.
+/// - Template cloning: load each unique modelId once as an inactive TEMPLATE, clone for repeats.
+/// - Optional pooling: recycle clones on cell unload.
+/// - Optional action parse cache.
+/// - Optional 5x5 region batching: group by (region + modelId + actionString) and spawn many clones at once.
+/// - CREATE actions applied via a budgeted loop (time-sliced).
 ///
-/// Smoothness improvements:
-///   - Time-slices ("budgets") how much work we do per frame when finishing models (actions)
-///   - Limits model starts per frame and concurrent in-flight loads
-///   - Reprioritizes pending model heap on a cooldown (prevents big spikes while moving)
-///
-/// NOTE:
-/// - QueryCellAsync expects cell coords, so we convert Unity camera position -> VP units -> cell.
-/// - Unity API calls remain on main thread; this script reduces hitches by spreading work across frames.
+/// Assumes these exist in your project:
+/// - RWXLoaderAdvanced, RWXAssetManager
+/// - VpActionParser, VpActionExecutor
+/// - VpActivateActions, VpModelScaleContext
+/// - VpPreprocessActionInput, VpPreprocessedAction, VpPreprocessedActionType
 /// </summary>
 public class VPWorldStreamerSmooth : MonoBehaviour
 {
@@ -36,6 +37,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public string botName = "Unity";
     public string applicationName = "Unity";
     public string worldName = "VP-Build";
+    [Tooltip("World password (leave blank if none). Don't hardcode secrets in scripts.")]
+    public string worldPassword = "";
 
     [Header("Streaming Target")]
     public Camera targetCamera;
@@ -54,7 +57,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("VP cell size in VP world units (commonly 2000).")]
     public float vpUnitsPerCell = 2000f;
 
-    [Tooltip("How many VP world units equal 1 Unity unit. If 1 Unity unit == 1 VP unit, set 1. If 1 Unity unit == 1 meter and VP is 100 units/m, set 100.")]
+    [Tooltip("How many VP world units equal 1 Unity unit. If 1 Unity unit == 1 VP unit, set 1.")]
     public float vpUnitsPerUnityUnit = 0.5f;
 
     [Header("Model Loader")]
@@ -71,13 +74,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     [Header("Throttles")]
     [Tooltip("Max cell queries in-flight at once")]
-    public int maxConcurrentCellQueries = 1;
+    public int maxConcurrentCellQueries = 2;
 
-    [Tooltip("Max model loads in-flight at once (RWX downloads + instantiation)")]
-    public int maxConcurrentModelLoads = 1;
+    [Tooltip("Max template loads in-flight at once (when batching + templates, this mostly gates TEMPLATE loads).")]
+    public int maxConcurrentModelLoads = 2;
 
-    [Tooltip("Max models to START per frame (keeps frame stable)")]
-    public int maxModelStartsPerFrame = 1;
+    [Tooltip("Max heap items to START per frame (keeps frame stable). For batching, this is batches-per-frame.")]
+    public int maxModelStartsPerFrame = 2;
 
     [Header("Smoothness Budget")]
     [Tooltip("Max milliseconds per frame spent applying actions to loaded models (lower = smoother, slower load).")]
@@ -90,44 +93,70 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public float reprioritizeCooldownSeconds = 0.25f;
 
     [Header("Prioritization")]
-    [Tooltip("When camera changes cell, rebuild pending model priorities so nearer/visible objects load first.")]
+    [Tooltip("When camera changes cell, rebuild pending priorities so nearer objects load first.")]
     public bool reprioritizeModelsOnCellChange = true;
 
-    [Tooltip("If true, skip model loads whose cell root was unloaded before we got to them.")]
+    [Tooltip("If true, skip spawns whose cell root was unloaded before we got to them.")]
     public bool dropModelsFromUnloadedCells = true;
 
-    [Header("Frustum Prioritization")]
-    public bool prioritizeFrustum = true;
+    [Header("Nearest-First Boost")]
+    [Tooltip("Within this radius (Unity units), objects get a hard priority boost and will load first.")]
+    public float nearBoostRadius = 30f;
 
-    [Tooltip("How much to favor objects in the view frustum. Bigger = stronger bias.")]
-    public float frustumBonus = 1_000_000f;
+    [Tooltip("How strong the near boost is. More negative = earlier. Keep very negative.")]
+    public float nearBoostPriority = -10_000_000f;
+
+    [Header("Frustum Prioritization (Optional)")]
+    [Tooltip("Usually not needed for 'nearest first'. Leave off unless you want 'visible first'.")]
+    public bool prioritizeFrustum = false;
+
+    [Tooltip("How much to favor objects in the view frustum. Bigger = stronger bias. Use small values if enabled.")]
+    public float frustumBonus = 10_000f;
 
     [Tooltip("Ignore frustum test beyond this distance (Unity units). 0 = no limit.")]
     public float frustumMaxDistance = 0f;
 
+    [Header("Periodic Reprioritize")]
+    [Tooltip("If > 0, reprioritize pending items every X seconds while camera moves/rotates.")]
+    public float periodicReprioritizeSeconds = 0.35f;
+
+    [Tooltip("Minimum camera movement (Unity units) to consider for periodic reprioritization.")]
+    public float reprioritizeMoveThreshold = 0.25f;
+
+    [Tooltip("Minimum camera rotation change (degrees) to consider for periodic reprioritization.")]
+    public float reprioritizeRotateThresholdDegrees = 2.5f;
+
+    [Header("Template Clones + Pooling")]
+    [Tooltip("Load each unique modelId once into a hidden template, then Instantiate() clones for repeats (pp16 x10).")]
+    public bool useTemplateClones = true;
+
+    [Tooltip("If true, return model instances to a pool on cell unload and reuse them on reload.")]
+    public bool enablePooling = true;
+
+    [Tooltip("Max inactive instances kept per modelId when pooling.")]
+    public int maxPoolPerModel = 256;
+
+    [Tooltip("If true, cache action parsing by the raw action string (good when lots of repeats).")]
+    public bool cacheParsedActions = true;
+
+    [Header("5x5 Batching")]
+    [Tooltip("Group spawns by (region + modelId + actionString) and spawn many clones in bursts.")]
+    public bool enable5x5Batching = true;
+
+    [Tooltip("Region size in CELLS (5 means 5x5 cell regions).")]
+    public int batchRegionSizeCells = 5;
+
+    [Tooltip("Max clones to spawn per frame from a batch (keeps frame stable).")]
+    public int maxBatchInstancesPerFrame = 50;
+
     [Header("Terrain")]
-    [Tooltip("Load and render VP terrain tiles around the camera.")]
     public bool streamTerrain = true;
-
-    [Tooltip("How many VP terrain cells make up one terrain tile (default VP tile = 32).")]
     public int terrainTileCellSpan = 32;
-
-    [Tooltip("How many VP terrain cells make up one terrain node (default VP node = 8).")]
     public int terrainNodeCellSpan = 8;
-
-    [Tooltip("Add a MeshCollider to each generated terrain tile.")]
     public bool addTerrainColliders = true;
-
-    [Tooltip("Optional material template for terrain. If null a Standard material is created.")]
     public Material terrainMaterialTemplate;
-
-    [Tooltip("Vertical offset applied to all generated terrain vertices (negative to lower).")]
     public float terrainHeightOffset = -0.01f;
-
-    [Tooltip("Maximum terrain tile queries in-flight at once.")]
     public int maxConcurrentTerrainQueries = 1;
-
-    [Tooltip("If true, skip building terrain tiles whose root was unloaded before completion.")]
     public bool dropTerrainFromUnloadedTiles = true;
 
     [Header("Debug")]
@@ -159,6 +188,20 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private readonly int[] terrainFetchAllNodes = Enumerable.Repeat(-1, 16).ToArray();
     private GameObject terrainRoot;
 
+    // Template + pool roots
+    private GameObject templateRoot;
+    private GameObject poolRoot;
+
+    // Template per modelId
+    private readonly Dictionary<string, GameObject> modelTemplateCache = new();
+    private readonly HashSet<string> templateLoadsInFlight = new();
+
+    // Pools per modelId
+    private readonly Dictionary<string, Stack<GameObject>> modelPools = new();
+
+    // Optional parsed action cache
+    private readonly Dictionary<string, (List<VpActionCommand> create, List<VpActionCommand> activate)> actionParseCache = new();
+
     private struct DesiredCellData
     {
         public int cx;
@@ -169,17 +212,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     private struct DesiredCellJob : IJobParallelFor
     {
-        [ReadOnly]
-        public int centerX;
-
-        [ReadOnly]
-        public int centerY;
-
-        [ReadOnly]
-        public int radius;
-
-        [WriteOnly]
-        public NativeArray<DesiredCellData> results;
+        [ReadOnly] public int centerX;
+        [ReadOnly] public int centerY;
+        [ReadOnly] public int radius;
+        [WriteOnly] public NativeArray<DesiredCellData> results;
 
         public void Execute(int index)
         {
@@ -213,6 +249,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public float height;
     }
 
+    // ---------- Action preprocessing (Burst) ----------
     [BurstCompile]
     private struct PreprocessActionJob : IJobParallelFor
     {
@@ -274,31 +311,112 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public string action;
     }
 
-    // Model priority heap: smallest priority loads first
+    // Per-model priority heap (non-batched mode)
     private readonly MinHeap<PendingModelLoad> modelHeap = new MinHeap<PendingModelLoad>();
 
+    // -------------------------
+    // 5x5 batching structures
+    // -------------------------
+    private struct Placement
+    {
+        public (int cx, int cy) cell;
+        public UnityEngine.Vector3 position;
+        public Quaternion rotation;
+    }
+
+    private struct BatchKey : IEquatable<BatchKey>
+    {
+        public int rx, ry;          // region coords
+        public string modelId;      // normalized
+        public string action;       // raw action string (can be "")
+
+        public bool Equals(BatchKey other)
+            => rx == other.rx && ry == other.ry && modelId == other.modelId && action == other.action;
+
+        public override bool Equals(object obj)
+            => obj is BatchKey other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int h = 17;
+                h = h * 31 + rx;
+                h = h * 31 + ry;
+                h = h * 31 + (modelId?.GetHashCode() ?? 0);
+                h = h * 31 + (action?.GetHashCode() ?? 0);
+                return h;
+            }
+        }
+    }
+
+    private sealed class Batch
+    {
+        public BatchKey key;
+        public List<Placement> placements = new List<Placement>(32);
+        public List<VpActionCommand> create;
+        public List<VpActionCommand> activate;
+        public bool actionsParsed;
+    }
+
+    private readonly Dictionary<BatchKey, Batch> batches = new();
+    private readonly MinHeap<BatchKey> batchHeap = new MinHeap<BatchKey>();
+
     private int inFlightCellQueries = 0;
-    private int inFlightModelLoads = 0;
+    private int inFlightModelLoads = 0;   // in batched mode, this mainly counts TEMPLATE loads / batch starts
     private int inFlightTerrainQueries = 0;
 
     private (int cx, int cy) lastCameraCell = (int.MinValue, int.MinValue);
     private (int cx, int cy) lastTerrainCameraCell = (int.MinValue, int.MinValue);
 
     private float nextReprioritizeTime = 0f;
+    private float nextPeriodicReprioritizeTime = 0f;
+    private UnityEngine.Vector3 lastReprioCamPos;
+    private Quaternion lastReprioCamRot;
 
     // Debug
     private (int cx, int cy) debugCamCell;
     private UnityEngine.Vector3 debugCamPos;
 
-    private readonly List<VpPreprocessedAction> preprocessedActionResults = new();
-    private readonly List<VpPreprocessActionInput> preprocessedActionInputs = new();
-    private readonly List<ActionApplyStep> actionApplySteps = new();
+    // -------------------------
+    // Action application queue (budgeted)
+    // -------------------------
+    private struct ActionApplyStep
+    {
+        public bool isPreprocessed;
+        public int preprocessedIndex;
+        public VpActionCommand command;
+    }
+
+    private sealed class ActionWorkItem
+    {
+        public GameObject target;
+        public List<ActionApplyStep> steps;
+        public List<VpPreprocessedAction> preprocessed;
+        public int stepIndex;
+
+        public List<VpActionCommand> activateActions;
+
+        public string objectPath;
+        public string objectPathPassword;
+
+        public bool isValid => target != null;
+    }
+
+    private readonly Queue<ActionWorkItem> actionQueue = new Queue<ActionWorkItem>(256);
+
+    // Attach this to instances so unload can return them to the right pool
+    private sealed class VpModelId : MonoBehaviour
+    {
+        public string modelId;
+    }
 
     private void Start()
     {
         if (targetCamera == null) targetCamera = Camera.main;
 
         SetupModelLoader();
+        EnsureTemplateAndPoolRoots();
 
         if (streamTerrain && terrainMaterialTemplate == null)
         {
@@ -328,10 +446,14 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield break;
         }
 
+        StartCoroutine(ModelActionLoop());
         StartCoroutine(CellStreamingLoop());
-        if (streamTerrain)
-            StartCoroutine(TerrainStreamingLoop());
+        if (streamTerrain) StartCoroutine(TerrainStreamingLoop());
         StartCoroutine(ModelStreamingLoop());
+
+        lastReprioCamPos = GetCameraWorldPos();
+        lastReprioCamRot = (targetCamera != null) ? targetCamera.transform.rotation : Quaternion.identity;
+        nextPeriodicReprioritizeTime = Time.time + Mathf.Max(0.05f, periodicReprioritizeSeconds);
     }
 
     private async Task ConnectAndLogin()
@@ -347,7 +469,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             }
         };
 
-        await vpClient.LoginAndEnterAsync("", true);
+        await vpClient.LoginAndEnterAsync("Crazyeyes14!", true);
         Debug.Log($"[VP] Connected & entered '{worldName}' as {userName}");
     }
 
@@ -371,6 +493,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
     }
 
+    private void EnsureTemplateAndPoolRoots()
+    {
+        if (templateRoot == null)
+        {
+            templateRoot = new GameObject("VP_ModelTemplates");
+            DontDestroyOnLoad(templateRoot);
+        }
+
+        if (poolRoot == null)
+        {
+            poolRoot = new GameObject("VP_ModelPool");
+            DontDestroyOnLoad(poolRoot);
+        }
+    }
+
     // -------------------------
     // Main loops
     // -------------------------
@@ -389,27 +526,27 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                 BuildDesiredCellsWithJob(camCell.cx, camCell.cy, loadRadius);
 
-                // Unload far cells if enabled
                 if (unloadRadius >= 0)
                     UnloadFarCells(camCell.cx, camCell.cy, unloadRadius);
 
-                // Reprioritize pending models (cooldown-protected)
-                if (cellChanged && reprioritizeModelsOnCellChange && modelHeap.Count > 0)
+                if (cellChanged && reprioritizeModelsOnCellChange)
                 {
                     if (reprioritizeCooldownSeconds <= 0f || Time.time >= nextReprioritizeTime)
                     {
-                        ReprioritizePendingModels();
+                        if (enable5x5Batching)
+                            ReprioritizePendingBatches();
+                        else
+                            ReprioritizePendingModels();
+
                         nextReprioritizeTime = Time.time + Mathf.Max(0.01f, reprioritizeCooldownSeconds);
                     }
                 }
             }
 
-            // Start cell queries (closest-first)
             while (inFlightCellQueries < maxConcurrentCellQueries)
             {
                 var next = DequeueClosestQueuedCell();
-                if (next.cx == int.MinValue)
-                    break;
+                if (next.cx == int.MinValue) break;
 
                 queuedCells.Remove(next);
                 queryingCells.Add(next);
@@ -426,33 +563,74 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     {
         while (true)
         {
+            if (periodicReprioritizeSeconds > 0f)
+            {
+                bool hasPending = enable5x5Batching ? batchHeap.Count > 0 : modelHeap.Count > 0;
+                if (hasPending && Time.time >= nextPeriodicReprioritizeTime)
+                {
+                    UnityEngine.Vector3 camPos = GetCameraWorldPos();
+                    Quaternion camRot = (targetCamera != null) ? targetCamera.transform.rotation : Quaternion.identity;
+
+                    float moved = UnityEngine.Vector3.Distance(camPos, lastReprioCamPos);
+                    float angled = Quaternion.Angle(camRot, lastReprioCamRot);
+
+                    if (moved >= reprioritizeMoveThreshold || angled >= reprioritizeRotateThresholdDegrees)
+                    {
+                        if (enable5x5Batching)
+                            ReprioritizePendingBatches();
+                        else
+                            ReprioritizePendingModels();
+
+                        lastReprioCamPos = camPos;
+                        lastReprioCamRot = camRot;
+                    }
+
+                    nextPeriodicReprioritizeTime = Time.time + Mathf.Max(0.05f, periodicReprioritizeSeconds);
+                }
+            }
+
             int startedThisFrame = 0;
 
+            if (enable5x5Batching)
+            {
+                while (batchHeap.Count > 0 &&
+                       inFlightModelLoads < maxConcurrentModelLoads &&
+                       startedThisFrame < maxModelStartsPerFrame)
+                {
+                    var key = batchHeap.PopMin();
+
+                    if (!batches.TryGetValue(key, out var batch) || batch == null || batch.placements.Count == 0)
+                    {
+                        batches.Remove(key);
+                        continue;
+                    }
+
+                    inFlightModelLoads++;
+                    startedThisFrame++;
+                    StartCoroutine(SpawnBatch(batch));
+                }
+
+                yield return null;
+                continue;
+            }
+
+            // Non-batched path (your previous behavior)
             while (modelHeap.Count > 0 &&
                    inFlightModelLoads < maxConcurrentModelLoads &&
                    startedThisFrame < maxModelStartsPerFrame)
             {
                 var req = modelHeap.PopMin();
 
-                if (dropModelsFromUnloadedCells)
-                {
-                    if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
-                        continue;
+                Transform parent = null;
+                if (cellRoots.TryGetValue(req.cell, out var cellRoot) && cellRoot != null)
+                    parent = cellRoot.transform;
 
-                    inFlightModelLoads++;
-                    startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, cellRoot.transform));
-                }
-                else
-                {
-                    Transform parent = null;
-                    if (cellRoots.TryGetValue(req.cell, out var cellRoot) && cellRoot != null)
-                        parent = cellRoot.transform;
+                if (dropModelsFromUnloadedCells && parent == null)
+                    continue;
 
-                    inFlightModelLoads++;
-                    startedThisFrame++;
-                    StartCoroutine(LoadOneModelBudgeted(req, parent));
-                }
+                inFlightModelLoads++;
+                startedThisFrame++;
+                StartCoroutine(LoadOneModelThenQueueActions(req, parent));
             }
 
             yield return null;
@@ -479,8 +657,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             while (inFlightTerrainQueries < maxConcurrentTerrainQueries)
             {
                 var next = DequeueNextTerrainTile();
-                if (next.tx == int.MinValue)
-                    break;
+                if (next.tx == int.MinValue) break;
 
                 queuedTerrainTiles.Remove(next);
                 queryingTerrainTiles.Add(next);
@@ -494,7 +671,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     }
 
     // -------------------------
-    // Cell query + model enqueue
+    // Cell query + enqueue
     // -------------------------
     private IEnumerator QueryCellAndEnqueueModels(int cellX, int cellY)
     {
@@ -517,7 +694,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         var key = (cellX, cellY);
 
-        // Create / reuse cell root
         if (!cellRoots.TryGetValue(key, out var root) || root == null)
         {
             root = new GameObject($"VP_Cell_{cellX}_{cellY}");
@@ -540,362 +716,378 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
             UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
             Quaternion rot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
+            string actionStr = obj.Action ?? "";
 
-            var req = new PendingModelLoad
+            if (!enable5x5Batching)
             {
-                cell = key,
-                modelName = modelName,
-                position = pos,
-                rotation = rot,
-                action = obj.Action
+                var req = new PendingModelLoad
+                {
+                    cell = key,
+                    modelName = modelName,
+                    position = pos,
+                    rotation = rot,
+                    action = actionStr
+                };
+
+                float pri = ComputeModelPriority(pos, camPos);
+                modelHeap.Push(req, pri);
+                continue;
+            }
+
+            // Batched mode
+            string modelId = NormalizeModelId(modelName);
+            var region = GetRegionForCell(cellX, cellY);
+
+            var bk = new BatchKey
+            {
+                rx = region.rx,
+                ry = region.ry,
+                modelId = modelId,
+                action = actionStr
             };
 
-            float pri = ComputeModelPriority(pos, camPos);
-            modelHeap.Push(req, pri);
+            if (!batches.TryGetValue(bk, out var batch))
+            {
+                batch = new Batch { key = bk };
+                batches[bk] = batch;
+
+                // Priority starts based on first placement
+                float pri = ComputeModelPriority(pos, camPos);
+                batchHeap.Push(bk, pri);
+            }
+            else
+            {
+                // Lazy reprio: push again with possibly better priority (duplicates ok; spawn removes batch)
+                float pri = ComputeModelPriority(pos, camPos);
+                batchHeap.Push(bk, pri);
+            }
+
+            batch.placements.Add(new Placement
+            {
+                cell = key,
+                position = pos,
+                rotation = rot
+            });
         }
+    }
+
+    private (int rx, int ry) GetRegionForCell(int cx, int cy)
+    {
+        int s = Mathf.Max(1, batchRegionSizeCells);
+        int rx = Mathf.FloorToInt(cx / (float)s);
+        int ry = Mathf.FloorToInt(cy / (float)s);
+        return (rx, ry);
     }
 
     // -------------------------
-    // Terrain query + build
+    // Batched spawning
     // -------------------------
-    private IEnumerator QueryTerrainTile(int tileX, int tileZ)
+    private IEnumerator SpawnBatch(Batch batch)
     {
-        var terrainTask = vpClient.QueryTerrainAsync(tileX, tileZ, terrainFetchAllNodes);
-        yield return WaitForTask(terrainTask);
-
-        inFlightTerrainQueries--;
-        queryingTerrainTiles.Remove((tileX, tileZ));
-
-        if (terrainTask.IsFaulted || terrainTask.IsCanceled)
+        // Ensure actions parsed once
+        if (!batch.actionsParsed)
         {
-            string message = terrainTask.IsFaulted
-                ? terrainTask.Exception?.GetBaseException().Message
-                : "Terrain query cancelled";
-            Debug.LogWarning($"[VP] Failed QueryTerrain ({tileX},{tileZ}): {message}");
-            yield break;
+            GetOrParseActions(batch.key.action, out batch.create, out batch.activate);
+            batch.actionsParsed = true;
         }
 
-        if (dropTerrainFromUnloadedTiles &&
-            !queuedTerrainTiles.Contains((tileX, tileZ)) &&
-            !desiredTerrainTiles.Contains((tileX, tileZ)))
+        // Ensure template (this is the expensive part)
+        if (useTemplateClones)
+            yield return EnsureTemplateLoaded(batch.key.modelId);
+
+        // Release “in flight” slot as soon as template is ready (so other batches can start)
+        inFlightModelLoads--;
+
+        if (useTemplateClones)
         {
-            // Tile was unloaded while we were fetching; drop it silently.
-            yield break;
-        }
-
-        BuildTerrainTile(tileX, tileZ, terrainTask.Result);
-    }
-
-    private void BuildTerrainTile(int tileX, int tileZ, TerrainNode[] nodes, bool rebuildNeighbors = true)
-    {
-        if (!streamTerrain)
-            return;
-
-        if (terrainRoot == null)
-            terrainRoot = new GameObject("VP Terrain Root");
-
-        var key = (tileX, tileZ);
-        terrainTileNodes[key] = nodes;
-
-        if (terrainTiles.TryGetValue(key, out var existing) && existing != null)
-            Destroy(existing);
-
-        var mesh = BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
-        if (mesh == null)
-            return;
-
-        var go = new GameObject($"VP_Terrain_{tileX}_{tileZ}");
-        go.transform.SetParent(terrainRoot.transform, false);
-
-        var mf = go.AddComponent<MeshFilter>();
-        mf.sharedMesh = mesh;
-
-        var mr = go.AddComponent<MeshRenderer>();
-        mr.sharedMaterials = materials.ToArray();
-
-        if (addTerrainColliders)
-        {
-            var mc = go.AddComponent<MeshCollider>();
-            mc.sharedMesh = mesh;
-        }
-
-        terrainTiles[key] = go;
-        loadedTerrainTiles.Add(key);
-
-        if (rebuildNeighbors)
-        {
-            RebuildNeighborTile(tileX - 1, tileZ);
-            RebuildNeighborTile(tileX + 1, tileZ);
-            RebuildNeighborTile(tileX, tileZ - 1);
-            RebuildNeighborTile(tileX, tileZ + 1);
-        }
-    }
-
-    private void RebuildNeighborTile(int tileX, int tileZ)
-    {
-        var key = (tileX, tileZ);
-        if (!terrainTileNodes.TryGetValue(key, out var nodes))
-            return;
-
-        if (!loadedTerrainTiles.Contains(key))
-            return;
-
-        BuildTerrainTile(tileX, tileZ, nodes, false);
-    }
-
-    private Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
-    {
-        materials = new List<Material>();
-
-        if (nodes == null || nodes.Length == 0 || terrainTileCellSpan <= 0 || terrainNodeCellSpan <= 0)
-            return null;
-
-        int tileSpan = terrainTileCellSpan;
-        int nodeSpan = terrainNodeCellSpan;
-
-        var cellData = new TerrainCellData[tileSpan, tileSpan];
-
-        foreach (var node in nodes)
-        {
-            for (int cz = 0; cz < nodeSpan; cz++)
+            if (!modelTemplateCache.TryGetValue(batch.key.modelId, out var template) || template == null)
             {
-                for (int cx = 0; cx < nodeSpan; cx++)
-                {
-                    int idx = cz * nodeSpan + cx;
-                    if (node.Cells == null || idx >= node.Cells.Length)
-                        continue;
-
-                    int cellX = node.X * nodeSpan + cx;
-                    int cellZ = node.Z * nodeSpan + cz;
-
-                    if (cellX < 0 || cellX >= tileSpan || cellZ < 0 || cellZ >= tileSpan)
-                        continue;
-
-                    var cell = new TerrainCellData
-                    {
-                        hasData = true,
-                        height = node.Cells[idx].Height,
-                        texture = node.Cells[idx].Texture,
-                        isHole = node.Cells[idx].IsHole,
-                        rotation = ExtractTerrainRotation(node.Cells[idx])
-                    };
-
-                    cellData[cellX, cellZ] = cell;
-
-                    int worldCX = tileX * tileSpan + cellX;
-                    int worldCZ = tileZ * tileSpan + cellZ;
-                    terrainCellCache[(worldCX, worldCZ)] = new TerrainCellCacheEntry
-                    {
-                        hasData = cell.hasData,
-                        isHole = cell.isHole,
-                        height = cell.height
-                    };
-                }
+                batches.Remove(batch.key);
+                yield break;
             }
         }
 
-        float cellSizeUnity = GetUnityUnitsPerVpCell();
-        if (cellSizeUnity <= 0f)
-            cellSizeUnity = 1f;
-
-        bool TryGetCellHeight(int worldCX, int worldCZ, out float h)
+        int i = 0;
+        while (i < batch.placements.Count)
         {
-            if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
+            int spawnedThisFrame = 0;
+
+            while (i < batch.placements.Count && spawnedThisFrame < maxBatchInstancesPerFrame)
             {
-                h = cachedCell.height;
-                return true;
-            }
-
-            int localCX = worldCX - tileX * tileSpan;
-            int localCZ = worldCZ - tileZ * tileSpan;
-            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
-            {
-                var c = cellData[localCX, localCZ];
-                if (c.hasData && !c.isHole)
-                {
-                    h = c.height;
-                    return true;
-                }
-            }
-
-            h = 0f;
-            return false;
-        }
-
-        float[,] heightGrid = new float[tileSpan + 1, tileSpan + 1];
-        for (int vx = 0; vx <= tileSpan; vx++)
-        {
-            for (int vz = 0; vz <= tileSpan; vz++)
-            {
-                int worldCX = tileX * tileSpan + vx;
-                int worldCZ = tileZ * tileSpan + vz;
-                int ownerCX = worldCX;
-                int ownerCZ = worldCZ;
-
-                // Prefer deterministic owner first, then the three adjacent corner cells
-                float hExact;
-                if (TryGetCellHeight(ownerCX, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX - 1, ownerCZ, out hExact) ||
-                    TryGetCellHeight(ownerCX, ownerCZ - 1, out hExact) ||
-                    TryGetCellHeight(ownerCX - 1, ownerCZ - 1, out hExact))
-                {
-                    heightGrid[vx, vz] = hExact;
+                var p = batch.placements[i++];
+                if (dropModelsFromUnloadedCells && (!cellRoots.TryGetValue(p.cell, out var cellRoot) || cellRoot == null))
                     continue;
-                }
 
-                // Deterministic nearest-neighbor fallback (search expanding radius)
-                float foundH = 0f;
-                bool found = false;
-                for (int radius = 1; radius <= 2 && !found; radius++)
+                Transform parent = (cellRoots.TryGetValue(p.cell, out var root) && root != null) ? root.transform : null;
+                if (parent == null) continue;
+
+                // Acquire instance (pool -> clone template -> direct load fallback)
+                GameObject instance = null;
+
+                if (useTemplateClones && enablePooling)
+                    instance = TryAcquireFromPool(batch.key.modelId, parent);
+
+                if (instance == null)
                 {
-                    for (int dz = -radius; dz <= radius && !found; dz++)
+                    if (useTemplateClones)
                     {
-                        for (int dx = -radius; dx <= radius && !found; dx++)
+                        instance = Instantiate(modelTemplateCache[batch.key.modelId], parent, false);
+                        instance.name = batch.key.modelId;
+                        instance.SetActive(false); // IMPORTANT: prevent origin flash
+                    }
+                    else
+                    {
+                        // Rare: batching enabled but template clones disabled
+                        // Do a direct load per instance (slow), but still works.
+                        bool done = false;
+                        yield return LoadInstanceDirect(batch.key.modelId, parent, activateOnInstantiate: true, (go) =>
                         {
-                            int wx = ownerCX + dx;
-                            int wz = ownerCZ + dz;
-                            if (TryGetCellHeight(wx, wz, out float hh))
-                            {
-                                foundH = hh;
-                                found = true;
-                            }
-                        }
+                            instance = go;
+                            done = true;
+                        });
+                        while (!done) yield return null;
+                        if (instance == null) continue;
+
+                        instance.SetActive(false); // keep hidden until placed
                     }
                 }
 
-                // If still not found, stick with 0 to avoid mismatched averages
-                heightGrid[vx, vz] = found ? foundH : 0f;
-            }
-        }
+                // Place + show
+                SetupInstanceForPlacement(batch.key.modelId, instance, p.position, p.rotation, parent);
 
-        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
+                // Now show (after placement)
+                instance.SetActive(true);
 
-        // Smooth normals from height grid (shared heights, separate UVs)
-        var normalsGrid = new UnityEngine.Vector3[tileSpan + 1, tileSpan + 1];
-        for (int vx = 0; vx <= tileSpan; vx++)
-        {
-            for (int vz = 0; vz <= tileSpan; vz++)
-            {
-                float hC = heightGrid[vx, vz] * unityUnitsPerVpUnit;
-                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] * unityUnitsPerVpUnit;
-                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] * unityUnitsPerVpUnit;
-                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] * unityUnitsPerVpUnit;
-                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] * unityUnitsPerVpUnit;
-
-                float dx = (hR - hL) * 0.5f / cellSizeUnity;
-                float dz = (hU - hD) * 0.5f / cellSizeUnity;
-
-                normalsGrid[vx, vz] = new UnityEngine.Vector3(-dx, 1f, dz).normalized;
-            }
-        }
-
-        var vertices = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
-        var normals = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
-        var uvs = new List<UnityEngine.Vector2>(tileSpan * tileSpan * 4);
-        var trianglesByTex = new Dictionary<ushort, List<int>>();
-
-        for (int z = 0; z < tileSpan; z++)
-        {
-            for (int x = 0; x < tileSpan; x++)
-            {
-                var cell = cellData[x, z];
-                if (!cell.hasData || cell.isHole)
-                    continue;
-
-                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
-                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
-
-                float h00 = heightGrid[x, z] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h10 = heightGrid[x + 1, z] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h01 = heightGrid[x, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
-                float h11 = heightGrid[x + 1, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
-
-                int vStart = vertices.Count;
-                vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h10, unityZ));
-                vertices.Add(new UnityEngine.Vector3(-unityX, h01, unityZ + cellSizeUnity));
-                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h11, unityZ + cellSizeUnity));
-
-                normals.Add(normalsGrid[x, z]);
-                normals.Add(normalsGrid[x + 1, z]);
-                normals.Add(normalsGrid[x, z + 1]);
-                normals.Add(normalsGrid[x + 1, z + 1]);
-
-                // VP terrain textures are flipped vertically relative to Unity by default
-                UnityEngine.Vector2 uv0 = new UnityEngine.Vector2(0f, 1f);
-                UnityEngine.Vector2 uv1 = new UnityEngine.Vector2(1f, 1f);
-                UnityEngine.Vector2 uv2 = new UnityEngine.Vector2(0f, 0f);
-                UnityEngine.Vector2 uv3 = new UnityEngine.Vector2(1f, 0f);
-
-                // Rotate in-place for quarter turns (VP uses 0-3)
-                RotateUvQuarter(ref uv0, ref uv1, ref uv2, ref uv3, cell.rotation);
-
-                uvs.Add(uv0);
-                uvs.Add(uv1);
-                uvs.Add(uv2);
-                uvs.Add(uv3);
-
-                if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
+                // Queue actions (budgeted)
+                if ((batch.create != null && batch.create.Count > 0) || (batch.activate != null && batch.activate.Count > 0))
                 {
-                    tris = new List<int>();
-                    trianglesByTex[cell.texture] = tris;
+                    var work = BuildActionWorkItem(instance, batch.create, batch.activate);
+                    if (work != null)
+                        actionQueue.Enqueue(work);
                 }
 
-                tris.AddRange(new[]
-                {
-                    vStart, vStart + 1, vStart + 2,
-                    vStart + 1, vStart + 3, vStart + 2
-                });
+                spawnedThisFrame++;
             }
+
+            yield return null;
         }
 
-        if (vertices.Count == 0 || trianglesByTex.Count == 0)
-            return null;
+        batches.Remove(batch.key);
+    }
 
-        var mesh = new Mesh
+    private void ReprioritizePendingBatches()
+    {
+        UnityEngine.Vector3 camPos = GetCameraWorldPos();
+
+        var keys = batchHeap.DumpItems();
+        batchHeap.Clear();
+
+        for (int i = 0; i < keys.Count; i++)
         {
-            indexFormat = vertices.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16,
-            name = $"VP_Terrain_{tileX}_{tileZ}"
-        };
+            var k = keys[i];
+            if (!batches.TryGetValue(k, out var batch) || batch == null || batch.placements.Count == 0)
+                continue;
 
-        mesh.SetVertices(vertices);
-        mesh.SetNormals(normals);
-        mesh.SetUVs(0, uvs);
-        mesh.subMeshCount = trianglesByTex.Count;
+            // priority = closest placement in this batch
+            float best = float.MaxValue;
+            for (int p = 0; p < batch.placements.Count; p++)
+            {
+                float pri = ComputeModelPriority(batch.placements[p].position, camPos);
+                if (pri < best) best = pri;
+            }
 
-        int subMesh = 0;
-        foreach (var kvp in trianglesByTex)
-        {
-            mesh.SetTriangles(kvp.Value, subMesh++);
-            materials.Add(GetTerrainMaterial(kvp.Key));
+            batchHeap.Push(k, best);
         }
-
-        mesh.RecalculateBounds();
-        return mesh;
     }
 
     // -------------------------
-    // Model load + actions (budgeted)
+    // Non-batched per-model path (kept for debugging / fallback)
     // -------------------------
-    private IEnumerator LoadOneModelBudgeted(PendingModelLoad req, Transform parent)
+    private IEnumerator LoadOneModelThenQueueActions(PendingModelLoad req, Transform parent)
     {
-        string modelId = Path.GetFileNameWithoutExtension(req.modelName);
+        string modelId = NormalizeModelId(req.modelName);
 
+        if (dropModelsFromUnloadedCells && parent == null)
+        {
+            inFlightModelLoads--;
+            yield break;
+        }
+
+        GetOrParseActions(req.action, out var createActions, out var activateActions);
+        bool activateOnInstantiate = createActions.Count == 0;
+
+        GameObject instance = null;
+        bool instanceReady = false;
+
+        yield return SpawnModelInstanceTemplateFirst(modelId, parent, activateOnInstantiate, (go) =>
+        {
+            instance = go;
+            instanceReady = true;
+        });
+
+        inFlightModelLoads--;
+
+        if (!instanceReady || instance == null)
+            yield break;
+
+        if (dropModelsFromUnloadedCells)
+        {
+            if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
+            {
+                if (enablePooling && useTemplateClones)
+                    ReleaseToPool(modelId, instance);
+                else
+                    Destroy(instance);
+                yield break;
+            }
+        }
+
+        SetupInstanceForPlacement(modelId, instance, req.position, req.rotation, parent);
+
+        // show AFTER placement (prevents 0,0,0 flash)
+        if (!instance.activeSelf) instance.SetActive(true);
+
+        if (createActions.Count > 0 || activateActions.Count > 0)
+        {
+            var work = BuildActionWorkItem(instance, createActions, activateActions);
+            if (work != null)
+                actionQueue.Enqueue(work);
+        }
+
+        yield return null;
+    }
+
+    private IEnumerator SpawnModelInstanceTemplateFirst(
+        string modelId,
+        Transform parent,
+        bool activateOnInstantiate,
+        Action<GameObject> onReady)
+    {
+        EnsureTemplateAndPoolRoots();
+
+        // 1) Pool
+        if (useTemplateClones && enablePooling)
+        {
+            var pooled = TryAcquireFromPool(modelId, parent);
+            if (pooled != null)
+            {
+                // IMPORTANT: keep inactive until placed
+                pooled.SetActive(false);
+                onReady?.Invoke(pooled);
+                yield break;
+            }
+        }
+
+        // 2) Template exists
+        if (useTemplateClones && modelTemplateCache.TryGetValue(modelId, out var template) && template != null)
+        {
+            var clone = Instantiate(template, parent, false);
+            clone.name = modelId;
+
+            // IMPORTANT: keep inactive until placed
+            clone.SetActive(false);
+
+            onReady?.Invoke(clone);
+            yield break;
+        }
+
+        // 3) Ensure template loaded
+        if (useTemplateClones)
+        {
+            yield return EnsureTemplateLoaded(modelId);
+
+            if (!modelTemplateCache.TryGetValue(modelId, out template) || template == null)
+            {
+                onReady?.Invoke(null);
+                yield break;
+            }
+
+            var clone = Instantiate(template, parent, false);
+            clone.name = modelId;
+
+            // IMPORTANT: keep inactive until placed
+            clone.SetActive(false);
+
+            onReady?.Invoke(clone);
+            yield break;
+        }
+
+        // Fallback (no templates): load per-instance
+        yield return LoadInstanceDirect(modelId, parent, activateOnInstantiate, (go) =>
+        {
+            if (go != null) go.SetActive(false); // IMPORTANT: keep inactive until placed
+            onReady?.Invoke(go);
+        });
+    }
+
+    private IEnumerator EnsureTemplateLoaded(string modelId)
+    {
+        EnsureTemplateAndPoolRoots();
+
+        if (modelTemplateCache.TryGetValue(modelId, out var existing) && existing != null)
+            yield break;
+
+        // If already loading, wait
+        if (templateLoadsInFlight.Contains(modelId))
+        {
+            while (!modelTemplateCache.TryGetValue(modelId, out var t) || t == null)
+                yield return null;
+            yield break;
+        }
+
+        templateLoadsInFlight.Add(modelId);
+
+        bool completed = false;
+        GameObject loaded = null;
+        string error = null;
+
+        modelLoader.parentTransform = templateRoot.transform;
+
+        modelLoader.LoadModelFromRemote(
+            modelId,
+            modelLoader.defaultObjectPath,
+            (go, errMsg) =>
+            {
+                loaded = go;
+                error = errMsg;
+                completed = true;
+            },
+            objectPathPassword,
+            activateOnInstantiate: true
+        );
+
+        while (!completed)
+            yield return null;
+
+        templateLoadsInFlight.Remove(modelId);
+
+        if (loaded == null)
+        {
+            Debug.LogError($"[VP] Template RWX load failed: {modelId} → {error}");
+            yield break;
+        }
+
+        loaded.name = $"TEMPLATE_{modelId}";
+        loaded.transform.SetParent(templateRoot.transform, false);
+
+        ApplyModelBaseScale(loaded);
+        EnsureModelColliders(loaded);
+
+        // Keep template inactive
+        loaded.SetActive(false);
+
+        var id = loaded.GetComponent<VpModelId>();
+        if (id == null) id = loaded.AddComponent<VpModelId>();
+        id.modelId = modelId;
+
+        modelTemplateCache[modelId] = loaded;
+    }
+
+    private IEnumerator LoadInstanceDirect(string modelId, Transform parent, bool activateOnInstantiate, Action<GameObject> onReady)
+    {
         bool completed = false;
         GameObject loadedObject = null;
         string errorMessage = null;
-        List<VpActionCommand> createActions = null;
-        List<VpActionCommand> activateActions = null;
-
-        if (!string.IsNullOrWhiteSpace(req.action))
-        {
-            VpActionParser.Parse(req.action, out createActions, out activateActions);
-        }
-
-        createActions ??= new List<VpActionCommand>();
-        activateActions ??= new List<VpActionCommand>();
-
-        bool activateOnInstantiate = createActions.Count == 0;
 
         modelLoader.parentTransform = parent;
 
@@ -915,108 +1107,300 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         while (!completed)
             yield return null;
 
-        inFlightModelLoads--;
-
         if (loadedObject == null)
         {
-            Debug.LogError($"RWX load failed: {req.modelName} (normalized='{modelId}') → {errorMessage}");
+            Debug.LogError($"RWX load failed: {modelId} → {errorMessage}");
+            onReady?.Invoke(null);
             yield break;
         }
 
-        // Phase 1: cheap transform setup
-        loadedObject.transform.localPosition = req.position;
-        loadedObject.transform.localRotation = req.rotation;
-        ApplyModelBaseScale(loadedObject);
         EnsureModelColliders(loadedObject);
 
-        // Give Unity a frame before heavier work
-        yield return null;
+        var id = loadedObject.GetComponent<VpModelId>();
+        if (id == null) id = loadedObject.AddComponent<VpModelId>();
+        id.modelId = modelId;
 
-        // If the cell vanished while we were loading, discard the object (optional)
-        if (dropModelsFromUnloadedCells)
+        onReady?.Invoke(loadedObject);
+    }
+
+    private GameObject TryAcquireFromPool(string modelId, Transform parent)
+    {
+        if (!enablePooling) return null;
+
+        if (modelPools.TryGetValue(modelId, out var stack) && stack != null)
         {
-            if (!cellRoots.TryGetValue(req.cell, out var cellRoot) || cellRoot == null)
+            while (stack.Count > 0)
             {
-                Destroy(loadedObject);
-                yield break;
+                var go = stack.Pop();
+                if (go == null) continue;
+
+                go.transform.SetParent(parent, false);
+
+                // IMPORTANT: stay inactive until placement
+                go.SetActive(false);
+
+                return go;
             }
         }
 
-        // Phase 2: apply actions (time-sliced)
-        if (createActions.Count > 0 || activateActions.Count > 0)
-        {
-            if (logCreateActions && createActions.Count > 0)
-                Debug.Log($"[VP Create] {loadedObject.name} will run {createActions.Count} actions");
+        return null;
+    }
 
-            if (!sliceActionApplication)
+    private void ReleaseToPool(string modelId, GameObject go)
+    {
+        if (!enablePooling || go == null)
+        {
+            if (go != null) Destroy(go);
+            return;
+        }
+
+        if (templateRoot != null && go.transform.IsChildOf(templateRoot.transform))
+        {
+            Destroy(go);
+            return;
+        }
+
+        if (!modelPools.TryGetValue(modelId, out var stack) || stack == null)
+        {
+            stack = new Stack<GameObject>(32);
+            modelPools[modelId] = stack;
+        }
+
+        if (stack.Count >= Mathf.Max(0, maxPoolPerModel))
+        {
+            Destroy(go);
+            return;
+        }
+
+        ResetInstanceForReuse(go);
+
+        go.SetActive(false);
+        go.transform.SetParent(poolRoot.transform, false);
+        stack.Push(go);
+    }
+
+    private void SetupInstanceForPlacement(string modelId, GameObject go, UnityEngine.Vector3 pos, Quaternion rot, Transform parent)
+    {
+        if (go == null) return;
+
+        go.transform.SetParent(parent, false);
+
+        ResetInstanceForReuse(go);
+
+        go.transform.localPosition = pos;
+        go.transform.localRotation = rot;
+
+        ApplyModelBaseScale(go);
+
+        if (!useTemplateClones)
+            EnsureModelColliders(go);
+
+        var id = go.GetComponent<VpModelId>();
+        if (id == null) id = go.AddComponent<VpModelId>();
+        id.modelId = modelId;
+    }
+
+    private void ResetInstanceForReuse(GameObject go)
+    {
+        if (go == null) return;
+
+        var act = go.GetComponent<VpActivateActions>();
+        if (act != null)
+            act.actions.Clear();
+    }
+
+    private string NormalizeModelId(string modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return "";
+
+        string m = modelName.Trim();
+
+        if (m.EndsWith(".rwx", StringComparison.OrdinalIgnoreCase))
+            m = Path.GetFileNameWithoutExtension(m);
+
+        m = Path.GetFileNameWithoutExtension(m);
+        return m;
+    }
+
+    private void GetOrParseActions(string actionString, out List<VpActionCommand> create, out List<VpActionCommand> activate)
+    {
+        create = null;
+        activate = null;
+
+        if (string.IsNullOrWhiteSpace(actionString))
+        {
+            create = new List<VpActionCommand>();
+            activate = new List<VpActionCommand>();
+            return;
+        }
+
+        if (cacheParsedActions && actionParseCache.TryGetValue(actionString, out var cached))
+        {
+            create = cached.create ?? new List<VpActionCommand>();
+            activate = cached.activate ?? new List<VpActionCommand>();
+            return;
+        }
+
+        VpActionParser.Parse(actionString, out create, out activate);
+        create ??= new List<VpActionCommand>();
+        activate ??= new List<VpActionCommand>();
+
+        if (cacheParsedActions)
+            actionParseCache[actionString] = (create, activate);
+    }
+
+    // -------------------------
+    // Action work items + action loop
+    // -------------------------
+    private ActionWorkItem BuildActionWorkItem(GameObject target, List<VpActionCommand> createActions, List<VpActionCommand> activateActions)
+    {
+        if (target == null)
+            return null;
+
+        var steps = new List<ActionApplyStep>(createActions?.Count ?? 0);
+        var preInputs = new List<VpPreprocessActionInput>(createActions?.Count ?? 0);
+
+        for (int i = 0; i < (createActions?.Count ?? 0); i++)
+        {
+            var cmd = createActions[i];
+            if (TryBuildPreprocessInput(cmd, out var input))
             {
-                foreach (var a in createActions)
-                    VpActionExecutor.ExecuteCreate(loadedObject, a, modelLoader.defaultObjectPath, objectPathPassword, this);
+                steps.Add(new ActionApplyStep
+                {
+                    isPreprocessed = true,
+                    preprocessedIndex = preInputs.Count,
+                    command = null
+                });
+                preInputs.Add(input);
             }
             else
             {
-                PreparePreprocessedActions(createActions, out var preprocessInputs, out var preprocessOutputs);
-
-                if (preprocessInputs.IsCreated && preprocessInputs.Length > 0)
+                steps.Add(new ActionApplyStep
                 {
-                    var preprocessJob = new PreprocessActionJob
-                    {
-                        inputs = preprocessInputs,
-                        outputs = preprocessOutputs
-                    };
+                    isPreprocessed = false,
+                    preprocessedIndex = -1,
+                    command = cmd
+                });
+            }
+        }
 
-                    int batchSize = math.max(1, preprocessInputs.Length / 4);
-                    preprocessJob.Schedule(preprocessInputs.Length, batchSize).Complete();
+        var preprocessed = new List<VpPreprocessedAction>(preInputs.Count);
 
-                    preprocessedActionResults.Clear();
-                    for (int i = 0; i < preprocessOutputs.Length; i++)
-                        preprocessedActionResults.Add(preprocessOutputs[i]);
+        if (preInputs.Count > 0)
+        {
+            var inputs = new NativeArray<VpPreprocessActionInput>(preInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            var outputs = new NativeArray<VpPreprocessedAction>(preInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+            for (int i = 0; i < preInputs.Count; i++)
+                inputs[i] = preInputs[i];
+
+            var job = new PreprocessActionJob { inputs = inputs, outputs = outputs };
+            int batchSize = math.max(1, preInputs.Count / 4);
+            job.Schedule(preInputs.Count, batchSize).Complete();
+
+            for (int i = 0; i < outputs.Length; i++)
+                preprocessed.Add(outputs[i]);
+
+            inputs.Dispose();
+            outputs.Dispose();
+        }
+
+        return new ActionWorkItem
+        {
+            target = target,
+            steps = steps,
+            preprocessed = preprocessed,
+            stepIndex = 0,
+            activateActions = activateActions ?? new List<VpActionCommand>(),
+            objectPath = modelLoader.defaultObjectPath,
+            objectPathPassword = objectPathPassword
+        };
+    }
+
+    private IEnumerator ModelActionLoop()
+    {
+        while (true)
+        {
+            if (!sliceActionApplication)
+            {
+                while (actionQueue.Count > 0)
+                {
+                    var item = actionQueue.Dequeue();
+                    if (item == null || !item.isValid) continue;
+
+                    for (int i = item.stepIndex; i < item.steps.Count; i++)
+                        ApplyOneActionStep(item, item.steps[i]);
+
+                    StoreActivateActions(item);
                 }
 
-                if (preprocessInputs.IsCreated) preprocessInputs.Dispose();
-                if (preprocessOutputs.IsCreated) preprocessOutputs.Dispose();
+                yield return null;
+                continue;
+            }
 
-                float start = Time.realtimeSinceStartup;
+            float start = Time.realtimeSinceStartup;
+            float budgetMs = Mathf.Max(0.1f, modelWorkBudgetMs);
 
-                for (int i = 0; i < actionApplySteps.Count; i++)
+            while (actionQueue.Count > 0)
+            {
+                var item = actionQueue.Peek();
+                if (item == null || !item.isValid)
                 {
-                    var step = actionApplySteps[i];
+                    actionQueue.Dequeue();
+                    continue;
+                }
 
-                    if (step.isPreprocessed)
-                    {
-                        if (step.preprocessedIndex >= 0 && step.preprocessedIndex < preprocessedActionResults.Count)
-                            ApplyPreprocessedCreateAction(loadedObject, preprocessedActionResults[step.preprocessedIndex]);
-                    }
-                    else if (step.command != null)
-                    {
-                        VpActionExecutor.ExecuteCreate(loadedObject, step.command, modelLoader.defaultObjectPath, objectPathPassword, this);
-                    }
+                while (item.stepIndex < item.steps.Count)
+                {
+                    ApplyOneActionStep(item, item.steps[item.stepIndex]);
+                    item.stepIndex++;
 
                     float elapsedMs = (Time.realtimeSinceStartup - start) * 1000f;
-                    if (elapsedMs >= modelWorkBudgetMs)
-                    {
-                        yield return null;
-                        start = Time.realtimeSinceStartup;
-                    }
+                    if (elapsedMs >= budgetMs)
+                        break;
                 }
+
+                if (item.stepIndex >= item.steps.Count)
+                {
+                    StoreActivateActions(item);
+                    actionQueue.Dequeue();
+                }
+
+                if ((Time.realtimeSinceStartup - start) * 1000f >= budgetMs)
+                    break;
             }
 
-            // Activate actions are stored (cheap)
-            if (activateActions.Count > 0)
-            {
-                var act = loadedObject.GetComponent<VpActivateActions>();
-                if (act == null) act = loadedObject.AddComponent<VpActivateActions>();
-                act.actions.AddRange(activateActions);
-
-                if (logActivateActions)
-                    Debug.Log($"[VP Activate] {loadedObject.name} stored {activateActions.Count} actions");
-            }
+            yield return null;
         }
+    }
 
-        if (!activateOnInstantiate && loadedObject != null && !loadedObject.activeSelf)
+    private void ApplyOneActionStep(ActionWorkItem item, ActionApplyStep step)
+    {
+        if (item == null || item.target == null) return;
+
+        if (step.isPreprocessed)
         {
-            loadedObject.SetActive(true);
+            if (step.preprocessedIndex >= 0 && step.preprocessedIndex < item.preprocessed.Count)
+                ApplyPreprocessedCreateAction(item.target, item.preprocessed[step.preprocessedIndex]);
         }
+        else if (step.command != null)
+        {
+            VpActionExecutor.ExecuteCreate(item.target, step.command, item.objectPath, item.objectPathPassword, this);
+        }
+    }
+
+    private void StoreActivateActions(ActionWorkItem item)
+    {
+        if (item == null || item.target == null) return;
+        if (item.activateActions == null || item.activateActions.Count == 0) return;
+
+        var act = item.target.GetComponent<VpActivateActions>();
+        if (act == null) act = item.target.AddComponent<VpActivateActions>();
+        act.actions.AddRange(item.activateActions);
+
+        if (logActivateActions)
+            Debug.Log($"[VP Activate] {item.target.name} stored {item.activateActions.Count} actions");
     }
 
     // -------------------------
@@ -1024,10 +1408,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     private float ComputeModelPriority(UnityEngine.Vector3 objPos, UnityEngine.Vector3 camPos)
     {
-        float pri = (objPos - camPos).sqrMagnitude;
+        float sqr = (objPos - camPos).sqrMagnitude;
+
+        if (nearBoostRadius > 0f)
+        {
+            float r2 = nearBoostRadius * nearBoostRadius;
+            if (sqr <= r2)
+                return nearBoostPriority + sqr;
+        }
+
+        float pri = sqr;
 
         if (prioritizeFrustum && IsInViewFrustum(objPos))
-            pri -= frustumBonus; // smaller is earlier
+            pri -= frustumBonus;
 
         return pri;
     }
@@ -1193,11 +1586,37 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             loadedCells.Remove(c);
 
             if (cellRoots.TryGetValue(c, out var root) && root != null)
+            {
+                if (useTemplateClones && enablePooling)
+                    ReturnCellChildrenToPool(root);
+
                 Destroy(root);
+            }
 
             cellRoots.Remove(c);
 
             if (logCellLoads) Debug.Log($"[VP] Unloaded cell ({c.cx},{c.cy})");
+        }
+    }
+
+    private void ReturnCellChildrenToPool(GameObject cellRoot)
+    {
+        if (cellRoot == null) return;
+
+        for (int i = cellRoot.transform.childCount - 1; i >= 0; i--)
+        {
+            var child = cellRoot.transform.GetChild(i).gameObject;
+            if (child == null) continue;
+
+            var id = child.GetComponent<VpModelId>();
+            if (id != null && !string.IsNullOrWhiteSpace(id.modelId))
+            {
+                ReleaseToPool(id.modelId, child);
+            }
+            else
+            {
+                Destroy(child);
+            }
         }
     }
 
@@ -1213,6 +1632,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             desiredCellBuffer = new NativeArray<DesiredCellData>(cellCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
     }
 
+    // -------------------------
+    // Terrain (same as your version)
+    // -------------------------
     private void BuildDesiredTerrainTiles(int centerCellX, int centerCellY, int radiusCells)
     {
         desiredTerrainTiles.Clear();
@@ -1287,14 +1709,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             desiredTerrainTiles.Remove(tile);
             terrainTileNodes.Remove(tile);
 
-            // Remove cached heights for this tile
-            int tileSpan = Mathf.Max(1, terrainTileCellSpan);
-            for (int cz = 0; cz < tileSpan; cz++)
+            int tileSpanLocal = Mathf.Max(1, terrainTileCellSpan);
+            for (int cz = 0; cz < tileSpanLocal; cz++)
             {
-                for (int cx = 0; cx < tileSpan; cx++)
-                {
-                    terrainCellCache.Remove((tile.tx * tileSpan + cx, tile.tz * tileSpan + cz));
-                }
+                for (int cx = 0; cx < tileSpanLocal; cx++)
+                    terrainCellCache.Remove((tile.tx * tileSpanLocal + cx, tile.tz * tileSpanLocal + cz));
             }
 
             if (terrainTiles.TryGetValue(tile, out var go) && go != null)
@@ -1304,62 +1723,316 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         }
     }
 
-    private struct ActionApplyStep
+    private IEnumerator QueryTerrainTile(int tileX, int tileZ)
     {
-        public bool isPreprocessed;
-        public int preprocessedIndex;
-        public VpActionCommand command;
+        var terrainTask = vpClient.QueryTerrainAsync(tileX, tileZ, terrainFetchAllNodes);
+        yield return WaitForTask(terrainTask);
+
+        inFlightTerrainQueries--;
+        queryingTerrainTiles.Remove((tileX, tileZ));
+
+        if (terrainTask.IsFaulted || terrainTask.IsCanceled)
+        {
+            string message = terrainTask.IsFaulted
+                ? terrainTask.Exception?.GetBaseException().Message
+                : "Terrain query cancelled";
+            Debug.LogWarning($"[VP] Failed QueryTerrain ({tileX},{tileZ}): {message}");
+            yield break;
+        }
+
+        if (dropTerrainFromUnloadedTiles &&
+            !queuedTerrainTiles.Contains((tileX, tileZ)) &&
+            !desiredTerrainTiles.Contains((tileX, tileZ)))
+        {
+            yield break;
+        }
+
+        BuildTerrainTile(tileX, tileZ, terrainTask.Result);
     }
 
-    private void PreparePreprocessedActions(
-        List<VpActionCommand> createActions,
-        out NativeArray<VpPreprocessActionInput> inputs,
-        out NativeArray<VpPreprocessedAction> outputs)
+    private void BuildTerrainTile(int tileX, int tileZ, TerrainNode[] nodes, bool rebuildNeighbors = true)
     {
-        inputs = default;
-        outputs = default;
-
-        preprocessedActionInputs.Clear();
-        preprocessedActionResults.Clear();
-        actionApplySteps.Clear();
-
-        if (createActions == null || createActions.Count == 0)
+        if (!streamTerrain)
             return;
 
-        for (int i = 0; i < createActions.Count; i++)
+        if (terrainRoot == null)
+            terrainRoot = new GameObject("VP Terrain Root");
+
+        var key = (tileX, tileZ);
+        terrainTileNodes[key] = nodes;
+
+        if (terrainTiles.TryGetValue(key, out var existing) && existing != null)
+            Destroy(existing);
+
+        var mesh = BuildTerrainMesh(tileX, tileZ, nodes, out var materials);
+        if (mesh == null)
+            return;
+
+        var go = new GameObject($"VP_Terrain_{tileX}_{tileZ}");
+        go.transform.SetParent(terrainRoot.transform, false);
+
+        var mf = go.AddComponent<MeshFilter>();
+        mf.sharedMesh = mesh;
+
+        var mr = go.AddComponent<MeshRenderer>();
+        mr.sharedMaterials = materials.ToArray();
+
+        if (addTerrainColliders)
         {
-            var cmd = createActions[i];
-            if (TryBuildPreprocessInput(cmd, out var input))
+            var mc = go.AddComponent<MeshCollider>();
+            mc.sharedMesh = mesh;
+        }
+
+        terrainTiles[key] = go;
+        loadedTerrainTiles.Add(key);
+
+        if (rebuildNeighbors)
+        {
+            RebuildNeighborTile(tileX - 1, tileZ);
+            RebuildNeighborTile(tileX + 1, tileZ);
+            RebuildNeighborTile(tileX, tileZ - 1);
+            RebuildNeighborTile(tileX, tileZ + 1);
+        }
+    }
+
+    private void RebuildNeighborTile(int tileX, int tileZ)
+    {
+        var key = (tileX, tileZ);
+        if (!terrainTileNodes.TryGetValue(key, out var nodes))
+            return;
+
+        if (!loadedTerrainTiles.Contains(key))
+            return;
+
+        BuildTerrainTile(tileX, tileZ, nodes, false);
+    }
+
+    private Mesh BuildTerrainMesh(int tileX, int tileZ, TerrainNode[] nodes, out List<Material> materials)
+    {
+        materials = new List<Material>();
+
+        if (nodes == null || nodes.Length == 0 || terrainTileCellSpan <= 0 || terrainNodeCellSpan <= 0)
+            return null;
+
+        int tileSpan = terrainTileCellSpan;
+        int nodeSpan = terrainNodeCellSpan;
+
+        var cellData = new TerrainCellData[tileSpan, tileSpan];
+
+        foreach (var node in nodes)
+        {
+            for (int cz = 0; cz < nodeSpan; cz++)
             {
-                actionApplySteps.Add(new ActionApplyStep
+                for (int cx = 0; cx < nodeSpan; cx++)
                 {
-                    isPreprocessed = true,
-                    preprocessedIndex = preprocessedActionInputs.Count,
-                    command = null
-                });
-                preprocessedActionInputs.Add(input);
+                    int idx = cz * nodeSpan + cx;
+                    if (node.Cells == null || idx >= node.Cells.Length)
+                        continue;
+
+                    int cellX = node.X * nodeSpan + cx;
+                    int cellZ = node.Z * nodeSpan + cz;
+
+                    if (cellX < 0 || cellX >= tileSpan || cellZ < 0 || cellZ >= tileSpan)
+                        continue;
+
+                    var cell = new TerrainCellData
+                    {
+                        hasData = true,
+                        height = node.Cells[idx].Height,
+                        texture = node.Cells[idx].Texture,
+                        isHole = node.Cells[idx].IsHole,
+                        rotation = ExtractTerrainRotation(node.Cells[idx])
+                    };
+
+                    cellData[cellX, cellZ] = cell;
+
+                    int worldCX = tileX * tileSpan + cellX;
+                    int worldCZ = tileZ * tileSpan + cellZ;
+                    terrainCellCache[(worldCX, worldCZ)] = new TerrainCellCacheEntry
+                    {
+                        hasData = cell.hasData,
+                        isHole = cell.isHole,
+                        height = cell.height
+                    };
+                }
             }
-            else
+        }
+
+        float cellSizeUnity = GetUnityUnitsPerVpCell();
+        if (cellSizeUnity <= 0f) cellSizeUnity = 1f;
+
+        bool TryGetCellHeight(int worldCX, int worldCZ, out float h)
+        {
+            if (terrainCellCache.TryGetValue((worldCX, worldCZ), out var cachedCell) && cachedCell.hasData && !cachedCell.isHole)
             {
-                actionApplySteps.Add(new ActionApplyStep
+                h = cachedCell.height;
+                return true;
+            }
+
+            int localCX = worldCX - tileX * tileSpan;
+            int localCZ = worldCZ - tileZ * tileSpan;
+            if (localCX >= 0 && localCX < tileSpan && localCZ >= 0 && localCZ < tileSpan)
+            {
+                var c = cellData[localCX, localCZ];
+                if (c.hasData && !c.isHole)
                 {
-                    isPreprocessed = false,
-                    preprocessedIndex = -1,
-                    command = cmd
+                    h = c.height;
+                    return true;
+                }
+            }
+
+            h = 0f;
+            return false;
+        }
+
+        float[,] heightGrid = new float[tileSpan + 1, tileSpan + 1];
+        for (int vx = 0; vx <= tileSpan; vx++)
+        {
+            for (int vz = 0; vz <= tileSpan; vz++)
+            {
+                int worldCX = tileX * tileSpan + vx;
+                int worldCZ = tileZ * tileSpan + vz;
+                int ownerCX = worldCX;
+                int ownerCZ = worldCZ;
+
+                float hExact;
+                if (TryGetCellHeight(ownerCX, ownerCZ, out hExact) ||
+                    TryGetCellHeight(ownerCX - 1, ownerCZ, out hExact) ||
+                    TryGetCellHeight(ownerCX, ownerCZ - 1, out hExact) ||
+                    TryGetCellHeight(ownerCX - 1, ownerCZ - 1, out hExact))
+                {
+                    heightGrid[vx, vz] = hExact;
+                    continue;
+                }
+
+                float foundH = 0f;
+                bool found = false;
+                for (int radius = 1; radius <= 2 && !found; radius++)
+                {
+                    for (int dz = -radius; dz <= radius && !found; dz++)
+                    {
+                        for (int dx = -radius; dx <= radius && !found; dx++)
+                        {
+                            int wx = ownerCX + dx;
+                            int wz = ownerCZ + dz;
+                            if (TryGetCellHeight(wx, wz, out float hh))
+                            {
+                                foundH = hh;
+                                found = true;
+                            }
+                        }
+                    }
+                }
+
+                heightGrid[vx, vz] = found ? foundH : 0f;
+            }
+        }
+
+        float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
+
+        var normalsGrid = new UnityEngine.Vector3[tileSpan + 1, tileSpan + 1];
+        for (int vx = 0; vx <= tileSpan; vx++)
+        {
+            for (int vz = 0; vz <= tileSpan; vz++)
+            {
+                float hL = heightGrid[Mathf.Max(0, vx - 1), vz] * unityUnitsPerVpUnit;
+                float hR = heightGrid[Mathf.Min(tileSpan, vx + 1), vz] * unityUnitsPerVpUnit;
+                float hD = heightGrid[vx, Mathf.Max(0, vz - 1)] * unityUnitsPerVpUnit;
+                float hU = heightGrid[vx, Mathf.Min(tileSpan, vz + 1)] * unityUnitsPerVpUnit;
+
+                float dx = (hR - hL) * 0.5f / cellSizeUnity;
+                float dz = (hU - hD) * 0.5f / cellSizeUnity;
+
+                normalsGrid[vx, vz] = new UnityEngine.Vector3(-dx, 1f, dz).normalized;
+            }
+        }
+
+        var vertices = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
+        var normals = new List<UnityEngine.Vector3>(tileSpan * tileSpan * 4);
+        var uvs = new List<Vector2>(tileSpan * tileSpan * 4);
+        var trianglesByTex = new Dictionary<ushort, List<int>>();
+
+        for (int z = 0; z < tileSpan; z++)
+        {
+            for (int x = 0; x < tileSpan; x++)
+            {
+                var cell = cellData[x, z];
+                if (!cell.hasData || cell.isHole)
+                    continue;
+
+                float unityX = (tileX * tileSpan + x) * cellSizeUnity;
+                float unityZ = (tileZ * tileSpan + z) * cellSizeUnity;
+
+                float h00 = heightGrid[x, z] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h10 = heightGrid[x + 1, z] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h01 = heightGrid[x, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
+                float h11 = heightGrid[x + 1, z + 1] * unityUnitsPerVpUnit + terrainHeightOffset;
+
+                int vStart = vertices.Count;
+                vertices.Add(new UnityEngine.Vector3(-unityX, h00, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h10, unityZ));
+                vertices.Add(new UnityEngine.Vector3(-unityX, h01, unityZ + cellSizeUnity));
+                vertices.Add(new UnityEngine.Vector3(-(unityX + cellSizeUnity), h11, unityZ + cellSizeUnity));
+
+                normals.Add(normalsGrid[x, z]);
+                normals.Add(normalsGrid[x + 1, z]);
+                normals.Add(normalsGrid[x, z + 1]);
+                normals.Add(normalsGrid[x + 1, z + 1]);
+
+                Vector2 uv0 = new Vector2(0f, 1f);
+                Vector2 uv1 = new Vector2(1f, 1f);
+                Vector2 uv2 = new Vector2(0f, 0f);
+                Vector2 uv3 = new Vector2(1f, 0f);
+
+                RotateUvQuarter(ref uv0, ref uv1, ref uv2, ref uv3, cell.rotation);
+
+                uvs.Add(uv0);
+                uvs.Add(uv1);
+                uvs.Add(uv2);
+                uvs.Add(uv3);
+
+                if (!trianglesByTex.TryGetValue(cell.texture, out var tris))
+                {
+                    tris = new List<int>();
+                    trianglesByTex[cell.texture] = tris;
+                }
+
+                tris.AddRange(new[]
+                {
+                    vStart, vStart + 1, vStart + 2,
+                    vStart + 1, vStart + 3, vStart + 2
                 });
             }
         }
 
-        if (preprocessedActionInputs.Count == 0)
-            return;
+        if (vertices.Count == 0 || trianglesByTex.Count == 0)
+            return null;
 
-        inputs = new NativeArray<VpPreprocessActionInput>(preprocessedActionInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
-        outputs = new NativeArray<VpPreprocessedAction>(preprocessedActionInputs.Count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        var mesh = new Mesh
+        {
+            indexFormat = vertices.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16,
+            name = $"VP_Terrain_{tileX}_{tileZ}"
+        };
 
-        for (int i = 0; i < preprocessedActionInputs.Count; i++)
-            inputs[i] = preprocessedActionInputs[i];
+        mesh.SetVertices(vertices);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.subMeshCount = trianglesByTex.Count;
+
+        int subMesh = 0;
+        foreach (var kvp in trianglesByTex)
+        {
+            mesh.SetTriangles(kvp.Value, subMesh++);
+            materials.Add(GetTerrainMaterial(kvp.Key));
+        }
+
+        mesh.RecalculateBounds();
+        return mesh;
     }
 
+    // -------------------------
+    // Preprocess input builders (same as your version)
+    // -------------------------
     private bool TryBuildPreprocessInput(VpActionCommand cmd, out VpPreprocessActionInput input)
     {
         input = default;
@@ -1372,36 +2045,31 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         switch (verb)
         {
             case "ambient":
-                if (cmd.positional == null || cmd.positional.Count == 0)
-                    return false;
+                if (cmd.positional == null || cmd.positional.Count == 0) return false;
                 input.type = VpPreprocessedActionType.Ambient;
                 input.input0 = new float4(ParseFloat(cmd.positional[0], 1f), 0f, 0f, 0f);
                 return true;
 
             case "diffuse":
-                if (cmd.positional == null || cmd.positional.Count == 0)
-                    return false;
+                if (cmd.positional == null || cmd.positional.Count == 0) return false;
                 input.type = VpPreprocessedActionType.Diffuse;
                 input.input0 = new float4(ParseFloat(cmd.positional[0], 1f), 0f, 0f, 0f);
                 return true;
 
             case "visible":
-                if (cmd.positional == null || cmd.positional.Count == 0)
-                    return false;
+                if (cmd.positional == null || cmd.positional.Count == 0) return false;
                 input.type = VpPreprocessedActionType.Visible;
                 input.flags = ParseBool(cmd.positional[0]) ? 1 : 0;
                 return true;
 
             case "scale":
-                if (cmd.positional == null || cmd.positional.Count == 0)
-                    return false;
+                if (cmd.positional == null || cmd.positional.Count == 0) return false;
                 input.type = VpPreprocessedActionType.Scale;
                 BuildScaleInputs(cmd, ref input);
                 return true;
 
             case "shear":
-                if (cmd.positional == null || cmd.positional.Count == 0)
-                    return false;
+                if (cmd.positional == null || cmd.positional.Count == 0) return false;
                 input.type = VpPreprocessedActionType.Shear;
                 BuildShearInputs(cmd, ref input);
                 return true;
@@ -1520,20 +2188,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
     }
 
-    private float GetClampedVpUnitsPerUnityUnit()
-    {
-        return Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
-    }
-
-    private float GetUnityUnitsPerVpUnit()
-    {
-        return 1f / GetClampedVpUnitsPerUnityUnit();
-    }
-
-    private float GetUnityUnitsPerVpCell()
-    {
-        return vpUnitsPerCell * GetUnityUnitsPerVpUnit();
-    }
+    private float GetClampedVpUnitsPerUnityUnit() => Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
+    private float GetUnityUnitsPerVpUnit() => 1f / GetClampedVpUnitsPerUnityUnit();
+    private float GetUnityUnitsPerVpCell() => vpUnitsPerCell * GetUnityUnitsPerVpUnit();
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
@@ -1630,20 +2287,17 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         return 0;
     }
 
-    private void RotateUvQuarter(ref UnityEngine.Vector2 uv0, ref UnityEngine.Vector2 uv1, ref UnityEngine.Vector2 uv2, ref UnityEngine.Vector2 uv3, byte rotation)
+    private void RotateUvQuarter(ref Vector2 uv0, ref Vector2 uv1, ref Vector2 uv2, ref Vector2 uv3, byte rotation)
     {
-        // VP rotation increases clockwise; we flipped the UVs vertically earlier,
-        // so reverse the rotation direction here to stay aligned with VP (0-3).
         int r = ((-rotation) % 4 + 4) % 4;
         if (r == 0) return;
 
         for (int i = 0; i < r; i++)
         {
-            // 90° clockwise rotation: (u,v) -> (v, 1-u)
-            uv0 = new UnityEngine.Vector2(uv0.y, 1f - uv0.x);
-            uv1 = new UnityEngine.Vector2(uv1.y, 1f - uv1.x);
-            uv2 = new UnityEngine.Vector2(uv2.y, 1f - uv2.x);
-            uv3 = new UnityEngine.Vector2(uv3.y, 1f - uv3.x);
+            uv0 = new Vector2(uv0.y, 1f - uv0.x);
+            uv1 = new Vector2(uv1.y, 1f - uv1.x);
+            uv2 = new Vector2(uv2.y, 1f - uv2.x);
+            uv3 = new Vector2(uv3.y, 1f - uv3.x);
         }
     }
 
@@ -1659,11 +2313,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         mat.name = $"Terrain_{textureId}";
         terrainMaterialCache[textureId] = mat;
 
-        // Force smoothness down to match VP terrain visuals
-        if (mat.HasProperty("_Glossiness"))
-            mat.SetFloat("_Glossiness", 0.0f);
-        if (mat.HasProperty("_Smoothness"))
-            mat.SetFloat("_Smoothness", 0.0f);
+        if (mat.HasProperty("_Glossiness")) mat.SetFloat("_Glossiness", 0.0f);
+        if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", 0.0f);
 
         if (!terrainDownloadsInFlight.Contains(textureId))
             StartCoroutine(DownloadTerrainTexture(textureId, mat));
@@ -1690,13 +2341,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             using (var req = UnityWebRequestTexture.GetTexture(url))
             {
                 yield return req.SendWebRequest();
-
 #if UNITY_2020_1_OR_NEWER
                 bool hasError = req.result != UnityWebRequest.Result.Success;
 #else
                 bool hasError = req.isNetworkError || req.isHttpError;
 #endif
-
                 if (!hasError)
                 {
                     texFound = DownloadHandlerTexture.GetContent(req);
@@ -1726,11 +2375,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         GUI.Label(new Rect(10, 10, 1600, 22), $"Cam: {debugCamPos}  Cell: ({debugCamCell.cx},{debugCamCell.cy})");
         GUI.Label(new Rect(10, 32, 1600, 22), $"LoadedCells={loadedCells.Count} QueuedCells={queuedCells.Count} QueryingCells={queryingCells.Count}");
-        GUI.Label(new Rect(10, 54, 1600, 22), $"ModelPending={modelHeap.Count} InFlightModels={inFlightModelLoads}");
-        GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s");
-        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum}");
+        GUI.Label(new Rect(10, 54, 1600, 22), $"Pending={(enable5x5Batching ? batchHeap.Count : modelHeap.Count)} InFlightModels={inFlightModelLoads} ActionQueue={actionQueue.Count}");
+        GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s PeriodicReprio={periodicReprioritizeSeconds}s");
+        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum} NearBoostR={nearBoostRadius}");
+        GUI.Label(new Rect(10, 120, 1600, 22), $"Batching={enable5x5Batching} RegionSize={batchRegionSizeCells} MaxBatchPerFrame={maxBatchInstancesPerFrame}");
+        GUI.Label(new Rect(10, 142, 1600, 22), $"Templates={modelTemplateCache.Count} PoolModels={modelPools.Count} Pooling={enablePooling} TemplateClones={useTemplateClones}");
         if (streamTerrain)
-            GUI.Label(new Rect(10, 120, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
+            GUI.Label(new Rect(10, 164, 1600, 22), $"Terrain Loaded={loadedTerrainTiles.Count} Queued={queuedTerrainTiles.Count} Querying={queryingTerrainTiles.Count}");
     }
 
     private void OnDestroy()
@@ -1744,16 +2395,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     // -------------------------
     private sealed class MinHeap<T>
     {
-        private struct Node
-        {
-            public float pri;
-            public T item;
-        }
-
+        private struct Node { public float pri; public T item; }
         private readonly List<Node> heap = new List<Node>(256);
-
         public int Count => heap.Count;
-
         public void Clear() => heap.Clear();
 
         public void Push(T item, float priority)
@@ -1764,18 +2408,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         public T PopMin()
         {
-            if (heap.Count == 0)
-                throw new InvalidOperationException("Heap empty");
+            if (heap.Count == 0) throw new InvalidOperationException("Heap empty");
 
             T min = heap[0].item;
-
             int last = heap.Count - 1;
             heap[0] = heap[last];
             heap.RemoveAt(last);
-
-            if (heap.Count > 0)
-                SiftDown(0);
-
+            if (heap.Count > 0) SiftDown(0);
             return min;
         }
 

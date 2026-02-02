@@ -40,7 +40,7 @@ public class VpPlayerController : MonoBehaviour
     private float yaw;
     private float pitch;
 
-    private Vector3 horizontalVel;
+    private UnityEngine.Vector3 horizontalVel;
     private float verticalVel;
 
     // MMB toggle state
@@ -161,14 +161,14 @@ public class VpPlayerController : MonoBehaviour
         if (kb.wKey.isPressed) z += 1f;
         if (kb.sKey.isPressed) z -= 1f;
 
-        Vector3 input = new Vector3(x, 0f, z);
+        UnityEngine.Vector3 input = new UnityEngine.Vector3(x, 0f, z);
         if (input.sqrMagnitude > 1f) input.Normalize();
 
         bool run = kb.leftCtrlKey.isPressed;
         float speed = walkSpeed * (run ? runMultiplier : 1f);
 
-        Vector3 desired = transform.TransformDirection(input) * speed;
-        horizontalVel = Vector3.MoveTowards(horizontalVel, desired, acceleration * Time.deltaTime);
+        UnityEngine.Vector3 desired = transform.TransformDirection(input) * speed;
+        horizontalVel = UnityEngine.Vector3.MoveTowards(horizontalVel, desired, acceleration * Time.deltaTime);
 
         // + / - vertical
         float up = 0f;
@@ -179,7 +179,7 @@ public class VpPlayerController : MonoBehaviour
 
         if (noclip)
         {
-            Vector3 move = horizontalVel;
+            UnityEngine.Vector3 move = horizontalVel;
             move.y = up * verticalSpeed;
             cc.Move(move * Time.deltaTime);
             verticalVel = 0f;
@@ -196,7 +196,7 @@ public class VpPlayerController : MonoBehaviour
 
         verticalVel += gravity * Time.deltaTime;
 
-        Vector3 motion = horizontalVel;
+        UnityEngine.Vector3 motion = horizontalVel;
         motion.y = verticalVel + up * verticalSpeed;
 
         CollisionFlags flags = cc.Move(motion * Time.deltaTime);
@@ -206,10 +206,10 @@ public class VpPlayerController : MonoBehaviour
 
     private bool IsGrounded()
     {
-        Vector3 origin = transform.position + cc.center;
+        UnityEngine.Vector3 origin = transform.position + cc.center;
         float radius = Mathf.Max(0.01f, cc.radius * 0.95f);
         float dist = (cc.height * 0.5f) - cc.radius + groundCheckDistance;
-        return Physics.SphereCast(origin, radius, Vector3.down, out _, dist, ~0, QueryTriggerInteraction.Ignore);
+        return Physics.SphereCast(origin, radius, UnityEngine.Vector3.down, out _, dist, ~0, QueryTriggerInteraction.Ignore);
     }
 
     private void OnGUI()

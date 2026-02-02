@@ -48,7 +48,7 @@ public class VPWorldAreaLoader : MonoBehaviour
     private struct PendingModelLoad
     {
         public string modelName;
-        public UnityEngine.Vector3 position;
+        public UnityEngine.UnityEngine.Vector3 position;
         public Quaternion rotation;
         public string action;
     }
@@ -93,7 +93,7 @@ public class VPWorldAreaLoader : MonoBehaviour
             }
         };
 
-        await vpClient.LoginAndEnterAsync("", true);
+        await vpClient.LoginAndEnterAsync("Crazyeyes14!");
         Debug.Log($"[VP] Connected & entered '{worldName}' as {userName}");
     }
 
@@ -161,7 +161,7 @@ public class VPWorldAreaLoader : MonoBehaviour
                 ? Path.GetFileNameWithoutExtension(obj.Model)
                 : obj.Model;
 
-            UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
+            UnityEngine.UnityEngine.Vector3 pos = VPtoUnity(obj.Position);
             Quaternion rot = ConvertVpRotationToUnity(obj.Rotation, obj.Angle, modelName);
 
             // ✅ action is per-instance metadata
@@ -171,7 +171,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
-    private void EnqueueModelLoad(string modelName, UnityEngine.Vector3 position, Quaternion rotation, string action)
+    private void EnqueueModelLoad(string modelName, UnityEngine.UnityEngine.Vector3 position, Quaternion rotation, string action)
     {
         pendingModelLoads.Enqueue(new PendingModelLoad
         {
@@ -272,16 +272,16 @@ public class VPWorldAreaLoader : MonoBehaviour
     }
 
 
-    private Quaternion ConvertVpRotationToUnity(VpNet.Vector3 vpRotation, double vpAngle, string modelName)
+    private Quaternion ConvertVpRotationToUnity(VpNet.UnityEngine.Vector3 vpRotation, double vpAngle, string modelName)
     {
         Quaternion unityRot = Quaternion.identity;
-        UnityEngine.Vector3 rotationVector = new UnityEngine.Vector3((float)vpRotation.X, (float)vpRotation.Y, (float)vpRotation.Z);
+        UnityEngine.UnityEngine.Vector3 rotationVector = new UnityEngine.UnityEngine.Vector3((float)vpRotation.X, (float)vpRotation.Y, (float)vpRotation.Z);
 
         if (double.IsInfinity(vpAngle))
         {
             if (IsVectorValid(rotationVector))
             {
-                UnityEngine.Vector3 unityEuler = new UnityEngine.Vector3(rotationVector.x, -rotationVector.y, -rotationVector.z);
+                UnityEngine.UnityEngine.Vector3 unityEuler = new UnityEngine.UnityEngine.Vector3(rotationVector.x, -rotationVector.y, -rotationVector.z);
                 unityRot = Quaternion.Euler(unityEuler);
             }
             else
@@ -331,7 +331,7 @@ public class VPWorldAreaLoader : MonoBehaviour
         return Quaternion.Normalize(unityQuat);
     }
 
-    private static bool IsVectorValid(UnityEngine.Vector3 value)
+    private static bool IsVectorValid(UnityEngine.UnityEngine.Vector3 value)
     {
         return !(float.IsNaN(value.x) || float.IsNaN(value.y) || float.IsNaN(value.z) ||
                  float.IsInfinity(value.x) || float.IsInfinity(value.y) || float.IsInfinity(value.z));
@@ -353,17 +353,17 @@ public class VPWorldAreaLoader : MonoBehaviour
         return 1f / GetClampedVpUnitsPerUnityUnit();
     }
 
-    private UnityEngine.Vector3 GetBaseScaleVector()
+    private UnityEngine.UnityEngine.Vector3 GetBaseScaleVector()
     {
         float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
-        return new UnityEngine.Vector3(unityUnitsPerVpUnit, unityUnitsPerVpUnit, unityUnitsPerVpUnit);
+        return new UnityEngine.UnityEngine.Vector3(unityUnitsPerVpUnit, unityUnitsPerVpUnit, unityUnitsPerVpUnit);
     }
 
     private void ApplyModelBaseScale(GameObject target)
     {
         if (target == null) return;
 
-        UnityEngine.Vector3 baseScale = GetBaseScaleVector();
+        UnityEngine.UnityEngine.Vector3 baseScale = GetBaseScaleVector();
         var scaleContext = target.GetComponent<VpModelScaleContext>();
         if (scaleContext == null)
             scaleContext = target.AddComponent<VpModelScaleContext>();
@@ -390,10 +390,10 @@ public class VPWorldAreaLoader : MonoBehaviour
         }
     }
 
-    private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
+    private UnityEngine.UnityEngine.Vector3 VPtoUnity(VpNet.UnityEngine.Vector3 vpPos)
     {
         float unityUnitsPerVpUnit = GetUnityUnitsPerVpUnit();
-        return new UnityEngine.Vector3(
+        return new UnityEngine.UnityEngine.Vector3(
             -(float)vpPos.X * unityUnitsPerVpUnit,
             (float)vpPos.Y * unityUnitsPerVpUnit,
             (float)vpPos.Z * unityUnitsPerVpUnit

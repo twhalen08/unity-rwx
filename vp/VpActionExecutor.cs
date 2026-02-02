@@ -92,17 +92,17 @@ public static class VpActionExecutor
             r.enabled = visible;
     }
 
-    public static void ApplyScale(GameObject target, Vector3 scale)
+    public static void ApplyScale(GameObject target, UnityEngine.Vector3 scale)
     {
         if (target == null) return;
 
         const float MinScale = 0.1f;
-        Vector3 baseScale = Vector3.one;
+        UnityEngine.Vector3 baseScale = UnityEngine.Vector3.one;
         var scaleContext = target.GetComponent<VpModelScaleContext>();
         if (scaleContext != null)
             baseScale = scaleContext.baseScale;
 
-        target.transform.localScale = new Vector3(
+        target.transform.localScale = new UnityEngine.Vector3(
             Mathf.Max(MinScale, scale.x * baseScale.x),
             Mathf.Max(MinScale, scale.y * baseScale.y),
             Mathf.Max(MinScale, scale.z * baseScale.z));
@@ -633,7 +633,7 @@ public static class VpActionExecutor
             z = 1f;
         }
 
-        target.transform.localScale = new Vector3(x, y, z);
+        target.transform.localScale = new UnityEngine.Vector3(x, y, z);
     }
 
     private static float ParseFloat(string s, float fallback)
@@ -818,7 +818,7 @@ public static class VpActionExecutor
 
         for (int i = 0; i < verts.Length; i++)
         {
-            Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
+            UnityEngine .Vector3 p = meshLocalToRootLocal.MultiplyPoint3x4(verts[i]);
 
             float x0 = -p.x;
             float y0 = p.y;
@@ -905,7 +905,7 @@ public class VpLightEffect : MonoBehaviour
 
         if (_maxDistance > 0f && Camera.main != null)
         {
-            float dist = Vector3.Distance(Camera.main.transform.position, _light.transform.position);
+            float dist = UnityEngine.Vector3.Distance(Camera.main.transform.position, _light.transform.position);
             _light.enabled = dist <= _maxDistance;
         }
         else

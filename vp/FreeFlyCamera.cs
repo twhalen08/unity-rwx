@@ -19,8 +19,8 @@ public class FreeFlyCamera : MonoBehaviour
     private float yaw;
     private float pitch;
 
-    private Vector3 velocity;     // SmoothDamp velocity
-    private Vector3 desiredMove;  // target velocity per frame
+    private UnityEngine.Vector3 velocity;     // SmoothDamp velocity
+    private UnityEngine.Vector3 desiredMove;  // target velocity per frame
 
     private bool cursorLocked = true;
 
@@ -70,19 +70,19 @@ public class FreeFlyCamera : MonoBehaviour
         if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
             speed *= sprintMultiplier;
 
-        Vector3 move =
+        UnityEngine.Vector3 move =
             transform.right * x +
             transform.forward * z;
 
         move = move.normalized * speed;
-        Vector3 vertical = Vector3.up * (up * verticalSpeed);
+        UnityEngine.Vector3 vertical = UnityEngine.Vector3.up * (up * verticalSpeed);
 
         desiredMove = move + vertical;
 
         if (smoothMovement)
         {
-            Vector3 current = velocity;
-            velocity = Vector3.SmoothDamp(current, desiredMove, ref current, smoothTime);
+            UnityEngine.Vector3 current = velocity;
+            velocity = UnityEngine.Vector3.SmoothDamp(current, desiredMove, ref current, smoothTime);
             transform.position += velocity * Time.deltaTime;
         }
         else
