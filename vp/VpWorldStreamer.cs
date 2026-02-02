@@ -359,8 +359,16 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public bool actionsParsed;
     }
 
+    private struct BatchHeapEntry
+    {
+        public BatchKey key;
+        public int version;
+    }
+
     private readonly Dictionary<BatchKey, Batch> batches = new();
-    private readonly MinHeap<BatchKey> batchHeap = new MinHeap<BatchKey>();
+    private readonly Dictionary<BatchKey, int> batchHeapVersions = new();
+    private readonly Dictionary<BatchKey, float> batchPriorities = new();
+    private readonly MinHeap<BatchHeapEntry> batchHeap = new MinHeap<BatchHeapEntry>();
 
     private int inFlightCellQueries = 0;
     private int inFlightModelLoads = 0;   // in batched mode, this mainly counts TEMPLATE loads / batch starts
@@ -597,14 +605,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                        inFlightModelLoads < maxConcurrentModelLoads &&
                        startedThisFrame < maxModelStartsPerFrame)
                 {
-                    var key = batchHeap.PopMin();
+                    var entry = batchHeap.PopMin();
 
-                    if (!batches.TryGetValue(key, out var batch) || batch == null || batch.placements.Count == 0)
+                    if (!batchHeapVersions.TryGetValue(entry.key, out var version) || version != entry.version)
+                        continue;
+
+                    if (!batches.TryGetValue(entry.key, out var batch) || batch == null || batch.placements.Count == 0)
                     {
-                        batches.Remove(key);
+                        RemoveBatchTracking(entry.key);
                         continue;
                     }
 
+                    RemoveBatchTracking(entry.key);
                     inFlightModelLoads++;
                     startedThisFrame++;
                     StartCoroutine(SpawnBatch(batch));
@@ -753,13 +765,21 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
                 // Priority starts based on first placement
                 float pri = ComputeModelPriority(pos, camPos);
-                batchHeap.Push(bk, pri);
+                batchPriorities[bk] = pri;
+                batchHeapVersions[bk] = 1;
+                batchHeap.Push(new BatchHeapEntry { key = bk, version = 1 }, pri);
             }
             else
             {
-                // Lazy reprio: push again with possibly better priority (duplicates ok; spawn removes batch)
+                // Lazy reprio: only push if priority improves
                 float pri = ComputeModelPriority(pos, camPos);
-                batchHeap.Push(bk, pri);
+                if (!batchPriorities.TryGetValue(bk, out var existingPri) || pri < existingPri)
+                {
+                    batchPriorities[bk] = pri;
+                    int nextVersion = batchHeapVersions.TryGetValue(bk, out var currentVersion) ? currentVersion + 1 : 1;
+                    batchHeapVersions[bk] = nextVersion;
+                    batchHeap.Push(new BatchHeapEntry { key = bk, version = nextVersion }, pri);
+                }
             }
 
             batch.placements.Add(new Placement
@@ -802,7 +822,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             if (!modelTemplateCache.TryGetValue(batch.key.modelId, out var template) || template == null)
             {
-                batches.Remove(batch.key);
                 yield break;
             }
         }
@@ -872,20 +891,19 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
         }
 
-        batches.Remove(batch.key);
     }
 
     private void ReprioritizePendingBatches()
     {
         UnityEngine.Vector3 camPos = GetCameraWorldPos();
 
-        var keys = batchHeap.DumpItems();
         batchHeap.Clear();
 
-        for (int i = 0; i < keys.Count; i++)
+        foreach (var kvp in batches)
         {
-            var k = keys[i];
-            if (!batches.TryGetValue(k, out var batch) || batch == null || batch.placements.Count == 0)
+            var k = kvp.Key;
+            var batch = kvp.Value;
+            if (batch == null || batch.placements.Count == 0)
                 continue;
 
             // priority = closest placement in this batch
@@ -896,8 +914,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 if (pri < best) best = pri;
             }
 
-            batchHeap.Push(k, best);
+            batchPriorities[k] = best;
+            int nextVersion = batchHeapVersions.TryGetValue(k, out var currentVersion) ? currentVersion + 1 : 1;
+            batchHeapVersions[k] = nextVersion;
+            batchHeap.Push(new BatchHeapEntry { key = k, version = nextVersion }, best);
         }
+    }
+
+    private void RemoveBatchTracking(BatchKey key)
+    {
+        batches.Remove(key);
+        batchHeapVersions.Remove(key);
+        batchPriorities.Remove(key);
     }
 
     // -------------------------
