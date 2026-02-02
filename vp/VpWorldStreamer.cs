@@ -616,6 +616,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                         continue;
                     }
 
+                    RemoveBatchTracking(entry.key);
                     inFlightModelLoads++;
                     startedThisFrame++;
                     StartCoroutine(SpawnBatch(batch));
@@ -821,7 +822,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         {
             if (!modelTemplateCache.TryGetValue(batch.key.modelId, out var template) || template == null)
             {
-                RemoveBatchTracking(batch.key);
                 yield break;
             }
         }
@@ -891,7 +891,6 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
         }
 
-        RemoveBatchTracking(batch.key);
     }
 
     private void ReprioritizePendingBatches()
