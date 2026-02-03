@@ -138,16 +138,9 @@ namespace RWXLoader
                 yield break;
             }
 
-            // Throttle so you don't build 2 models in the same frame
-            if (throttleConcurrentLoads)
-            {
-                var waitTask = _loadGate.WaitAsync();
-                while (!waitTask.IsCompleted)
-                    yield return null;
-            }
-
             string localZipPath = "";
             ZipArchive archive = null;
+            bool gateAcquired = false;
 
             try
             {
@@ -222,6 +215,15 @@ namespace RWXLoader
                 GameObject builtPrefab = null;
                 string parseError = null;
 
+                // Throttle so you don't build 2 models in the same frame
+                if (throttleConcurrentLoads)
+                {
+                    var waitTask = _loadGate.WaitAsync();
+                    while (!waitTask.IsCompleted)
+                        yield return null;
+                    gateAcquired = true;
+                }
+
                 yield return ParseRWXFromMemoryCoroutine(
                     rwxContent,
                     modelName,
@@ -230,6 +232,12 @@ namespace RWXLoader
                     go => builtPrefab = go,
                     err => parseError = err,
                     parseFrameBudgetMs);
+
+                if (gateAcquired)
+                {
+                    _loadGate.Release();
+                    gateAcquired = false;
+                }
 
                 if (builtPrefab == null)
                 {
@@ -273,7 +281,7 @@ namespace RWXLoader
                 }
                 catch { /* ignore */ }
 
-                if (throttleConcurrentLoads)
+                if (gateAcquired)
                 {
                     try { _loadGate.Release(); } catch { /* ignore */ }
                 }
