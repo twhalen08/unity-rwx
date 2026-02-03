@@ -56,8 +56,8 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Header("Cell Mapping")]
     private const float VpCellSizeVpUnits = 2000f;
 
-    [Tooltip("How many VP world units equal 1 Unity unit. If 1 Unity unit == 1 VP unit, set 1.")]
-    public float vpUnitsPerUnityUnit = 0.5f;
+    [Tooltip("How many Unity units equal 1 VP unit. If 1 Unity unit == 1 VP unit, set 1.")]
+    public float unityUnitsPerVpUnit = 0.5f;
 
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
@@ -1488,7 +1488,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         UnityEngine.Vector3 u = targetCamera.transform.position;
         debugCamPos = u;
 
-        float vpUnitsPerUnity = GetClampedVpUnitsPerUnityUnit();
+        float vpUnitsPerUnity = GetVpUnitsPerUnityUnit();
         float vpX = (-u.x) * vpUnitsPerUnity;
         float vpZ = (u.z) * vpUnitsPerUnity;
 
@@ -2187,8 +2187,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             yield return null;
     }
 
-    private float GetClampedVpUnitsPerUnityUnit() => Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
-    private float GetUnityUnitsPerVpUnit() => 1f / GetClampedVpUnitsPerUnityUnit();
+    private float GetClampedUnityUnitsPerVpUnit() => Mathf.Max(0.0001f, unityUnitsPerVpUnit);
+    private float GetUnityUnitsPerVpUnit() => GetClampedUnityUnitsPerVpUnit();
+    private float GetVpUnitsPerUnityUnit() => 1f / GetClampedUnityUnitsPerVpUnit();
     private float GetUnityUnitsPerVpCell() => VpCellSizeVpUnits * GetUnityUnitsPerVpUnit();
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
@@ -2376,7 +2377,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 32, 1600, 22), $"LoadedCells={loadedCells.Count} QueuedCells={queuedCells.Count} QueryingCells={queryingCells.Count}");
         GUI.Label(new Rect(10, 54, 1600, 22), $"Pending={(enable5x5Batching ? batchHeap.Count : modelHeap.Count)} InFlightModels={inFlightModelLoads} ActionQueue={actionQueue.Count}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s PeriodicReprio={periodicReprioritizeSeconds}s");
-        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={VpCellSizeVpUnits} Frustum={prioritizeFrustum} NearBoostR={nearBoostRadius}");
+        GUI.Label(new Rect(10, 98, 1600, 22), $"unityUnitsPerVpUnit={unityUnitsPerVpUnit} vpUnitsPerUnityUnit={GetVpUnitsPerUnityUnit()} vpUnitsPerCell={VpCellSizeVpUnits} Frustum={prioritizeFrustum} NearBoostR={nearBoostRadius}");
         GUI.Label(new Rect(10, 120, 1600, 22), $"Batching={enable5x5Batching} RegionSize={batchRegionSizeCells} MaxBatchPerFrame={maxBatchInstancesPerFrame}");
         GUI.Label(new Rect(10, 142, 1600, 22), $"Templates={modelTemplateCache.Count} PoolModels={modelPools.Count} Pooling={enablePooling} TemplateClones={useTemplateClones}");
         if (streamTerrain)
