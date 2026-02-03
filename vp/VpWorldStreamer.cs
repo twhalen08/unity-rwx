@@ -54,8 +54,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public bool updateOnlyOnCellChange = true;
 
     [Header("Cell Mapping")]
-    [Tooltip("VP cell size in VP world units (commonly 2000).")]
-    public float vpUnitsPerCell = 2000f;
+    private const float VpCellSizeVpUnits = 2000f;
 
     [Tooltip("How many VP world units equal 1 Unity unit. If 1 Unity unit == 1 VP unit, set 1.")]
     public float vpUnitsPerUnityUnit = 0.5f;
@@ -1493,7 +1492,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         float vpX = (-u.x) * vpUnitsPerUnity;
         float vpZ = (u.z) * vpUnitsPerUnity;
 
-        float cellSize = Mathf.Max(1f, vpUnitsPerCell);
+        float cellSize = Mathf.Max(1f, VpCellSizeVpUnits);
 
         int cx = Mathf.FloorToInt(vpX / cellSize);
         int cy = Mathf.FloorToInt(vpZ / cellSize);
@@ -2190,7 +2189,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     private float GetClampedVpUnitsPerUnityUnit() => Mathf.Max(0.0001f, vpUnitsPerUnityUnit);
     private float GetUnityUnitsPerVpUnit() => 1f / GetClampedVpUnitsPerUnityUnit();
-    private float GetUnityUnitsPerVpCell() => vpUnitsPerCell * GetUnityUnitsPerVpUnit();
+    private float GetUnityUnitsPerVpCell() => VpCellSizeVpUnits * GetUnityUnitsPerVpUnit();
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
@@ -2377,7 +2376,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         GUI.Label(new Rect(10, 32, 1600, 22), $"LoadedCells={loadedCells.Count} QueuedCells={queuedCells.Count} QueryingCells={queryingCells.Count}");
         GUI.Label(new Rect(10, 54, 1600, 22), $"Pending={(enable5x5Batching ? batchHeap.Count : modelHeap.Count)} InFlightModels={inFlightModelLoads} ActionQueue={actionQueue.Count}");
         GUI.Label(new Rect(10, 76, 1600, 22), $"BudgetMs={modelWorkBudgetMs} SliceActions={sliceActionApplication} ReprioCooldown={reprioritizeCooldownSeconds}s PeriodicReprio={periodicReprioritizeSeconds}s");
-        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={vpUnitsPerCell} Frustum={prioritizeFrustum} NearBoostR={nearBoostRadius}");
+        GUI.Label(new Rect(10, 98, 1600, 22), $"vpUnitsPerUnityUnit={vpUnitsPerUnityUnit} unityUnitsPerVpUnit={GetUnityUnitsPerVpUnit()} vpUnitsPerCell={VpCellSizeVpUnits} Frustum={prioritizeFrustum} NearBoostR={nearBoostRadius}");
         GUI.Label(new Rect(10, 120, 1600, 22), $"Batching={enable5x5Batching} RegionSize={batchRegionSizeCells} MaxBatchPerFrame={maxBatchInstancesPerFrame}");
         GUI.Label(new Rect(10, 142, 1600, 22), $"Templates={modelTemplateCache.Count} PoolModels={modelPools.Count} Pooling={enablePooling} TemplateClones={useTemplateClones}");
         if (streamTerrain)
