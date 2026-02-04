@@ -9,6 +9,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Serialization;
 using UnityEngine.Networking;
 using VpNet;
 using RWXLoader;
@@ -58,6 +59,13 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     [Tooltip("How many Unity units equal 1 VP unit. If 1 Unity unit == 1 VP unit, set 1.")]
     public float unityUnitsPerVpUnit = 0.5f;
+
+    [FormerlySerializedAs("vpUnitsPerUnityUnit")]
+    [SerializeField, HideInInspector]
+    private float legacyVpUnitsPerUnityUnit = 0f;
+
+    [SerializeField, HideInInspector]
+    private bool scaleMigrated = false;
 
     [Header("Model Loader")]
     [Tooltip("Assign your RWXLoaderAdvanced here, or we'll create one at runtime")]
@@ -412,6 +420,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
     private void Start()
     {
+        MigrateLegacyScaleIfNeeded();
         if (targetCamera == null) targetCamera = Camera.main;
 
         SetupModelLoader();
@@ -429,6 +438,11 @@ public class VPWorldStreamerSmooth : MonoBehaviour
             terrainRoot = new GameObject("VP Terrain Root");
 
         StartCoroutine(InitializeAndStream());
+    }
+
+    private void OnValidate()
+    {
+        MigrateLegacyScaleIfNeeded();
     }
 
     private IEnumerator InitializeAndStream()
@@ -2191,6 +2205,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     private float GetUnityUnitsPerVpUnit() => GetClampedUnityUnitsPerVpUnit();
     private float GetVpUnitsPerUnityUnit() => 1f / GetClampedUnityUnitsPerVpUnit();
     private float GetUnityUnitsPerVpCell() => VpCellSizeVpUnits * GetUnityUnitsPerVpUnit();
+
+    private void MigrateLegacyScaleIfNeeded()
+    {
+        if (scaleMigrated)
+            return;
+
+        if (legacyVpUnitsPerUnityUnit > 0f)
+            unityUnitsPerVpUnit = 1f / Mathf.Max(0.0001f, legacyVpUnitsPerUnityUnit);
+
+        scaleMigrated = true;
+        legacyVpUnitsPerUnityUnit = 0f;
+    }
 
     private UnityEngine.Vector3 VPtoUnity(VpNet.Vector3 vpPos)
     {
