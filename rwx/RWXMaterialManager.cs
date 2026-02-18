@@ -42,12 +42,28 @@ namespace RWXLoader
         /// <summary>
         /// Sets the texture source for remote loading
         /// </summary>
-        public void SetTextureSource(string objectPath, string password)
+        public void SetTextureSource(IRwxTextureResolver resolver)
         {
             if (textureLoader != null)
             {
-                textureLoader.SetTextureSource(objectPath, password);
+                textureLoader.SetTextureSource(resolver);
             }
+        }
+
+        public void SetTextureSource(string objectPath, string password)
+        {
+            SetTextureSource(CreateDefaultTextureResolver(objectPath, password));
+        }
+
+        private static IRwxTextureResolver CreateDefaultTextureResolver(string objectPath, string password)
+        {
+            if (string.IsNullOrEmpty(objectPath))
+            {
+                return null;
+            }
+
+            RWXAssetManager manager = RWXAssetManager.Instance;
+            return manager == null ? null : new VirtualParadiseTextureResolver(manager, objectPath, password);
         }
 
         private void CreateDefaultMaterial()

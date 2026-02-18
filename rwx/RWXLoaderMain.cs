@@ -70,7 +70,11 @@ namespace RWXLoader
             remoteObjectPath = objectPath;
             if (materialManager != null)
             {
-                materialManager.SetTextureSource(objectPath, null);
+                RWXAssetManager assetManager = RWXAssetManager.Instance;
+                IRwxTextureResolver resolver = assetManager == null || string.IsNullOrEmpty(objectPath)
+                    ? null
+                    : new VirtualParadiseTextureResolver(assetManager, objectPath);
+                materialManager.SetTextureSource(resolver);
             }
         }
 
