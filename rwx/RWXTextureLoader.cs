@@ -434,7 +434,7 @@ namespace RWXLoader
                     Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
-                    if (effectiveFileName.EndsWith(".bmp"))
+                    if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
                     {
                         RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
                         if (bmpDecoder != null)

@@ -44,10 +44,12 @@ namespace RWXLoader
         /// </summary>
         public void SetTextureSource(IRwxTextureResolver resolver)
         {
-            if (textureLoader != null)
+            if (textureLoader == null)
             {
-                textureLoader.SetTextureSource(resolver);
+                textureLoader = GetComponent<RWXTextureLoader>() ?? gameObject.AddComponent<RWXTextureLoader>();
             }
+
+            textureLoader.SetTextureSource(resolver);
         }
 
         public void SetTextureSource(string objectPath, string password)
