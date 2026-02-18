@@ -248,19 +248,12 @@ namespace RWXLoader
             // Reset parser state for new model
             parser?.Reset();
 
-            // Parse RWX content line by line
-            string[] lines = payload.RwxContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            
+            var commands = parser.ParseToIntermediate(payload.RwxContent);
+
             if (enableDebugLogs)
-                Debug.Log($"Parsing {lines.Length} lines of RWX content");
+                Debug.Log($"Parsing {commands.Count} RWX commands");
 
-            foreach (string line in lines)
-            {
-                parser.ProcessLine(line, context);
-            }
-
-            // Finalize mesh building
-            meshBuilder.FinalCommit(context);
+            parser.ApplyIntermediateCommands(commands, context);
 
             if (enableDebugLogs)
             {
