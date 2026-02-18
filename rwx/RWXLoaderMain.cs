@@ -102,15 +102,8 @@ namespace RWXLoader
                 currentMaterial = new RWXMaterial()
             };
 
-            string[] lines = content.Split(new[] { '\n', '\r' }, System.StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (string line in lines)
-            {
-                parser.ProcessLine(line.Trim(), context);
-            }
-
-            // Commit any remaining mesh
-            meshBuilder.FinalCommit(context);
+            var commands = parser.ParseToIntermediate(content);
+            parser.ApplyIntermediateCommands(commands, context);
 
             // Apply final scale (RWX uses decameter units)
             rootObject.transform.localScale = Vector3.one * 10f;
@@ -118,6 +111,17 @@ namespace RWXLoader
             return rootObject;
         }
 
+
+        public System.Collections.Generic.List<RWXIntermediateCommand> ParseRWXToIntermediate(string content)
+        {
+            if (parser == null)
+            {
+                InitializeComponents();
+            }
+
+            parser?.Reset();
+            return parser?.ParseToIntermediate(content) ?? new System.Collections.Generic.List<RWXIntermediateCommand>();
+        }
         public void ClearCache()
         {
             materialManager?.ClearCache();

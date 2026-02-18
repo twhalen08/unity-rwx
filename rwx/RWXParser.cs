@@ -49,11 +49,15 @@ namespace RWXLoader
         private RWXMeshBuilder meshBuilder;
         private RWXPrototypeParser prototypeParser;
         private readonly Dictionary<string, Func<string, RWXParseContext, bool>> commandHandlers;
+        private readonly RWXIntermediateParser intermediateParser;
+        private readonly RWXUnityCommandAdapter unityCommandAdapter;
 
         public RWXParser(RWXMeshBuilder meshBuilder)
         {
             this.meshBuilder = meshBuilder;
             this.prototypeParser = new RWXPrototypeParser(this, meshBuilder);
+            this.intermediateParser = new RWXIntermediateParser();
+            this.unityCommandAdapter = new RWXUnityCommandAdapter(meshBuilder, null);
             commandHandlers = new Dictionary<string, Func<string, RWXParseContext, bool>>(StringComparer.OrdinalIgnoreCase)
             {
                 { "vertex", ProcessVertex },
@@ -128,6 +132,40 @@ namespace RWXLoader
         }
 
         public void ProcessLine(string line, RWXParseContext context)
+        {
+            RWXIntermediateCommand command = intermediateParser.ParseLine(line);
+            if (command == null)
+            {
+                return;
+            }
+
+            unityCommandAdapter.Apply(command, context, ProcessLineLegacy);
+        }
+
+        public List<RWXIntermediateCommand> ParseToIntermediate(string content)
+        {
+            return intermediateParser.ParseContent(content);
+        }
+
+        public void ApplyIntermediateCommands(IEnumerable<RWXIntermediateCommand> commands, RWXParseContext context, bool finalizeScene = true)
+        {
+            if (commands == null)
+            {
+                return;
+            }
+
+            foreach (var command in commands)
+            {
+                unityCommandAdapter.Apply(command, context, ProcessLineLegacy);
+            }
+
+            if (finalizeScene)
+            {
+                unityCommandAdapter.FinalizeScene(context);
+            }
+        }
+
+        private void ProcessLineLegacy(string line, RWXParseContext context)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
