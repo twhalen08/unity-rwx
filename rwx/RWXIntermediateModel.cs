@@ -7,6 +7,7 @@ namespace RWXLoader
     public enum RWXCommandType
     {
         Unknown,
+        Face,
         Vertex,
         Triangle,
         Quad,
