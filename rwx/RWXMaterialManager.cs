@@ -179,6 +179,7 @@ namespace RWXLoader
             material.SetOverrideTag("RwxTag", rwxMaterial.tag.ToString());
             material.SetOverrideTag("RwxTexture", rwxMaterial.texture ?? string.Empty);
             material.SetOverrideTag("RwxMask", rwxMaterial.mask ?? string.Empty);
+            material.SetOverrideTag("RwxSignature", rwxMaterial.GetMaterialSignature());
 
             return material;
         }
@@ -283,6 +284,8 @@ namespace RWXLoader
         /// </summary>
         private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
         {
+            string expectedSignature = rwxMaterial.GetMaterialSignature();
+
             // Find all MeshRenderers in the scene that might be using this material
             MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
             int updatedRenderers = 0;
@@ -300,10 +303,8 @@ namespace RWXLoader
                     continue;
                 }
 
-                string rendererTexture = renderer.material.GetTag("RwxTexture", false, string.Empty);
-                string rendererMask = renderer.material.GetTag("RwxMask", false, string.Empty);
-                if (!string.Equals(rendererTexture, rwxMaterial.texture ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(rendererMask, rwxMaterial.mask ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                string rendererSignature = renderer.material.GetTag("RwxSignature", false, string.Empty);
+                if (!string.Equals(rendererSignature, expectedSignature, StringComparison.Ordinal))
                 {
                     continue;
                 }
