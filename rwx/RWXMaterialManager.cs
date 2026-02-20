@@ -177,6 +177,8 @@ namespace RWXLoader
             var cullMode = isDoubleSided ? UnityEngine.Rendering.CullMode.Off : UnityEngine.Rendering.CullMode.Back;
             material.SetInt("_Cull", (int)cullMode);
             material.SetOverrideTag("RwxTag", rwxMaterial.tag.ToString());
+            material.SetOverrideTag("RwxTexture", rwxMaterial.texture ?? string.Empty);
+            material.SetOverrideTag("RwxMask", rwxMaterial.mask ?? string.Empty);
 
             return material;
         }
@@ -298,8 +300,14 @@ namespace RWXLoader
                     continue;
                 }
 
-                // Update all instances that share the RWX material tag.
-                // Object names are not a reliable discriminator for repeated assets.
+                string rendererTexture = renderer.material.GetTag("RwxTexture", false, string.Empty);
+                string rendererMask = renderer.material.GetTag("RwxMask", false, string.Empty);
+                if (!string.Equals(rendererTexture, rwxMaterial.texture ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(rendererMask, rwxMaterial.mask ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 Material rendererMaterial = renderer.material;
 
                 if (sourceMaterial.mainTexture != null)
