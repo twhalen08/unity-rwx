@@ -315,35 +315,55 @@ namespace RWXLoader
                 {
                     rendererMaterial.mainTexture = sourceMaterial.mainTexture;
 
-                    if (rendererMaterial.shader.name.Contains("Standard"))
+                    if (rendererMaterial.HasProperty("_MainTex"))
                     {
                         rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
+                    }
+
+                    if (rendererMaterial.HasProperty("_AlbedoMap"))
+                    {
                         rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
+                    }
 
+                    if (sourceMaterial.HasProperty("_Mode") && rendererMaterial.HasProperty("_Mode"))
+                    {
                         rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
-                        rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
-                        rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
-                        rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
-                        rendererMaterial.renderQueue = sourceMaterial.renderQueue;
+                    }
 
-                        if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
-                        {
-                            rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
-                            rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                        }
-                        else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
-                        {
-                            rendererMaterial.EnableKeyword("_ALPHATEST_ON");
-                            rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                        }
-                        else
-                        {
-                            rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                            rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                        }
+                    if (sourceMaterial.HasProperty("_SrcBlend") && rendererMaterial.HasProperty("_SrcBlend"))
+                    {
+                        rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
+                    }
+
+                    if (sourceMaterial.HasProperty("_DstBlend") && rendererMaterial.HasProperty("_DstBlend"))
+                    {
+                        rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
+                    }
+
+                    if (sourceMaterial.HasProperty("_ZWrite") && rendererMaterial.HasProperty("_ZWrite"))
+                    {
+                        rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
+                    }
+
+                    rendererMaterial.renderQueue = sourceMaterial.renderQueue;
+
+                    if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
+                    {
+                        rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
+                        rendererMaterial.DisableKeyword("_ALPHATEST_ON");
+                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                    }
+                    else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
+                    {
+                        rendererMaterial.EnableKeyword("_ALPHATEST_ON");
+                        rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
+                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                    }
+                    else
+                    {
+                        rendererMaterial.DisableKeyword("_ALPHATEST_ON");
+                        rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
+                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
                     }
 
                     rendererMaterial.color = sourceMaterial.color;
