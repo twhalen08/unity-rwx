@@ -281,79 +281,64 @@ namespace RWXLoader
         /// </summary>
         private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
         {
-            // Get the exact material signature to match only the correct materials
-            string materialSignature = rwxMaterial.GetMaterialSignature();
-            
             // Find all MeshRenderers in the scene that might be using this material
             MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
             int updatedRenderers = 0;
-            
+
             foreach (MeshRenderer renderer in allRenderers)
             {
-                if (renderer.material != null)
+                if (renderer.material == null)
                 {
-                    int rendererTag = GetMaterialTag(renderer.material);
-                    if (rendererTag != rwxMaterial.tag)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
-                    // This prevents cross-contamination between different materials
-                    string rendererName = renderer.gameObject.name;
-                    string expectedTextureName = rwxMaterial.texture ?? "default";
-                    
-                    // Only update if the renderer name matches the texture name (this indicates it's the right material group)
-                    if (rendererName == expectedTextureName)
+                int rendererTag = GetMaterialTag(renderer.material);
+                if (rendererTag != rwxMaterial.tag)
+                {
+                    continue;
+                }
+
+                // Update all instances that share the RWX material tag.
+                // Object names are not a reliable discriminator for repeated assets.
+                Material rendererMaterial = renderer.material;
+
+                if (sourceMaterial.mainTexture != null)
+                {
+                    rendererMaterial.mainTexture = sourceMaterial.mainTexture;
+
+                    if (rendererMaterial.shader.name.Contains("Standard"))
                     {
-                        // Update the renderer's material instance with the new texture
-                        Material rendererMaterial = renderer.material;
-                        
-                        // Copy all texture properties from source material to renderer's material instance
-                        if (sourceMaterial.mainTexture != null)
+                        rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
+                        rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
+
+                        rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
+                        rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
+                        rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
+                        rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
+                        rendererMaterial.renderQueue = sourceMaterial.renderQueue;
+
+                        if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
                         {
-                            rendererMaterial.mainTexture = sourceMaterial.mainTexture;
-                            
-                            // For Standard shader, also set the albedo texture
-                            if (rendererMaterial.shader.name.Contains("Standard"))
-                            {
-                                rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
-                                rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
-                                
-                                // CRITICAL: Copy all transparency settings from source material
-                                rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
-                                rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
-                                rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
-                                rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
-                                rendererMaterial.renderQueue = sourceMaterial.renderQueue;
-                                
-                                // Copy keywords for transparency
-                                if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else
-                                {
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                            }
-                            
-                            // Copy other material properties to ensure consistency
-                            rendererMaterial.color = sourceMaterial.color;
-                            
-                            updatedRenderers++;
+                            rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
+                            rendererMaterial.DisableKeyword("_ALPHATEST_ON");
+                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                        }
+                        else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
+                        {
+                            rendererMaterial.EnableKeyword("_ALPHATEST_ON");
+                            rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
+                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                        }
+                        else
+                        {
+                            rendererMaterial.DisableKeyword("_ALPHATEST_ON");
+                            rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
+                            rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
                         }
                     }
+
+                    rendererMaterial.color = sourceMaterial.color;
+                    updatedRenderers++;
                 }
             }
             
