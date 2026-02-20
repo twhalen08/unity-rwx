@@ -37,14 +37,64 @@ namespace RWXLoader
                 }
             }, password);
 
-            if (!downloadSuccess)
+            if (downloadSuccess)
             {
-                onComplete?.Invoke(false, null, downloadError);
+                bool zipResolved = false;
+                RwxModelPayload zipPayload = null;
+                string zipMessage = string.Empty;
+
+                var zipSource = new ZipModelSource(assetManager, localZipPath, password, objectPath, enableDebugLogs);
+                yield return zipSource.ResolveModelPayload(modelName, (success, payload, message) =>
+                {
+                    zipResolved = success;
+                    zipPayload = payload;
+                    zipMessage = message;
+                });
+
+                if (zipResolved && zipPayload != null)
+                {
+                    onComplete?.Invoke(true, zipPayload, zipMessage);
+                    yield break;
+                }
+            }
+
+            // Fallback path: some VP models are served as raw .rwx without ZIP packaging.
+            bool rwxDownloadSuccess = false;
+            string localRwxPath = string.Empty;
+            string rwxDownloadError = string.Empty;
+
+            yield return assetManager.DownloadModelRwx(objectPath, modelName, (success, result) =>
+            {
+                rwxDownloadSuccess = success;
+                if (success)
+                {
+                    localRwxPath = result;
+                }
+                else
+                {
+                    rwxDownloadError = result;
+                }
+            }, password);
+
+            if (!rwxDownloadSuccess)
+            {
+                string message = string.IsNullOrEmpty(downloadError) ? rwxDownloadError : $"ZIP: {downloadError}; RWX: {rwxDownloadError}";
+                onComplete?.Invoke(false, null, message);
                 yield break;
             }
 
-            var zipSource = new ZipModelSource(assetManager, localZipPath, password, objectPath, enableDebugLogs);
-            yield return zipSource.ResolveModelPayload(modelName, onComplete);
+            try
+            {
+                string rwxContent = System.IO.File.ReadAllText(localRwxPath);
+                onComplete?.Invoke(true, new RwxModelPayload(
+                    rwxContent,
+                    null,
+                    manager => manager.SetTextureSource(new VirtualParadiseTextureResolver(assetManager, objectPath, password))), localRwxPath);
+            }
+            catch (Exception ex)
+            {
+                onComplete?.Invoke(false, null, $"RWX read error: {ex.Message}");
+            }
         }
     }
 }

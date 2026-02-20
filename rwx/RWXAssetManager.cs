@@ -142,6 +142,45 @@ namespace RWXLoader
             }
         }
 
+
+        public IEnumerator DownloadModelRwx(string objectPath, string modelName, Action<bool, string> onComplete, string password = null)
+        {
+            string cacheDir = GetCacheDirectory(objectPath);
+            string sanitizedModelName = SanitizeFileName(modelName);
+            string localRwxPath = Path.Combine(cacheDir, "models", $"{sanitizedModelName}.rwx");
+
+            if (File.Exists(localRwxPath))
+            {
+                onComplete?.Invoke(true, localRwxPath);
+                yield break;
+            }
+
+            string encodedFileName = UnityWebRequest.EscapeURL(modelName + ".rwx");
+            string downloadUrl = AppendPasswordQuery(objectPath.TrimEnd('/') + "/models/" + encodedFileName, password);
+
+            using (UnityWebRequest request = UnityWebRequest.Get(downloadUrl))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(localRwxPath, request.downloadHandler.data);
+                        onComplete?.Invoke(true, localRwxPath);
+                    }
+                    catch (Exception e)
+                    {
+                        onComplete?.Invoke(false, $"Save error: {e.Message}");
+                    }
+                }
+                else
+                {
+                    onComplete?.Invoke(false, request.error);
+                }
+            }
+        }
+
         public IEnumerator DownloadTexture(string objectPath, string textureName, Action<bool, string> onComplete, string password = null)
         {
             string cacheDir = GetCacheDirectory(objectPath);
