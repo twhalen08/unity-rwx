@@ -74,7 +74,9 @@ namespace RWXLoader
 
             if (downloadSuccess && File.Exists(localTexturePath))
             {
-                onComplete?.Invoke(File.ReadAllBytes(localTexturePath), textureNameWithExt);
+                byte[] fileBytes = null;
+                yield return ReadFileBytesWhenStable(localTexturePath, bytes => fileBytes = bytes);
+                onComplete?.Invoke(fileBytes, fileBytes != null ? textureNameWithExt : null);
                 yield break;
             }
 
@@ -96,6 +98,14 @@ namespace RWXLoader
             }, password);
 
             if (!downloadSuccess)
+            {
+                onComplete?.Invoke(null, null);
+                yield break;
+            }
+
+            byte[] zipProbeBytes = null;
+            yield return ReadFileBytesWhenStable(localZipPath, bytes => zipProbeBytes = bytes);
+            if (zipProbeBytes == null || zipProbeBytes.Length == 0)
             {
                 onComplete?.Invoke(null, null);
                 yield break;
@@ -127,6 +137,56 @@ namespace RWXLoader
             }
 
             onComplete?.Invoke(null, null);
+        }
+
+        private static IEnumerator ReadFileBytesWhenStable(string filePath, Action<byte[]> onComplete)
+        {
+            const int maxAttempts = 6;
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                if (!File.Exists(filePath))
+                {
+                    yield return null;
+                    continue;
+                }
+
+                long sizeA = new FileInfo(filePath).Length;
+                if (sizeA <= 0)
+                {
+                    yield return null;
+                    continue;
+                }
+
+                yield return null;
+
+                long sizeB = new FileInfo(filePath).Length;
+                if (sizeA != sizeB)
+                {
+                    continue;
+                }
+
+                byte[] bytes = null;
+                try
+                {
+                    bytes = File.ReadAllBytes(filePath);
+                }
+                catch (IOException)
+                {
+                    bytes = null;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    bytes = null;
+                }
+
+                if (bytes != null && bytes.Length > 0)
+                {
+                    onComplete?.Invoke(bytes);
+                    yield break;
+                }
+            }
+
+            onComplete?.Invoke(null);
         }
 
         private static string EnsureTextureExtension(string textureName, RwxTextureUsage usage)
