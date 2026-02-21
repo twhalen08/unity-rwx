@@ -42,18 +42,20 @@ namespace RWXLoader
             byte[] bytes = null;
             string resolvedName = textureNameWithExt;
 
-            yield return TryResolveFromTextureZip(textureNameWithExt, isMask, (zipBytes, zipName) =>
+            // Prefer direct texture fetch first to avoid ZIP decode work on the main thread.
+            // Fall back to per-texture ZIP only when direct fetch is unavailable.
+            yield return TryResolveFromDirectTexture(textureNameWithExt, (rawBytes, rawName) =>
             {
-                bytes = zipBytes;
-                resolvedName = string.IsNullOrEmpty(zipName) ? textureNameWithExt : zipName;
+                bytes = rawBytes;
+                resolvedName = string.IsNullOrEmpty(rawName) ? textureNameWithExt : rawName;
             });
 
             if (bytes == null || bytes.Length == 0)
             {
-                yield return TryResolveFromDirectTexture(textureNameWithExt, (rawBytes, rawName) =>
+                yield return TryResolveFromTextureZip(textureNameWithExt, isMask, (zipBytes, zipName) =>
                 {
-                    bytes = rawBytes;
-                    resolvedName = string.IsNullOrEmpty(rawName) ? textureNameWithExt : rawName;
+                    bytes = zipBytes;
+                    resolvedName = string.IsNullOrEmpty(zipName) ? textureNameWithExt : zipName;
                 });
             }
 
