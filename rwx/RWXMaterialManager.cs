@@ -14,6 +14,7 @@ namespace RWXLoader
         public bool enableTextures = true;
         public bool useStandardShader = true;
         public float alphaTest = 0.2f;
+        public bool propagateToInstancedRenderers = false;
 
         [Header("Components")]
         public RWXTextureLoader textureLoader;
@@ -42,12 +43,30 @@ namespace RWXLoader
         /// <summary>
         /// Sets the texture source for remote loading
         /// </summary>
+        public void SetTextureSource(IRwxTextureResolver resolver)
+        {
+            if (textureLoader == null)
+            {
+                textureLoader = GetComponent<RWXTextureLoader>() ?? gameObject.AddComponent<RWXTextureLoader>();
+            }
+
+            textureLoader.SetTextureSource(resolver);
+        }
+
         public void SetTextureSource(string objectPath, string password)
         {
-            if (textureLoader != null)
+            SetTextureSource(CreateDefaultTextureResolver(objectPath, password));
+        }
+
+        private static IRwxTextureResolver CreateDefaultTextureResolver(string objectPath, string password)
+        {
+            if (string.IsNullOrEmpty(objectPath))
             {
-                textureLoader.SetTextureSource(objectPath, password);
+                return null;
             }
+
+            RWXAssetManager manager = RWXAssetManager.Instance;
+            return manager == null ? null : new VirtualParadiseTextureResolver(manager, objectPath, password);
         }
 
         private void CreateDefaultMaterial()
@@ -159,6 +178,9 @@ namespace RWXLoader
             var cullMode = isDoubleSided ? UnityEngine.Rendering.CullMode.Off : UnityEngine.Rendering.CullMode.Back;
             material.SetInt("_Cull", (int)cullMode);
             material.SetOverrideTag("RwxTag", rwxMaterial.tag.ToString());
+            material.SetOverrideTag("RwxTexture", rwxMaterial.texture ?? string.Empty);
+            material.SetOverrideTag("RwxMask", rwxMaterial.mask ?? string.Empty);
+            material.SetOverrideTag("RwxSignature", rwxMaterial.GetMaterialSignature());
 
             return material;
         }
@@ -230,7 +252,7 @@ namespace RWXLoader
                 
                 if (textureProcessor != null)
                 {
-                    textureProcessor.ApplyTexturesWithMask(material, mainTexture, maskTexture, rwxMaterial);
+                    yield return textureProcessor.ApplyTexturesWithMaskAsync(material, mainTexture, maskTexture, rwxMaterial);
                 }
                 else
                 {
@@ -249,11 +271,12 @@ namespace RWXLoader
                     }
                 }
                 
-                // CRITICAL FIX: Update all MeshRenderers that use this material
-                // Unity creates material instances when assigning to renderers, so we need to update those instances
-                UpdateMaterialInstances(material, rwxMaterial);
-                
-                // Verify the texture was applied
+                // With sharedMaterial assignment, source material updates propagate automatically.
+                // Optional fallback for legacy flows that create per-renderer material instances.
+                if (propagateToInstancedRenderers)
+                {
+                    UpdateMaterialInstances(material, rwxMaterial);
+                }
             }
         }
 
@@ -263,79 +286,60 @@ namespace RWXLoader
         /// </summary>
         private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
         {
-            // Get the exact material signature to match only the correct materials
-            string materialSignature = rwxMaterial.GetMaterialSignature();
-            
+            string expectedSignature = rwxMaterial.GetMaterialSignature();
+
             // Find all MeshRenderers in the scene that might be using this material
             MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
             int updatedRenderers = 0;
-            
+
             foreach (MeshRenderer renderer in allRenderers)
             {
-                if (renderer.material != null)
+                if (renderer.sharedMaterial == null)
                 {
-                    int rendererTag = GetMaterialTag(renderer.material);
-                    if (rendererTag != rwxMaterial.tag)
+                    continue;
+                }
+
+                int rendererTag = GetMaterialTag(renderer.sharedMaterial);
+                if (rendererTag != rwxMaterial.tag)
+                {
+                    continue;
+                }
+
+                string rendererSignature = renderer.sharedMaterial.GetTag("RwxSignature", false, string.Empty);
+                if (!string.Equals(rendererSignature, expectedSignature, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                Material rendererMaterial = renderer.sharedMaterial;
+
+                if (sourceMaterial.mainTexture != null)
+                {
+                    // Only sync texture maps. Do NOT override shader blend/cutout state,
+                    // keywords, or render queue on renderer-specific materials.
+                    rendererMaterial.mainTexture = sourceMaterial.mainTexture;
+
+                    if (rendererMaterial.HasProperty("_MainTex"))
                     {
-                        continue;
+                        rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
                     }
 
-                    // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
-                    // This prevents cross-contamination between different materials
-                    string rendererName = renderer.gameObject.name;
-                    string expectedTextureName = rwxMaterial.texture ?? "default";
-                    
-                    // Only update if the renderer name matches the texture name (this indicates it's the right material group)
-                    if (rendererName == expectedTextureName)
+                    if (rendererMaterial.HasProperty("_AlbedoMap"))
                     {
-                        // Update the renderer's material instance with the new texture
-                        Material rendererMaterial = renderer.material;
-                        
-                        // Copy all texture properties from source material to renderer's material instance
-                        if (sourceMaterial.mainTexture != null)
-                        {
-                            rendererMaterial.mainTexture = sourceMaterial.mainTexture;
-                            
-                            // For Standard shader, also set the albedo texture
-                            if (rendererMaterial.shader.name.Contains("Standard"))
-                            {
-                                rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
-                                rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
-                                
-                                // CRITICAL: Copy all transparency settings from source material
-                                rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
-                                rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
-                                rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
-                                rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
-                                rendererMaterial.renderQueue = sourceMaterial.renderQueue;
-                                
-                                // Copy keywords for transparency
-                                if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else
-                                {
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                            }
-                            
-                            // Copy other material properties to ensure consistency
-                            rendererMaterial.color = sourceMaterial.color;
-                            
-                            updatedRenderers++;
-                        }
+                        rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
                     }
+
+                    if (rendererMaterial.HasProperty("_BaseMap"))
+                    {
+                        rendererMaterial.SetTexture("_BaseMap", sourceMaterial.mainTexture);
+                    }
+
+                    if (rendererMaterial.HasProperty("_Color") && sourceMaterial.HasProperty("_Color"))
+                    {
+                        rendererMaterial.color = sourceMaterial.color;
+                    }
+
+                    updatedRenderers++;
                 }
             }
             

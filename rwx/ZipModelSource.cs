@@ -82,7 +82,7 @@ namespace RWXLoader
                 {
                     if (!string.IsNullOrEmpty(textureObjectPath))
                     {
-                        manager.SetTextureSource(textureObjectPath, password);
+                        manager.SetTextureSource(new VirtualParadiseTextureResolver(assetManager, textureObjectPath, password));
                     }
                 });
 

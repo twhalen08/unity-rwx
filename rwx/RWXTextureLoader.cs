@@ -17,23 +17,20 @@ namespace RWXLoader
         public string textureExtension = ".jpg";
 
         private readonly Dictionary<string, Texture2D> textureCache = new Dictionary<string, Texture2D>();
-        private RWXAssetManager assetManager;
-        private string currentObjectPath;
-        private string objectPathPassword;
+        private IRwxTextureResolver textureResolver;
 
         private void Start()
         {
-            assetManager = RWXAssetManager.Instance;
+        }
+
+        public void SetTextureSource(IRwxTextureResolver resolver)
+        {
+            textureResolver = resolver;
         }
 
         public void SetTextureSource(string objectPath, string password)
         {
-            currentObjectPath = objectPath;
-            objectPathPassword = password;
-            if (assetManager == null)
-            {
-                assetManager = RWXAssetManager.Instance;
-            }
+            textureResolver = CreateDefaultResolver(objectPath, password);
         }
 
         /// <summary>
@@ -311,14 +308,6 @@ namespace RWXLoader
                 textureFolder // Relative to project root
             };
 
-            // Also try the asset manager's cache if available
-            if (!string.IsNullOrEmpty(currentObjectPath) && assetManager != null)
-            {
-                string cachePath = assetManager.GetCachePath(currentObjectPath);
-                string texturesCachePath = Path.Combine(cachePath, "textures");
-                basePathsList.Insert(0, texturesCachePath);
-            }
-            
             foreach (string basePath in basePathsList)
             {
 
@@ -445,7 +434,7 @@ namespace RWXLoader
                     Object.DestroyImmediate(texture);
                     
                     // For BMP files, try custom decoder
-                    if (effectiveFileName.EndsWith(".bmp"))
+                    if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
                     {
                         RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
                         if (bmpDecoder != null)
@@ -488,170 +477,48 @@ namespace RWXLoader
         {
             string textureNameWithExt = EnsureTextureExtension(textureName, isMask);
 
-            // First, try to load from individual zipped texture/mask
-            Texture2D texture = null;
-            yield return LoadTextureFromZip(textureNameWithExt, isMask, isDoubleSided, (loadedTexture) => {
-                texture = loadedTexture;
+            if (textureResolver == null)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            bool resolved = false;
+            RwxResolvedTextureData resolvedData = null;
+
+            yield return textureResolver.ResolveTextureBytes(textureNameWithExt, isMask ? RwxTextureUsage.Mask : RwxTextureUsage.Diffuse, (success, data, _) =>
+            {
+                resolved = success;
+                resolvedData = data;
             });
-            
-            if (texture != null)
+
+            if (!resolved || resolvedData?.Bytes == null || resolvedData.Bytes.Length == 0)
+            {
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            Texture2D resolvedTexture = LoadTextureFromBytes(resolvedData.Bytes, resolvedData.ResolvedName ?? textureNameWithExt, isMask, isDoubleSided);
+            if (resolvedTexture != null)
             {
                 string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
-                textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
-                onComplete?.Invoke(texture);
+                textureCache[cacheKey] = resolvedTexture;
+                onComplete?.Invoke(resolvedTexture);
                 yield break;
-            }
-
-            // If ZIP loading failed, fall back to individual download
-            yield return LoadTextureRemoteCoroutine(textureName, isMask, isDoubleSided, onComplete);
-        }
-
-        /// <summary>
-        /// Attempts to load texture from an individual zipped texture archive
-        /// </summary>
-        private IEnumerator LoadTextureFromZip(string textureNameWithExt, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
-        {
-            if (assetManager == null)
-            {
-                onComplete?.Invoke(null);
-                yield break;
-            }
-
-            // Get the base name without extension for the ZIP file name
-            string baseName = Path.GetFileNameWithoutExtension(textureNameWithExt);
-            string zipFileName = baseName + ".zip";
-            
-            // Download the individual zipped texture/mask from textures folder
-            bool downloadSuccess = false;
-            string localZipPath = "";
-
-            yield return assetManager.DownloadTexture(currentObjectPath, zipFileName, (success, result) =>
-            {
-                downloadSuccess = success;
-                localZipPath = result;
-            }, objectPathPassword);
-
-            if (!downloadSuccess)
-            {
-                onComplete?.Invoke(null);
-                yield break;
-            }
-
-            // Load the ZIP archive
-            var archive = assetManager.LoadZipArchive(localZipPath);
-            if (archive == null)
-            {
-                onComplete?.Invoke(null);
-                yield break;
-            }
-
-            try
-            {
-                // For masks, try multiple possible file names inside the ZIP
-                string[] possibleNames;
-                if (isMask)
-                {
-                    possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_tl01m.bmp"
-                        baseName + ".bmp",   // e.g., "t_tl01m.bmp"
-                        baseName + ".BMP",   // uppercase variant
-                        baseName,            // just the base name
-                    };
-                }
-                else
-                {
-                    possibleNames = new string[] {
-                        textureNameWithExt,  // e.g., "t_leaves12.jpg"
-                        baseName + ".jpg",   // e.g., "t_leaves12.jpg"
-                        baseName + ".JPG",   // uppercase variant
-                        baseName + ".jpeg",  // alternative extension
-                        baseName + ".png",   // alternative extension
-                        baseName + ".dds",   // DDS texture
-                        baseName + ".DDS",   // uppercase DDS
-                        baseName + ".dds.gz",// compressed DDS
-                        baseName + ".DDS.GZ",// uppercase compressed DDS
-                        baseName,            // just the base name
-                    };
-                }
-
-                byte[] textureData = null;
-                string foundFileName = null;
-
-                // Try each possible file name
-                foreach (string fileName in possibleNames)
-                {
-                    textureData = assetManager.ReadBytesFromZip(archive, fileName, localZipPath, objectPathPassword);
-                    if (textureData != null && textureData.Length > 0)
-                    {
-                        foundFileName = fileName;
-                        break;
-                    }
-                }
-                
-                if (textureData != null && textureData.Length > 0)
-                {
-                    // Try to create texture from byte data
-                    Texture2D texture = LoadTextureFromBytes(textureData, foundFileName, isMask, isDoubleSided);
-                    if (texture != null)
-                    {
-                        onComplete?.Invoke(texture);
-                        yield break;
-                    }
-                }
-            }
-            finally
-            {
-                // Clean up the ZIP archive
-                assetManager.UnloadZipArchive(localZipPath);
             }
 
             onComplete?.Invoke(null);
         }
 
-        /// <summary>
-        /// Downloads texture individually from remote source
-        /// </summary>
-        private IEnumerator LoadTextureRemoteCoroutine(string textureName, bool isMask, System.Action<Texture2D> onComplete)
+        private static IRwxTextureResolver CreateDefaultResolver(string objectPath, string password)
         {
-            return LoadTextureRemoteCoroutine(textureName, isMask, false, onComplete);
-        }
-
-        /// <summary>
-        /// Downloads texture individually from remote source with double-sided support
-        /// </summary>
-        private IEnumerator LoadTextureRemoteCoroutine(string textureName, bool isMask, bool isDoubleSided, System.Action<Texture2D> onComplete)
-        {
-            // Ensure texture has proper extension for remote download
-            string textureNameWithExt = EnsureTextureExtension(textureName, isMask);
-
-            bool downloadSuccess = false;
-            string localTexturePath = "";
-
-            yield return assetManager.DownloadTexture(currentObjectPath, textureNameWithExt, (success, result) =>
+            if (string.IsNullOrEmpty(objectPath))
             {
-                downloadSuccess = success;
-                localTexturePath = result;
-            }, objectPathPassword);
-
-            if (downloadSuccess && File.Exists(localTexturePath))
-            {
-                byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
-                if (texture != null)
-                {
-                    string cacheKey = textureName + (isDoubleSided ? "_DS" : "");
-                    textureCache[cacheKey] = texture; // Cache with original name + double-sided flag
-                    onComplete?.Invoke(texture);
-                }
-                else
-                {
-                    onComplete?.Invoke(null);
-                }
+                return null;
             }
-            else
-            {
-                onComplete?.Invoke(null);
-            }
+
+            RWXAssetManager assetManager = RWXAssetManager.Instance;
+            return assetManager == null ? null : new VirtualParadiseTextureResolver(assetManager, objectPath, password);
         }
 
         /// <summary>
