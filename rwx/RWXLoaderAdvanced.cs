@@ -23,7 +23,26 @@ namespace RWXLoader
         private RWXAssetManager assetManager;
 
         private static readonly Dictionary<string, GameObject> modelPrefabCache = new();
+        private static readonly Dictionary<string, PendingLoadRequest> pendingLoads = new();
         private static Transform cacheContainer;
+
+        private class PendingLoadRequest
+        {
+            public bool IsLoading;
+            public readonly List<PendingLoadCallback> Callbacks = new();
+        }
+
+        private struct PendingLoadCallback
+        {
+            public Action<GameObject, string> OnComplete;
+            public bool ActivateOnInstantiate;
+
+            public PendingLoadCallback(Action<GameObject, string> onComplete, bool activateOnInstantiate)
+            {
+                OnComplete = onComplete;
+                ActivateOnInstantiate = activateOnInstantiate;
+            }
+        }
 
         private void Awake()
         {
@@ -78,6 +97,8 @@ namespace RWXLoader
                 password = objectPathPassword;
             }
 
+            string cacheKey = GetCacheKey(objectPath, modelName);
+
             // Fast path: reuse a cached prefab instead of reparsing/downloading
             if (TryInstantiateFromCache(objectPath, modelName, activateOnInstantiate, out GameObject cachedInstance))
             {
@@ -85,7 +106,21 @@ namespace RWXLoader
                 return;
             }
 
-            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, onComplete, activateOnInstantiate));
+            if (!pendingLoads.TryGetValue(cacheKey, out PendingLoadRequest pending))
+            {
+                pending = new PendingLoadRequest();
+                pendingLoads[cacheKey] = pending;
+            }
+
+            pending.Callbacks.Add(new PendingLoadCallback(onComplete, activateOnInstantiate));
+
+            if (pending.IsLoading)
+            {
+                return;
+            }
+
+            pending.IsLoading = true;
+            StartCoroutine(LoadModelFromRemoteCoroutine(modelName, objectPath, password, cacheKey));
         }
 
         private bool TryInstantiateFromCache(string objectPath, string modelName, bool activateOnInstantiate, out GameObject instance)
@@ -109,6 +144,30 @@ namespace RWXLoader
             return $"{objectPath.TrimEnd('/')}/{modelName}".ToLowerInvariant();
         }
 
+
+        private void CompletePendingLoad(string cacheKey, GameObject loadedPrefabRoot, string status)
+        {
+            if (!pendingLoads.TryGetValue(cacheKey, out PendingLoadRequest pending))
+            {
+                return;
+            }
+
+            pendingLoads.Remove(cacheKey);
+
+            foreach (PendingLoadCallback callback in pending.Callbacks)
+            {
+                GameObject instance = null;
+                if (loadedPrefabRoot != null)
+                {
+                    instance = Instantiate(loadedPrefabRoot, parentTransform);
+                    instance.name = loadedPrefabRoot.name;
+                    instance.SetActive(callback.ActivateOnInstantiate);
+                }
+
+                callback.OnComplete?.Invoke(instance, status);
+            }
+        }
+
         private Transform GetOrCreateCacheContainer()
         {
             if (cacheContainer == null)
@@ -125,8 +184,7 @@ namespace RWXLoader
             string modelName,
             string objectPath,
             string password,
-            System.Action<GameObject, string> onComplete,
-            bool activateOnInstantiate)
+            string cacheKey)
         {
             if (enableDebugLogs)
                 Debug.Log($"Loading model '{modelName}' from object path: {objectPath}");
@@ -141,7 +199,7 @@ namespace RWXLoader
             {
                 string error = "Failed to initialize asset manager";
                 Debug.LogError(error);
-                onComplete?.Invoke(null, error);
+                CompletePendingLoad(cacheKey, null, error);
                 yield break;
             }
 
@@ -157,7 +215,7 @@ namespace RWXLoader
 
             if (!string.IsNullOrEmpty(sourceError))
             {
-                onComplete?.Invoke(null, sourceError);
+                CompletePendingLoad(cacheKey, null, sourceError);
                 yield break;
             }
 
@@ -165,17 +223,12 @@ namespace RWXLoader
             if (modelObject != null)
             {
                 CachePrefab(objectPath, modelName, modelObject);
-
-                // Instantiate a live copy for the caller
-                modelObject = Instantiate(modelObject, parentTransform);
-                modelObject.name = modelName;
-                modelObject.SetActive(activateOnInstantiate);
             }
 
             if (enableDebugLogs)
                 Debug.Log($"Successfully loaded model: {modelName}");
 
-            onComplete?.Invoke(modelObject, "Success");
+            CompletePendingLoad(cacheKey, modelObject, "Success");
         }
 
         /// <summary>
