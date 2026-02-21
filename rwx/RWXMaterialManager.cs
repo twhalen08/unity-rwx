@@ -252,7 +252,7 @@ namespace RWXLoader
                 
                 if (textureProcessor != null)
                 {
-                    textureProcessor.ApplyTexturesWithMask(material, mainTexture, maskTexture, rwxMaterial);
+                    yield return textureProcessor.ApplyTexturesWithMaskAsync(material, mainTexture, maskTexture, rwxMaterial);
                 }
                 else
                 {

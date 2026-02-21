@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 namespace RWXLoader
@@ -101,6 +102,97 @@ namespace RWXLoader
             result.SetPixels(pixels);
             result.Apply();
             return result;
+        }
+
+
+        public IEnumerator ApplyTexturesWithMaskAsync(Material material, Texture2D mainTexture, Texture2D maskTexture, RWXMaterial rwxMaterial)
+        {
+            if (mainTexture != null && maskTexture != null)
+            {
+                Texture2D combinedTexture = null;
+                yield return CombineTextureWithMaskAsync(mainTexture, maskTexture, texture => combinedTexture = texture);
+
+                if (combinedTexture != null)
+                {
+                    material.mainTexture = combinedTexture;
+
+                    if (material.HasProperty("_MainTex"))
+                    {
+                        material.SetTexture("_MainTex", combinedTexture);
+                    }
+
+                    if (material.HasProperty("_AlbedoMap"))
+                    {
+                        material.SetTexture("_AlbedoMap", combinedTexture);
+                    }
+
+                    if (material.HasProperty("_BaseMap"))
+                    {
+                        material.SetTexture("_BaseMap", combinedTexture);
+                    }
+                }
+            }
+            else
+            {
+                ApplyTexturesWithMask(material, mainTexture, maskTexture, rwxMaterial);
+            }
+        }
+
+        private IEnumerator CombineTextureWithMaskAsync(Texture2D mainTexture, Texture2D maskTexture, System.Action<Texture2D> onComplete)
+        {
+            Texture2D combinedTexture = new Texture2D(mainTexture.width, mainTexture.height, TextureFormat.RGBA32, false);
+            combinedTexture.name = mainTexture.name + "_combined";
+
+            Texture2D scaledMask = maskTexture;
+            if (maskTexture.width != mainTexture.width || maskTexture.height != mainTexture.height)
+            {
+                scaledMask = ScaleTexture(maskTexture, mainTexture.width, mainTexture.height);
+            }
+
+            scaledMask = FlipTextureVertically(scaledMask);
+
+            Color[] mainPixels = mainTexture.GetPixels();
+            Color[] maskPixels = scaledMask.GetPixels();
+            Color[] combinedPixels = new Color[mainPixels.Length];
+
+            bool shouldInvertMask = false;
+            if (maskTexture.name.Contains("tbtree") || maskTexture.name.Contains("003m"))
+            {
+                shouldInvertMask = true;
+            }
+
+            int width = mainTexture.width;
+            int height = mainTexture.height;
+            const int rowsPerSlice = 32;
+
+            for (int y = 0; y < height; y++)
+            {
+                int rowOffset = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    int i = rowOffset + x;
+                    Color mainColor = mainPixels[i];
+                    Color maskColor = maskPixels[i];
+                    float maskGrayscale = (maskColor.r + maskColor.g + maskColor.b) / 3f;
+                    float alpha = shouldInvertMask ? 1.0f - maskGrayscale : maskGrayscale;
+                    combinedPixels[i] = new Color(mainColor.r, mainColor.g, mainColor.b, alpha);
+                }
+
+                if ((y % rowsPerSlice) == 0)
+                {
+                    yield return null;
+                }
+            }
+
+            combinedTexture.SetPixels(combinedPixels);
+            combinedTexture.Apply();
+
+            if (scaledMask != maskTexture)
+            {
+                Object.DestroyImmediate(scaledMask);
+            }
+
+            onComplete?.Invoke(combinedTexture);
         }
 
         /// <summary>
