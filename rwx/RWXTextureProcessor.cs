@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace RWXLoader
@@ -35,18 +36,8 @@ namespace RWXLoader
 
             Color32[] mainPixels = mainTexture.GetPixels32();
             Color32[] maskPixels = scaledMask.GetPixels32();
-            Color32[] combinedPixels = new Color32[mainPixels.Length];
-
             bool shouldInvertMask = ShouldInvertMask(maskTexture);
-            for (int i = 0; i < mainPixels.Length; i++)
-            {
-                Color32 mainColor = mainPixels[i];
-                Color32 maskColor = maskPixels[i];
-                byte gray = (byte)((maskColor.r + maskColor.g + maskColor.b) / 3);
-                byte alpha = shouldInvertMask ? (byte)(255 - gray) : gray;
-                combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
-            }
-
+            Color32[] combinedPixels = ComputeCombinedPixels(mainPixels, maskPixels, shouldInvertMask);
             combinedTexture.SetPixels32(combinedPixels);
             combinedTexture.Apply();
 
@@ -66,7 +57,23 @@ namespace RWXLoader
 
         private static string BuildCombinedTextureCacheKey(Texture2D mainTexture, Texture2D maskTexture)
         {
-            return $"{mainTexture.GetInstanceID()}_{maskTexture.GetInstanceID()}_{mainTexture.width}x{mainTexture.height}";
+            return $"{mainTexture.name}_{maskTexture.name}_{mainTexture.width}x{mainTexture.height}";
+        }
+
+        private static Color32[] ComputeCombinedPixels(Color32[] mainPixels, Color32[] maskPixels, bool shouldInvertMask)
+        {
+            int length = mainPixels.Length;
+            Color32[] combinedPixels = new Color32[length];
+            for (int i = 0; i < length; i++)
+            {
+                Color32 mainColor = mainPixels[i];
+                Color32 maskColor = maskPixels[i];
+                byte gray = (byte)((maskColor.r + maskColor.g + maskColor.b) / 3);
+                byte alpha = shouldInvertMask ? (byte)(255 - gray) : gray;
+                combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
+            }
+
+            return combinedPixels;
         }
 
         /// <summary>
@@ -151,34 +158,26 @@ namespace RWXLoader
 
             Color32[] mainPixels = mainTexture.GetPixels32();
             Color32[] maskPixels = scaledMask.GetPixels32();
-            Color32[] combinedPixels = new Color32[mainPixels.Length];
-
             bool shouldInvertMask = ShouldInvertMask(maskTexture);
 
-            int width = mainTexture.width;
-            int height = mainTexture.height;
-            const int rowsPerSlice = 32;
-
-            for (int y = 0; y < height; y++)
+            Task<Color32[]> combineTask = Task.Run(() => ComputeCombinedPixels(mainPixels, maskPixels, shouldInvertMask));
+            while (!combineTask.IsCompleted)
             {
-                int rowOffset = y * width;
-                for (int x = 0; x < width; x++)
-                {
-                    int i = rowOffset + x;
-                    Color32 mainColor = mainPixels[i];
-                    Color32 maskColor = maskPixels[i];
-                    byte gray = (byte)((maskColor.r + maskColor.g + maskColor.b) / 3);
-                    byte alpha = shouldInvertMask ? (byte)(255 - gray) : gray;
-                    combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
-                }
-
-                if ((y % rowsPerSlice) == 0)
-                {
-                    yield return null;
-                }
+                yield return null;
             }
 
-            combinedTexture.SetPixels32(combinedPixels);
+            if (combineTask.IsFaulted || combineTask.Result == null)
+            {
+                if (scaledMask != maskTexture)
+                {
+                    Object.DestroyImmediate(scaledMask);
+                }
+
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            combinedTexture.SetPixels32(combineTask.Result);
             combinedTexture.Apply();
 
             if (scaledMask != maskTexture)
