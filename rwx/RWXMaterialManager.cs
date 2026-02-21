@@ -313,6 +313,8 @@ namespace RWXLoader
 
                 if (sourceMaterial.mainTexture != null)
                 {
+                    // Only sync texture maps. Do NOT override shader blend/cutout state,
+                    // keywords, or render queue on renderer-specific materials.
                     rendererMaterial.mainTexture = sourceMaterial.mainTexture;
 
                     if (rendererMaterial.HasProperty("_MainTex"))
@@ -325,48 +327,16 @@ namespace RWXLoader
                         rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
                     }
 
-                    if (sourceMaterial.HasProperty("_Mode") && rendererMaterial.HasProperty("_Mode"))
+                    if (rendererMaterial.HasProperty("_BaseMap"))
                     {
-                        rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
+                        rendererMaterial.SetTexture("_BaseMap", sourceMaterial.mainTexture);
                     }
 
-                    if (sourceMaterial.HasProperty("_SrcBlend") && rendererMaterial.HasProperty("_SrcBlend"))
+                    if (rendererMaterial.HasProperty("_Color") && sourceMaterial.HasProperty("_Color"))
                     {
-                        rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
+                        rendererMaterial.color = sourceMaterial.color;
                     }
 
-                    if (sourceMaterial.HasProperty("_DstBlend") && rendererMaterial.HasProperty("_DstBlend"))
-                    {
-                        rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
-                    }
-
-                    if (sourceMaterial.HasProperty("_ZWrite") && rendererMaterial.HasProperty("_ZWrite"))
-                    {
-                        rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
-                    }
-
-                    rendererMaterial.renderQueue = sourceMaterial.renderQueue;
-
-                    if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
-                    {
-                        rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
-                        rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                    }
-                    else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
-                    {
-                        rendererMaterial.EnableKeyword("_ALPHATEST_ON");
-                        rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                    }
-                    else
-                    {
-                        rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                        rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                        rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                    }
-
-                    rendererMaterial.color = sourceMaterial.color;
                     updatedRenderers++;
                 }
             }
