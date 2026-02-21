@@ -292,24 +292,24 @@ namespace RWXLoader
 
             foreach (MeshRenderer renderer in allRenderers)
             {
-                if (renderer.material == null)
+                if (renderer.sharedMaterial == null)
                 {
                     continue;
                 }
 
-                int rendererTag = GetMaterialTag(renderer.material);
+                int rendererTag = GetMaterialTag(renderer.sharedMaterial);
                 if (rendererTag != rwxMaterial.tag)
                 {
                     continue;
                 }
 
-                string rendererSignature = renderer.material.GetTag("RwxSignature", false, string.Empty);
+                string rendererSignature = renderer.sharedMaterial.GetTag("RwxSignature", false, string.Empty);
                 if (!string.Equals(rendererSignature, expectedSignature, StringComparison.Ordinal))
                 {
                     continue;
                 }
 
-                Material rendererMaterial = renderer.material;
+                Material rendererMaterial = renderer.sharedMaterial;
 
                 if (sourceMaterial.mainTexture != null)
                 {
