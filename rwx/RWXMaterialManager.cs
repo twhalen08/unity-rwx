@@ -14,6 +14,7 @@ namespace RWXLoader
         public bool enableTextures = true;
         public bool useStandardShader = true;
         public float alphaTest = 0.2f;
+        public bool propagateToInstancedRenderers = false;
 
         [Header("Components")]
         public RWXTextureLoader textureLoader;
@@ -270,11 +271,12 @@ namespace RWXLoader
                     }
                 }
                 
-                // CRITICAL FIX: Update all MeshRenderers that use this material
-                // Unity creates material instances when assigning to renderers, so we need to update those instances
-                UpdateMaterialInstances(material, rwxMaterial);
-                
-                // Verify the texture was applied
+                // With sharedMaterial assignment, source material updates propagate automatically.
+                // Optional fallback for legacy flows that create per-renderer material instances.
+                if (propagateToInstancedRenderers)
+                {
+                    UpdateMaterialInstances(material, rwxMaterial);
+                }
             }
         }
 
