@@ -1,3 +1,5 @@
+using System.Collections;
+using System;
 using UnityEngine;
 
 namespace RWXLoader
@@ -157,6 +159,130 @@ namespace RWXLoader
             catch (System.Exception e)
             {
                 return null;
+            }
+        }
+
+
+        /// <summary>
+        /// Coroutine variant of BMP decode that yields periodically to reduce frame hitching.
+        /// </summary>
+        public IEnumerator DecodeBmpTextureAsync(byte[] bmpData, string fileName, Action<Texture2D> onComplete, int rowsPerFrame = 64)
+        {
+            Texture2D texture = null;
+            try
+            {
+                if (bmpData == null || bmpData.Length < 54 || bmpData[0] != 0x42 || bmpData[1] != 0x4D)
+                {
+                    onComplete?.Invoke(null);
+                    yield break;
+                }
+
+                int dataOffset = BitConverter.ToInt32(bmpData, 10);
+                int width = BitConverter.ToInt32(bmpData, 18);
+                int height = BitConverter.ToInt32(bmpData, 22);
+                short bitsPerPixel = BitConverter.ToInt16(bmpData, 28);
+                int compression = BitConverter.ToInt32(bmpData, 30);
+
+                if (compression != 0 || (bitsPerPixel != 1 && bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32))
+                {
+                    onComplete?.Invoke(null);
+                    yield break;
+                }
+
+                int absHeight = Mathf.Abs(height);
+                bool isBottomUp = height > 0;
+                texture = new Texture2D(width, absHeight, TextureFormat.RGBA32, false);
+                Color32[] pixels = new Color32[width * absHeight];
+
+                if (bitsPerPixel == 1)
+                {
+                    int rowSizeInBytes = (width + 7) / 8;
+                    int paddedRowSize = ((rowSizeInBytes + 3) / 4) * 4;
+
+                    for (int y = 0; y < absHeight; y++)
+                    {
+                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+                        int rowStart = dataOffset + (sourceY * paddedRowSize);
+                        int rowIndex = y * width;
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            int byteIndex = rowStart + (x / 8);
+                            if (byteIndex >= bmpData.Length)
+                            {
+                                Object.DestroyImmediate(texture);
+                                onComplete?.Invoke(null);
+                                yield break;
+                            }
+
+                            int bitIndex = 7 - (x % 8);
+                            bool isWhite = ((bmpData[byteIndex] >> bitIndex) & 1) == 1;
+                            byte gray = isWhite ? (byte)255 : (byte)0;
+                            pixels[rowIndex + x] = new Color32(gray, gray, gray, 255);
+                        }
+
+                        if ((y + 1) % rowsPerFrame == 0) yield return null;
+                    }
+                }
+                else
+                {
+                    int bytesPerPixel = bitsPerPixel / 8;
+                    int rowSize = ((width * bitsPerPixel + 31) / 32) * 4;
+
+                    for (int y = 0; y < absHeight; y++)
+                    {
+                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+                        int rowIndex = y * width;
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            int pixelIndex = dataOffset + (sourceY * rowSize) + (x * bytesPerPixel);
+                            if (pixelIndex + bytesPerPixel > bmpData.Length)
+                            {
+                                Object.DestroyImmediate(texture);
+                                onComplete?.Invoke(null);
+                                yield break;
+                            }
+
+                            byte r = 255, g = 255, b = 255, a = 255;
+                            if (bitsPerPixel == 8)
+                            {
+                                byte gray = bmpData[pixelIndex];
+                                r = g = b = gray;
+                            }
+                            else if (bitsPerPixel == 24)
+                            {
+                                b = bmpData[pixelIndex];
+                                g = bmpData[pixelIndex + 1];
+                                r = bmpData[pixelIndex + 2];
+                            }
+                            else if (bitsPerPixel == 32)
+                            {
+                                b = bmpData[pixelIndex];
+                                g = bmpData[pixelIndex + 1];
+                                r = bmpData[pixelIndex + 2];
+                                a = bmpData[pixelIndex + 3];
+                            }
+
+                            pixels[rowIndex + x] = new Color32(r, g, b, a);
+                        }
+
+                        if ((y + 1) % rowsPerFrame == 0) yield return null;
+                    }
+                }
+
+                texture.SetPixels32(pixels);
+                texture.Apply();
+                texture.name = System.IO.Path.GetFileNameWithoutExtension(fileName);
+                onComplete?.Invoke(texture);
+            }
+            catch
+            {
+                if (texture != null)
+                {
+                    Object.DestroyImmediate(texture);
+                }
+                onComplete?.Invoke(null);
             }
         }
 

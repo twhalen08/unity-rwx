@@ -170,48 +170,26 @@ namespace RWXLoader
             bool mainTextureLoaded = false;
             bool maskTextureLoaded = false;
 
-            // Load main texture (simplified - no double-sided flag)
+            // Load main texture asynchronously to avoid sync decode stalls on the main thread.
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
-                {
+                yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
-                        mainTexture = texture;
-                        mainTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
                 mainTextureLoaded = true; // No texture to load
             }
 
-            // Load mask texture (simplified - no double-sided flag)
+            // Load mask texture asynchronously (BMP masks can be expensive to decode).
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
-                {
+                yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
-                        maskTexture = texture;
-                        maskTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
