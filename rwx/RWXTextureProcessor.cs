@@ -1,4 +1,6 @@
 using UnityEngine;
+using System;
+using System.Collections;
 
 namespace RWXLoader
 {
@@ -77,6 +79,68 @@ namespace RWXLoader
             }
 
             return combinedTexture;
+        }
+
+        /// <summary>
+        /// Combines a main texture with a mask texture for alpha channel over multiple frames.
+        /// This avoids long frame stalls on large textures.
+        /// </summary>
+        public IEnumerator CombineTextureWithMaskAsync(
+            Texture2D mainTexture,
+            Texture2D maskTexture,
+            Action<Texture2D> onComplete,
+            int rowsPerFrame = 64)
+        {
+            Texture2D combinedTexture = new Texture2D(mainTexture.width, mainTexture.height, TextureFormat.RGBA32, false);
+            combinedTexture.name = mainTexture.name + "_combined";
+
+            Texture2D scaledMask = maskTexture;
+            if (maskTexture.width != mainTexture.width || maskTexture.height != mainTexture.height)
+            {
+                scaledMask = ScaleTexture(maskTexture, mainTexture.width, mainTexture.height);
+                yield return null;
+            }
+
+            scaledMask = FlipTextureVertically(scaledMask);
+            yield return null;
+
+            Color32[] mainPixels = mainTexture.GetPixels32();
+            Color32[] maskPixels = scaledMask.GetPixels32();
+            Color32[] combinedPixels = new Color32[mainPixels.Length];
+
+            bool shouldInvertMask = maskTexture.name.Contains("tbtree") || maskTexture.name.Contains("003m");
+            int width = mainTexture.width;
+            int height = mainTexture.height;
+
+            for (int y = 0; y < height; y++)
+            {
+                int rowStart = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    int i = rowStart + x;
+                    Color32 mainColor = mainPixels[i];
+                    Color32 maskColor = maskPixels[i];
+
+                    int grayscale = (maskColor.r + maskColor.g + maskColor.b) / 3;
+                    byte alpha = shouldInvertMask ? (byte)(255 - grayscale) : (byte)grayscale;
+                    combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
+                }
+
+                if ((y + 1) % rowsPerFrame == 0)
+                {
+                    yield return null;
+                }
+            }
+
+            combinedTexture.SetPixels32(combinedPixels);
+            combinedTexture.Apply();
+
+            if (scaledMask != maskTexture)
+            {
+                Object.DestroyImmediate(scaledMask);
+            }
+
+            onComplete?.Invoke(combinedTexture);
         }
 
         /// <summary>
@@ -181,6 +245,57 @@ namespace RWXLoader
             {
                 material.color = new Color(1f, 1f, 1f, rwxMaterial.opacity);
             }
+        }
+
+        /// <summary>
+        /// Applies textures and masks to a material while spreading heavy mask processing over multiple frames.
+        /// </summary>
+        public IEnumerator ApplyTexturesWithMaskAsync(Material material, Texture2D mainTexture, Texture2D maskTexture, RWXMaterial rwxMaterial)
+        {
+            if (mainTexture != null && maskTexture != null)
+            {
+                Texture2D combinedTexture = null;
+                yield return CombineTextureWithMaskAsync(mainTexture, maskTexture, texture => combinedTexture = texture);
+                material.mainTexture = combinedTexture;
+
+                if (material.shader.name.Contains("Standard"))
+                {
+                    material.SetTexture("_MainTex", combinedTexture);
+                    material.SetTexture("_AlbedoMap", combinedTexture);
+                }
+            }
+            else if (mainTexture != null)
+            {
+                material.mainTexture = mainTexture;
+
+                if (material.shader.name.Contains("Standard"))
+                {
+                    material.SetTexture("_MainTex", mainTexture);
+                    material.SetTexture("_AlbedoMap", mainTexture);
+                }
+            }
+            else if (maskTexture != null)
+            {
+                material.mainTexture = maskTexture;
+
+                if (material.shader.name.Contains("Standard"))
+                {
+                    material.SetTexture("_MainTex", maskTexture);
+                    material.SetTexture("_AlbedoMap", maskTexture);
+                }
+            }
+
+            if (rwxMaterial.tint)
+            {
+                Color baseColor = rwxMaterial.GetEffectiveColor();
+                material.color = new Color(baseColor.r, baseColor.g, baseColor.b, rwxMaterial.opacity);
+            }
+            else
+            {
+                material.color = new Color(1f, 1f, 1f, rwxMaterial.opacity);
+            }
+
+            material.EnableKeyword("_MAINTEX_ON");
         }
 
         /// <summary>
