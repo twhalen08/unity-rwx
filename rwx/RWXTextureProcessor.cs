@@ -9,75 +9,55 @@ namespace RWXLoader
     /// </summary>
     public class RWXTextureProcessor : MonoBehaviour
     {
+        private readonly System.Collections.Generic.Dictionary<string, Texture2D> combinedTextureCache = new System.Collections.Generic.Dictionary<string, Texture2D>();
         /// <summary>
         /// Combines a main texture with a mask texture for alpha channel
         /// RWX masks: Black = transparent, White = opaque
         /// </summary>
         public Texture2D CombineTextureWithMask(Texture2D mainTexture, Texture2D maskTexture)
         {
-            // Create a new texture with the same dimensions as the main texture
+            string cacheKey = BuildCombinedCacheKey(mainTexture, maskTexture);
+            if (combinedTextureCache.TryGetValue(cacheKey, out Texture2D cached) && cached != null)
+            {
+                return cached;
+            }
+
             Texture2D combinedTexture = new Texture2D(mainTexture.width, mainTexture.height, TextureFormat.RGBA32, false);
-            
-            // Set the combined texture name for debugging
             combinedTexture.name = mainTexture.name + "_combined";
-            
-            // Scale mask to match main texture size if needed
-            Texture2D scaledMask = maskTexture;
-            if (maskTexture.width != mainTexture.width || maskTexture.height != mainTexture.height)
-            {
-                scaledMask = ScaleTexture(maskTexture, mainTexture.width, mainTexture.height);
-            }
-            
-            // CONFIRMED: Mask is upside down, apply vertical flip only
-            scaledMask = FlipTextureVertically(scaledMask);
 
-            Color[] mainPixels = mainTexture.GetPixels();
-            Color[] maskPixels = scaledMask.GetPixels();
-            Color[] combinedPixels = new Color[mainPixels.Length];
+            Color32[] mainPixels = mainTexture.GetPixels32();
+            Color32[] maskPixels = maskTexture.GetPixels32();
+            Color32[] combinedPixels = new Color32[mainPixels.Length];
 
-            for (int i = 0; i < mainPixels.Length; i++)
+            bool shouldInvertMask = ShouldInvertMask(maskTexture);
+            int width = mainTexture.width;
+            int height = mainTexture.height;
+            int maskWidth = maskTexture.width;
+            int maskHeight = maskTexture.height;
+
+            for (int y = 0; y < height; y++)
             {
-                Color mainColor = mainPixels[i];
-                Color maskColor = maskPixels[i];
-                
-                // Handle different mask types - some masks are inverted
-                float maskGrayscale = (maskColor.r + maskColor.g + maskColor.b) / 3f;
-                
-                // Detect mask type based on texture name patterns
-                bool shouldInvertMask = false;
-                if (maskTexture.name.Contains("tbtree") || maskTexture.name.Contains("003m"))
+                int srcY = height - 1 - y; // vertical flip
+                int maskY = (srcY * maskHeight) / height;
+                int rowStart = y * width;
+
+                for (int x = 0; x < width; x++)
                 {
-                    // These masks appear to need inversion
-                    shouldInvertMask = true;
+                    int i = rowStart + x;
+                    int maskX = (x * maskWidth) / width;
+                    int maskIdx = maskY * maskWidth + maskX;
+
+                    Color32 mainColor = mainPixels[i];
+                    Color32 maskColor = maskPixels[maskIdx];
+                    int grayscale = (maskColor.r + maskColor.g + maskColor.b) / 3;
+                    byte alpha = shouldInvertMask ? (byte)(255 - grayscale) : (byte)grayscale;
+                    combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
                 }
-                
-                float alpha;
-                if (shouldInvertMask)
-                {
-                    // INVERTED: White = transparent (alpha = 0), Black = opaque (alpha = 1)
-                    alpha = 1.0f - maskGrayscale;
-                }
-                else
-                {
-                    // NORMAL: Black = transparent (alpha = 0), White = opaque (alpha = 1)
-                    alpha = maskGrayscale;
-                }
-                
-                // For smoother edges, you could use: float alpha = maskGrayscale;
-                // But sharp cutoff usually works better for leaf textures
-                
-                combinedPixels[i] = new Color(mainColor.r, mainColor.g, mainColor.b, alpha);
             }
 
-            combinedTexture.SetPixels(combinedPixels);
+            combinedTexture.SetPixels32(combinedPixels);
             combinedTexture.Apply();
-
-            // Clean up scaled mask if we created one
-            if (scaledMask != maskTexture)
-            {
-                Object.DestroyImmediate(scaledMask);
-            }
-
+            combinedTextureCache[cacheKey] = combinedTexture;
             return combinedTexture;
         }
 
@@ -91,36 +71,40 @@ namespace RWXLoader
             Action<Texture2D> onComplete,
             int rowsPerFrame = 64)
         {
+            string cacheKey = BuildCombinedCacheKey(mainTexture, maskTexture);
+            if (combinedTextureCache.TryGetValue(cacheKey, out Texture2D cached) && cached != null)
+            {
+                onComplete?.Invoke(cached);
+                yield break;
+            }
+
             Texture2D combinedTexture = new Texture2D(mainTexture.width, mainTexture.height, TextureFormat.RGBA32, false);
             combinedTexture.name = mainTexture.name + "_combined";
 
-            Texture2D scaledMask = maskTexture;
-            if (maskTexture.width != mainTexture.width || maskTexture.height != mainTexture.height)
-            {
-                scaledMask = ScaleTexture(maskTexture, mainTexture.width, mainTexture.height);
-                yield return null;
-            }
-
-            scaledMask = FlipTextureVertically(scaledMask);
-            yield return null;
-
             Color32[] mainPixels = mainTexture.GetPixels32();
-            Color32[] maskPixels = scaledMask.GetPixels32();
+            Color32[] maskPixels = maskTexture.GetPixels32();
             Color32[] combinedPixels = new Color32[mainPixels.Length];
 
-            bool shouldInvertMask = maskTexture.name.Contains("tbtree") || maskTexture.name.Contains("003m");
+            bool shouldInvertMask = ShouldInvertMask(maskTexture);
             int width = mainTexture.width;
             int height = mainTexture.height;
+            int maskWidth = maskTexture.width;
+            int maskHeight = maskTexture.height;
 
             for (int y = 0; y < height; y++)
             {
+                int srcY = height - 1 - y; // vertical flip
+                int maskY = (srcY * maskHeight) / height;
                 int rowStart = y * width;
+
                 for (int x = 0; x < width; x++)
                 {
                     int i = rowStart + x;
-                    Color32 mainColor = mainPixels[i];
-                    Color32 maskColor = maskPixels[i];
+                    int maskX = (x * maskWidth) / width;
+                    int maskIdx = maskY * maskWidth + maskX;
 
+                    Color32 mainColor = mainPixels[i];
+                    Color32 maskColor = maskPixels[maskIdx];
                     int grayscale = (maskColor.r + maskColor.g + maskColor.b) / 3;
                     byte alpha = shouldInvertMask ? (byte)(255 - grayscale) : (byte)grayscale;
                     combinedPixels[i] = new Color32(mainColor.r, mainColor.g, mainColor.b, alpha);
@@ -134,13 +118,20 @@ namespace RWXLoader
 
             combinedTexture.SetPixels32(combinedPixels);
             combinedTexture.Apply();
-
-            if (scaledMask != maskTexture)
-            {
-                Object.DestroyImmediate(scaledMask);
-            }
-
+            combinedTextureCache[cacheKey] = combinedTexture;
             onComplete?.Invoke(combinedTexture);
+        }
+
+        private static bool ShouldInvertMask(Texture2D maskTexture)
+        {
+            return maskTexture != null && (maskTexture.name.Contains("tbtree") || maskTexture.name.Contains("003m"));
+        }
+
+        private static string BuildCombinedCacheKey(Texture2D mainTexture, Texture2D maskTexture)
+        {
+            string mainId = mainTexture != null ? mainTexture.GetInstanceID().ToString() : "null";
+            string maskId = maskTexture != null ? maskTexture.GetInstanceID().ToString() : "null";
+            return mainId + "::" + maskId;
         }
 
         /// <summary>
@@ -423,5 +414,17 @@ namespace RWXLoader
             
             return rotatedTexture;
         }
+        private void OnDestroy()
+        {
+            foreach (var kv in combinedTextureCache)
+            {
+                if (kv.Value != null)
+                {
+                    Object.DestroyImmediate(kv.Value);
+                }
+            }
+            combinedTextureCache.Clear();
+        }
+
     }
 }
