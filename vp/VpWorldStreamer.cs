@@ -105,6 +105,10 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     [Tooltip("Ignore frustum test beyond this distance (Unity units). 0 = no limit.")]
     public float frustumMaxDistance = 0f;
 
+    [Header("Batching")]
+    [Tooltip("If true, wait for the full desired-radius cell batch before enqueuing models.")]
+    public bool enqueueModelsAfterBatch = false;
+
     [Header("Terrain")]
     [Tooltip("Load and render VP terrain tiles around the camera.")]
     public bool streamTerrain = true;
@@ -274,8 +278,18 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         public string action;
     }
 
+    private struct BatchCellResult
+    {
+        public (int cx, int cy) cell;
+        public QueryCellResult result;
+    }
+
     // Model priority heap: smallest priority loads first
     private readonly MinHeap<PendingModelLoad> modelHeap = new MinHeap<PendingModelLoad>();
+
+    private int pendingBatchCells = 0;
+    private readonly List<BatchCellResult> batchResults = new();
+    private readonly HashSet<(int cx, int cy)> batchCells = new();
 
     private int inFlightCellQueries = 0;
     private int inFlightModelLoads = 0;
@@ -388,6 +402,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
                 lastCameraCell = camCell;
 
                 BuildDesiredCellsWithJob(camCell.cx, camCell.cy, loadRadius);
+
+                if (cellChanged && enqueueModelsAfterBatch)
+                    ResetBatchState();
 
                 // Unload far cells if enabled
                 if (unloadRadius >= 0)
@@ -526,9 +543,58 @@ public class VPWorldStreamerSmooth : MonoBehaviour
 
         loadedCells.Add(key);
 
+        var cell = cellTask.Result;
+        if (enqueueModelsAfterBatch && batchCells.Contains(key))
+        {
+            batchResults.Add(new BatchCellResult
+            {
+                cell = key,
+                result = cell
+            });
+            pendingBatchCells = Mathf.Max(0, pendingBatchCells - 1);
+
+            if (pendingBatchCells == 0)
+                FlushBatchResults();
+        }
+        else
+        {
+            UnityEngine.Vector3 camPos = GetCameraWorldPos();
+            EnqueueModelsFromCell(key, cell, camPos);
+        }
+    }
+
+    private void ResetBatchState()
+    {
+        pendingBatchCells = 0;
+        batchResults.Clear();
+        batchCells.Clear();
+
+        foreach (var coord in desiredCells)
+        {
+            if (loadedCells.Contains(coord))
+                continue;
+
+            if (queuedCells.Contains(coord) || queryingCells.Contains(coord))
+            {
+                batchCells.Add(coord);
+                pendingBatchCells++;
+            }
+        }
+    }
+
+    private void FlushBatchResults()
+    {
         UnityEngine.Vector3 camPos = GetCameraWorldPos();
 
-        var cell = cellTask.Result;
+        foreach (var batchResult in batchResults)
+            EnqueueModelsFromCell(batchResult.cell, batchResult.result, camPos);
+
+        batchResults.Clear();
+        batchCells.Clear();
+    }
+
+    private void EnqueueModelsFromCell((int cx, int cy) key, QueryCellResult cell, UnityEngine.Vector3 camPos)
+    {
         foreach (var obj in cell.Objects)
         {
             if (string.IsNullOrEmpty(obj.Model))
