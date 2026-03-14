@@ -473,6 +473,36 @@ namespace RWXLoader
             }
         }
 
+        private IEnumerator LoadTextureFromBytesAsync(byte[] data, string fileName, bool isMask, bool isDoubleSided, Action<Texture2D> onComplete)
+        {
+            string effectiveFileName = fileName;
+            byte[] workingData = data;
+
+            if (fileName.EndsWith(".gz", StringComparison.OrdinalIgnoreCase) && TryDecompressGzip(data, out byte[] decompressedData))
+            {
+                workingData = decompressedData;
+                effectiveFileName = Path.GetFileNameWithoutExtension(fileName);
+                yield return null;
+            }
+
+            // BMP decoding is the biggest hotspot; run it in a yielding coroutine.
+            if (effectiveFileName.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
+            {
+                RWXBmpDecoder bmpDecoder = GetComponent<RWXBmpDecoder>();
+                if (bmpDecoder != null)
+                {
+                    Texture2D bmpTexture = null;
+                    yield return bmpDecoder.DecodeBmpTextureAsync(workingData, effectiveFileName, t => bmpTexture = t);
+                    onComplete?.Invoke(bmpTexture);
+                    yield break;
+                }
+            }
+
+            // Fallback to existing sync loader for non-BMP formats.
+            Texture2D texture = LoadTextureFromBytes(workingData, effectiveFileName, isMask, isDoubleSided);
+            onComplete?.Invoke(texture);
+        }
+
         /// <summary>
         /// Loads texture/mask from ZIP archive first, then falls back to individual download
         /// </summary>
@@ -590,8 +620,8 @@ namespace RWXLoader
                 
                 if (textureData != null && textureData.Length > 0)
                 {
-                    // Try to create texture from byte data
-                    Texture2D texture = LoadTextureFromBytes(textureData, foundFileName, isMask, isDoubleSided);
+                    Texture2D texture = null;
+                    yield return LoadTextureFromBytesAsync(textureData, foundFileName, isMask, isDoubleSided, loaded => texture = loaded);
                     if (texture != null)
                     {
                         onComplete?.Invoke(texture);
@@ -636,7 +666,8 @@ namespace RWXLoader
             if (downloadSuccess && File.Exists(localTexturePath))
             {
                 byte[] fileData = File.ReadAllBytes(localTexturePath);
-                Texture2D texture = LoadTextureFromBytes(fileData, textureNameWithExt, isMask, isDoubleSided);
+                Texture2D texture = null;
+                yield return LoadTextureFromBytesAsync(fileData, textureNameWithExt, isMask, isDoubleSided, loaded => texture = loaded);
                 if (texture != null)
                 {
                     string cacheKey = textureName + (isDoubleSided ? "_DS" : "");

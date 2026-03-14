@@ -170,48 +170,26 @@ namespace RWXLoader
             bool mainTextureLoaded = false;
             bool maskTextureLoaded = false;
 
-            // Load main texture (simplified - no double-sided flag)
+            // Load main texture asynchronously to avoid sync decode stalls on the main thread.
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
-                
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
-                {
+                yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
-                        mainTexture = texture;
-                        mainTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
                 mainTextureLoaded = true; // No texture to load
             }
 
-            // Load mask texture (simplified - no double-sided flag)
+            // Load mask texture asynchronously (BMP masks can be expensive to decode).
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
-                
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
-                {
+                yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
-                {
-                    // Try loading from ZIP first, then fall back to individual download
-                    yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {
-                        maskTexture = texture;
-                        maskTextureLoaded = true;
-                    });
-                }
+                });
             }
             else
             {
@@ -230,7 +208,7 @@ namespace RWXLoader
                 
                 if (textureProcessor != null)
                 {
-                    textureProcessor.ApplyTexturesWithMask(material, mainTexture, maskTexture, rwxMaterial);
+                    yield return textureProcessor.ApplyTexturesWithMaskAsync(material, mainTexture, maskTexture, rwxMaterial);
                 }
                 else
                 {
@@ -249,112 +227,7 @@ namespace RWXLoader
                     }
                 }
                 
-                // CRITICAL FIX: Update all MeshRenderers that use this material
-                // Unity creates material instances when assigning to renderers, so we need to update those instances
-                UpdateMaterialInstances(material, rwxMaterial);
-                
-                // Verify the texture was applied
             }
-        }
-
-        /// <summary>
-        /// Updates all MeshRenderer instances that use this exact material with the new texture
-        /// This is critical because Unity creates material instances when assigning to renderers
-        /// </summary>
-        private void UpdateMaterialInstances(Material sourceMaterial, RWXMaterial rwxMaterial)
-        {
-            // Get the exact material signature to match only the correct materials
-            string materialSignature = rwxMaterial.GetMaterialSignature();
-            
-            // Find all MeshRenderers in the scene that might be using this material
-            MeshRenderer[] allRenderers = FindObjectsOfType<MeshRenderer>();
-            int updatedRenderers = 0;
-            
-            foreach (MeshRenderer renderer in allRenderers)
-            {
-                if (renderer.material != null)
-                {
-                    int rendererTag = GetMaterialTag(renderer.material);
-                    if (rendererTag != rwxMaterial.tag)
-                    {
-                        continue;
-                    }
-
-                    // CRITICAL FIX: Only update renderers that match BOTH the texture name AND have the same tag
-                    // This prevents cross-contamination between different materials
-                    string rendererName = renderer.gameObject.name;
-                    string expectedTextureName = rwxMaterial.texture ?? "default";
-                    
-                    // Only update if the renderer name matches the texture name (this indicates it's the right material group)
-                    if (rendererName == expectedTextureName)
-                    {
-                        // Update the renderer's material instance with the new texture
-                        Material rendererMaterial = renderer.material;
-                        
-                        // Copy all texture properties from source material to renderer's material instance
-                        if (sourceMaterial.mainTexture != null)
-                        {
-                            rendererMaterial.mainTexture = sourceMaterial.mainTexture;
-                            
-                            // For Standard shader, also set the albedo texture
-                            if (rendererMaterial.shader.name.Contains("Standard"))
-                            {
-                                rendererMaterial.SetTexture("_MainTex", sourceMaterial.mainTexture);
-                                rendererMaterial.SetTexture("_AlbedoMap", sourceMaterial.mainTexture);
-                                
-                                // CRITICAL: Copy all transparency settings from source material
-                                rendererMaterial.SetFloat("_Mode", sourceMaterial.GetFloat("_Mode"));
-                                rendererMaterial.SetInt("_SrcBlend", sourceMaterial.GetInt("_SrcBlend"));
-                                rendererMaterial.SetInt("_DstBlend", sourceMaterial.GetInt("_DstBlend"));
-                                rendererMaterial.SetInt("_ZWrite", sourceMaterial.GetInt("_ZWrite"));
-                                rendererMaterial.renderQueue = sourceMaterial.renderQueue;
-                                
-                                // Copy keywords for transparency
-                                if (sourceMaterial.IsKeywordEnabled("_ALPHABLEND_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else if (sourceMaterial.IsKeywordEnabled("_ALPHATEST_ON"))
-                                {
-                                    rendererMaterial.EnableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                                else
-                                {
-                                    rendererMaterial.DisableKeyword("_ALPHATEST_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHABLEND_ON");
-                                    rendererMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                                }
-                            }
-                            
-                            // Copy other material properties to ensure consistency
-                            rendererMaterial.color = sourceMaterial.color;
-                            
-                            updatedRenderers++;
-                        }
-                    }
-                }
-            }
-            
-        }
-
-        private int GetMaterialTag(Material material)
-        {
-            if (material == null)
-            {
-                return 0;
-            }
-
-            string tagValue = material.GetTag("RwxTag", false, "0");
-            if (int.TryParse(tagValue, out int parsed))
-            {
-                return parsed;
-            }
-
-            return 0;
         }
 
         /// <summary>
