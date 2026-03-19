@@ -250,7 +250,7 @@ namespace RWXLoader
                 }
                 
                 // CRITICAL FIX: Update all MeshRenderers that use this material
-                // Unity creates material instances when assigning to renderers, so we need to update those instances
+                // Some renderers may already hold instances, so keep them in sync with the shared material.
                 UpdateMaterialInstances(material, rwxMaterial);
                 
                 // Verify the texture was applied
@@ -272,9 +272,9 @@ namespace RWXLoader
             
             foreach (MeshRenderer renderer in allRenderers)
             {
-                if (renderer.material != null)
+                if (renderer.sharedMaterial != null)
                 {
-                    int rendererTag = GetMaterialTag(renderer.material);
+                    int rendererTag = GetMaterialTag(renderer.sharedMaterial);
                     if (rendererTag != rwxMaterial.tag)
                     {
                         continue;
@@ -289,7 +289,7 @@ namespace RWXLoader
                     if (rendererName == expectedTextureName)
                     {
                         // Update the renderer's material instance with the new texture
-                        Material rendererMaterial = renderer.material;
+                        Material rendererMaterial = renderer.sharedMaterial;
                         
                         // Copy all texture properties from source material to renderer's material instance
                         if (sourceMaterial.mainTexture != null)

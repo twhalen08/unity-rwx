@@ -156,7 +156,7 @@ public class RWXRemoteDemo : MonoBehaviour
         int texturedObjects = 0;
         foreach (MeshRenderer renderer in renderers)
         {
-            if (renderer.material != null && renderer.material.mainTexture != null)
+            if (renderer.sharedMaterial != null && renderer.sharedMaterial.mainTexture != null)
             {
                 texturedObjects++;
             }
@@ -180,7 +180,7 @@ public class RWXRemoteDemo : MonoBehaviour
         MeshRenderer mr = parent.GetComponent<MeshRenderer>();
         
         string meshInfo = mf != null ? $" [Mesh: {mf.sharedMesh?.vertexCount} verts]" : "";
-        string materialInfo = mr != null && mr.material != null ? $" [Mat: {mr.material.name}]" : "";
+        string materialInfo = mr != null && mr.sharedMaterial != null ? $" [Mat: {mr.sharedMaterial.name}]" : "";
         
         Debug.Log($"{indent}{parent.name} - Pos: {pos:F2}, LocalPos: {localPos:F2}{meshInfo}{materialInfo}");
         
@@ -423,7 +423,7 @@ public class RWXRemoteDemo : MonoBehaviour
         MeshRenderer mr = obj.GetComponent<MeshRenderer>();
         
         string meshInfo = mf != null ? $" [Mesh: {mf.sharedMesh?.vertexCount} verts]" : "";
-        string materialInfo = mr != null && mr.material != null ? $" [Mat: {mr.material.name}]" : "";
+        string materialInfo = mr != null && mr.sharedMaterial != null ? $" [Mat: {mr.sharedMaterial.name}]" : "";
         
         Debug.Log($"{indent}{obj.name}");
         Debug.Log($"{indent}  Pos: {pos:F2}, LocalPos: {localPos:F2}");
