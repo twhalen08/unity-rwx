@@ -174,13 +174,14 @@ namespace RWXLoader
             if (!string.IsNullOrEmpty(rwxMaterial.texture))
             {
                 
-                // Try to load texture synchronously first (for local files)
-                mainTexture = textureLoader.LoadTextureSync(rwxMaterial.texture);
-                if (mainTexture != null)
+                // Try to load texture asynchronously from local files
+                yield return textureLoader.LoadTextureLocalAsync(rwxMaterial.texture, false, (texture) =>
                 {
+                    mainTexture = texture;
                     mainTextureLoaded = true;
-                }
-                else
+                });
+
+                if (mainTexture == null)
                 {
                     // Try loading from ZIP first, then fall back to individual download
                     yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.texture, false, (texture) => {
@@ -198,13 +199,14 @@ namespace RWXLoader
             if (!string.IsNullOrEmpty(rwxMaterial.mask))
             {
                 
-                // Try to load mask synchronously first (for local files)
-                maskTexture = textureLoader.LoadTextureSync(rwxMaterial.mask);
-                if (maskTexture != null)
+                // Try to load mask asynchronously from local files
+                yield return textureLoader.LoadTextureLocalAsync(rwxMaterial.mask, false, (texture) =>
                 {
+                    maskTexture = texture;
                     maskTextureLoaded = true;
-                }
-                else
+                });
+
+                if (maskTexture == null)
                 {
                     // Try loading from ZIP first, then fall back to individual download
                     yield return textureLoader.LoadTextureFromZipOrRemote(rwxMaterial.mask, true, (texture) => {

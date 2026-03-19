@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace RWXLoader
@@ -7,6 +8,135 @@ namespace RWXLoader
     /// </summary>
     public class RWXBmpDecoder : MonoBehaviour
     {
+        public struct BmpDecodedData
+        {
+            public int Width;
+            public int Height;
+            public Color32[] Pixels;
+
+            public bool IsValid => Width > 0 && Height > 0 && Pixels != null && Pixels.Length == Width * Height;
+        }
+
+        public static BmpDecodedData DecodeBmpPixels(byte[] bmpData)
+        {
+            try
+            {
+                if (bmpData.Length < 54 || bmpData[0] != 0x42 || bmpData[1] != 0x4D)
+                {
+                    return default;
+                }
+
+                int dataOffset = System.BitConverter.ToInt32(bmpData, 10);
+                int width = System.BitConverter.ToInt32(bmpData, 18);
+                int height = System.BitConverter.ToInt32(bmpData, 22);
+                short bitsPerPixel = System.BitConverter.ToInt16(bmpData, 28);
+                int compression = System.BitConverter.ToInt32(bmpData, 30);
+
+                if (compression != 0)
+                {
+                    return default;
+                }
+
+                if (bitsPerPixel != 1 && bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32)
+                {
+                    return default;
+                }
+
+                int absHeight = Math.Abs(height);
+                bool isBottomUp = height > 0;
+                Color32[] pixels = new Color32[width * absHeight];
+
+                if (bitsPerPixel == 1)
+                {
+                    int rowSizeInBits = width;
+                    int rowSizeInBytes = (rowSizeInBits + 7) / 8;
+                    int paddedRowSize = ((rowSizeInBytes + 3) / 4) * 4;
+
+                    for (int y = 0; y < absHeight; y++)
+                    {
+                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+                        int rowStart = dataOffset + (sourceY * paddedRowSize);
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            int byteIndex = rowStart + (x / 8);
+                            int bitIndex = 7 - (x % 8);
+
+                            if (byteIndex >= bmpData.Length)
+                            {
+                                return default;
+                            }
+
+                            bool isWhite = ((bmpData[byteIndex] >> bitIndex) & 1) == 1;
+                            byte grayValue = isWhite ? (byte)255 : (byte)0;
+                            int targetIndex = y * width + x;
+                            pixels[targetIndex] = new Color32(grayValue, grayValue, grayValue, 255);
+                        }
+                    }
+                }
+                else
+                {
+                    int bytesPerPixel = bitsPerPixel / 8;
+                    int rowSize = ((width * bitsPerPixel + 31) / 32) * 4;
+
+                    for (int y = 0; y < absHeight; y++)
+                    {
+                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            int pixelIndex = dataOffset + (sourceY * rowSize) + (x * bytesPerPixel);
+
+                            if (pixelIndex + bytesPerPixel > bmpData.Length)
+                            {
+                                return default;
+                            }
+
+                            byte r;
+                            byte g;
+                            byte b;
+                            byte a = 255;
+
+                            if (bitsPerPixel == 8)
+                            {
+                                byte gray = bmpData[pixelIndex];
+                                r = gray;
+                                g = gray;
+                                b = gray;
+                            }
+                            else if (bitsPerPixel == 24)
+                            {
+                                b = bmpData[pixelIndex];
+                                g = bmpData[pixelIndex + 1];
+                                r = bmpData[pixelIndex + 2];
+                            }
+                            else
+                            {
+                                b = bmpData[pixelIndex];
+                                g = bmpData[pixelIndex + 1];
+                                r = bmpData[pixelIndex + 2];
+                                a = bmpData[pixelIndex + 3];
+                            }
+
+                            int targetIndex = y * width + x;
+                            pixels[targetIndex] = new Color32(r, g, b, a);
+                        }
+                    }
+                }
+
+                return new BmpDecodedData
+                {
+                    Width = width,
+                    Height = absHeight,
+                    Pixels = pixels
+                };
+            }
+            catch (System.Exception)
+            {
+                return default;
+            }
+        }
+
         /// <summary>
         /// Custom BMP decoder for files that Unity can't handle
         /// </summary>
@@ -14,144 +144,16 @@ namespace RWXLoader
         {
             try
             {
-                // Check BMP signature
-                if (bmpData.Length < 54 || bmpData[0] != 0x42 || bmpData[1] != 0x4D)
+                BmpDecodedData decoded = DecodeBmpPixels(bmpData);
+                if (!decoded.IsValid)
                 {
                     return null;
                 }
 
-                // Read BMP header
-                int fileSize = System.BitConverter.ToInt32(bmpData, 2);
-                int dataOffset = System.BitConverter.ToInt32(bmpData, 10);
-                int headerSize = System.BitConverter.ToInt32(bmpData, 14);
-                int width = System.BitConverter.ToInt32(bmpData, 18);
-                int height = System.BitConverter.ToInt32(bmpData, 22);
-                short planes = System.BitConverter.ToInt16(bmpData, 26);
-                short bitsPerPixel = System.BitConverter.ToInt16(bmpData, 28);
-                int compression = System.BitConverter.ToInt32(bmpData, 30);
-
-                // Only support uncompressed BMPs for now
-                if (compression != 0)
-                {
-                    return null;
-                }
-
-                // Support common bit depths including 1-bit for masks
-                if (bitsPerPixel != 1 && bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32)
-                {
-                    return null;
-                }
-
-                // Create texture
-                int absHeight = Mathf.Abs(height);
-                Texture2D texture = new Texture2D(width, absHeight, TextureFormat.RGBA32, false);
-                Color[] pixels = new Color[width * absHeight];
-
-                // BMP coordinate system: 
-                // - Positive height = bottom-up (most common)
-                // - Negative height = top-down (rare)
-                // Unity uses top-down, so we need to flip for positive height
-                bool isBottomUp = height > 0;
-
-                if (bitsPerPixel == 1)
-                {
-                    // 1-bit monochrome BMP (perfect for masks)
-                    
-                    // Calculate row size with padding (each row is padded to 4-byte boundary)
-                    int rowSizeInBits = width;
-                    int rowSizeInBytes = (rowSizeInBits + 7) / 8; // Round up to nearest byte
-                    int paddedRowSize = ((rowSizeInBytes + 3) / 4) * 4; // Pad to 4-byte boundary
-
-                    // Read pixel data
-                    for (int y = 0; y < absHeight; y++)
-                    {
-                        // Calculate source row (BMP stores bottom-up for positive height)
-                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
-                        int rowStart = dataOffset + (sourceY * paddedRowSize);
-                        
-                        for (int x = 0; x < width; x++)
-                        {
-                            int byteIndex = rowStart + (x / 8);
-                            int bitIndex = 7 - (x % 8); // MSB first
-                            
-                            if (byteIndex >= bmpData.Length)
-                            {
-                                Object.DestroyImmediate(texture);
-                                return null;
-                            }
-                            
-                            // Extract bit value (1 = white, 0 = black in typical 1-bit BMPs)
-                            bool isWhite = ((bmpData[byteIndex] >> bitIndex) & 1) == 1;
-                            float grayValue = isWhite ? 1f : 0f;
-                            Color pixel = new Color(grayValue, grayValue, grayValue, 1f);
-                            
-                            // Unity texture coordinates (top-down, left-to-right)
-                            int targetIndex = y * width + x;
-                            pixels[targetIndex] = pixel;
-                        }
-                    }
-                }
-                else
-                {
-                    // Handle other bit depths (8, 24, 32)
-                    int bytesPerPixel = bitsPerPixel / 8;
-                    int rowSize = ((width * bitsPerPixel + 31) / 32) * 4;
-
-                    // Read pixel data
-                    for (int y = 0; y < absHeight; y++)
-                    {
-                        // Calculate source row (BMP stores bottom-up for positive height)
-                        int sourceY = isBottomUp ? (absHeight - 1 - y) : y;
-                        
-                        for (int x = 0; x < width; x++)
-                        {
-                            int pixelIndex = dataOffset + (sourceY * rowSize) + (x * bytesPerPixel);
-                            
-                            if (pixelIndex + bytesPerPixel > bmpData.Length)
-                            {
-                                Object.DestroyImmediate(texture);
-                                return null;
-                            }
-
-                            Color pixel = Color.white;
-
-                            if (bitsPerPixel == 8)
-                            {
-                                // 8-bit grayscale (assuming no palette for simplicity)
-                                float gray = bmpData[pixelIndex] / 255f;
-                                pixel = new Color(gray, gray, gray, 1f);
-                            }
-                            else if (bitsPerPixel == 24)
-                            {
-                                // 24-bit BGR (note: BMP uses BGR, not RGB)
-                                float b = bmpData[pixelIndex] / 255f;
-                                float g = bmpData[pixelIndex + 1] / 255f;
-                                float r = bmpData[pixelIndex + 2] / 255f;
-                                pixel = new Color(r, g, b, 1f);
-                            }
-                            else if (bitsPerPixel == 32)
-                            {
-                                // 32-bit BGRA (note: BMP uses BGR, not RGB)
-                                float b = bmpData[pixelIndex] / 255f;
-                                float g = bmpData[pixelIndex + 1] / 255f;
-                                float r = bmpData[pixelIndex + 2] / 255f;
-                                float a = bmpData[pixelIndex + 3] / 255f;
-                                pixel = new Color(r, g, b, a);
-                            }
-
-                            // Unity texture coordinates (top-down, left-to-right)
-                            int targetIndex = y * width + x;
-                            pixels[targetIndex] = pixel;
-                        }
-                    }
-                }
-
-                texture.SetPixels(pixels);
+                Texture2D texture = new Texture2D(decoded.Width, decoded.Height, TextureFormat.RGBA32, false);
+                texture.SetPixels32(decoded.Pixels);
                 texture.Apply();
-                
-                // Set the texture name for debugging
                 texture.name = System.IO.Path.GetFileNameWithoutExtension(fileName);
-
                 return texture;
             }
             catch (System.Exception e)
