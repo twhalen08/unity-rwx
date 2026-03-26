@@ -7,6 +7,9 @@ using UnityEngine;
 
 namespace RWXLoader
 {
+    /// <summary>
+    /// Legacy MonoBehaviour adapter that wraps runtime loading behavior exposed by <see cref="RwxRuntimeFacade"/>.
+    /// </summary>
     public class RWXLoaderAdvanced : MonoBehaviour
     {
         [Header("RWX Loading")]
@@ -62,6 +65,16 @@ namespace RWXLoader
         /// <param name="objectPath">Remote object server URL (optional, uses default if null)</param>
         /// <param name="onComplete">Callback when loading is complete</param>
         public void LoadModelFromRemote(
+            string modelName,
+            string objectPath = null,
+            System.Action<GameObject, string> onComplete = null,
+            string password = null,
+            bool activateOnInstantiate = true)
+        {
+            LoadModelFromRemoteCore(modelName, objectPath, onComplete, password, activateOnInstantiate);
+        }
+
+        internal void LoadModelFromRemoteCore(
             string modelName,
             string objectPath = null,
             System.Action<GameObject, string> onComplete = null,
@@ -285,6 +298,11 @@ namespace RWXLoader
         /// </summary>
         public GameObject LoadModelFromZip(string zipPath, string modelName)
         {
+            return LoadModelFromZipCore(zipPath, modelName);
+        }
+
+        internal GameObject LoadModelFromZipCore(string zipPath, string modelName)
+        {
             if (assetManager == null)
             {
                 InitializeAssetManager();
@@ -406,6 +424,11 @@ namespace RWXLoader
         /// </summary>
         public void ClearCache(string objectPath = null)
         {
+            ClearCacheCore(objectPath);
+        }
+
+        internal void ClearCacheCore(string objectPath = null)
+        {
             if (string.IsNullOrEmpty(objectPath))
             {
                 objectPath = defaultObjectPath;
@@ -422,6 +445,14 @@ namespace RWXLoader
                 Directory.Delete(cachePath, true);
                 Debug.Log($"Cleared cache: {cachePath}");
             }
+        }
+
+        /// <summary>
+        /// Creates a runtime facade backed by this adapter instance.
+        /// </summary>
+        public RwxRuntimeFacade AsRuntimeFacade()
+        {
+            return new RwxRuntimeFacade(this);
         }
     }
 }

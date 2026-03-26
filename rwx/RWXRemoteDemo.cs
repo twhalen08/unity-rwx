@@ -40,6 +40,7 @@ public class RWXRemoteDemo : MonoBehaviour
     public bool logActionDetails = true;
 
     private RWXLoaderAdvanced loader;
+    private RwxRuntimeFacade runtimeFacade;
     private GameObject loadedModel;
 
     void Start()
@@ -69,6 +70,7 @@ public class RWXRemoteDemo : MonoBehaviour
         loader.parentTransform = transform;
 
         EnsureAssetManager();
+        runtimeFacade = loader.AsRuntimeFacade();
     }
 
     [ContextMenu("Load Remote Model")]
@@ -96,7 +98,7 @@ public class RWXRemoteDemo : MonoBehaviour
 
 
         // Load the model from remote with caching
-        loader.LoadModelFromRemote(modelName, objectPath, OnModelLoaded, objectPathPassword);
+        runtimeFacade.LoadFromRemote(modelName, objectPath, objectPathPassword, OnModelLoaded);
     }
 
     void OnModelLoaded(GameObject model, string result)
@@ -253,7 +255,7 @@ public class RWXRemoteDemo : MonoBehaviour
     {
         if (loader != null)
         {
-            loader.ClearCache(objectPath);
+            runtimeFacade?.ClearCaches();
             Debug.Log($"Cleared cache for {objectPath}");
         }
     }
@@ -279,42 +281,19 @@ public class RWXRemoteDemo : MonoBehaviour
             return;
         }
 
-        VpActionParser.Parse(action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions);
-
-        if (createActions.Count == 0 && activateActions.Count == 0)
+        if (runtimeFacade == null)
         {
-            Debug.LogWarning("Parsed action string but found no create or activate commands.");
-            return;
+            SetupRemoteLoader();
         }
 
         if (logActionDetails)
         {
+            VpActionParser.Parse(action, out List<VpActionCommand> createActions, out List<VpActionCommand> activateActions);
             Debug.Log($"[VP Action] Parsed actions for '{modelName}': create={createActions.Count}, activate={activateActions.Count}");
-
-            foreach (var c in createActions)
-            {
-                Debug.Log($"  CREATE -> {c}");
-            }
-
-            foreach (var a in activateActions)
-            {
-                Debug.Log($"  ACTIVATE -> {a}");
-            }
         }
 
         EnsureAssetManager();
-
-        foreach (var c in createActions)
-        {
-            VpActionExecutor.ExecuteCreate(loadedModel, c, objectPath, objectPathPassword, this);
-        }
-
-        if (activateActions.Count > 0)
-        {
-            var act = loadedModel.GetComponent<VpActivateActions>() ?? loadedModel.AddComponent<VpActivateActions>();
-            act.actions.Clear();
-            act.actions.AddRange(activateActions);
-        }
+        runtimeFacade.ApplyActions(loadedModel, action, objectPath, objectPathPassword, this);
     }
 
     System.Collections.IEnumerator TestConnectionCoroutine()
