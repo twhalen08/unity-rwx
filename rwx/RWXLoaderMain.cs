@@ -3,6 +3,9 @@ using UnityEngine;
 
 namespace RWXLoader
 {
+    /// <summary>
+    /// Legacy MonoBehaviour adapter retained for compatibility; prefer <see cref="RwxRuntimeFacade"/> for runtime entrypoints.
+    /// </summary>
     public class RWXLoaderMain : MonoBehaviour
     {
         [Header("Settings")]
@@ -143,6 +146,14 @@ namespace RWXLoader
             return Path.Combine(Application.persistentDataPath, "Textures");
         }
 
+
+        /// <summary>
+        /// Creates a runtime facade backed by this adapter instance.
+        /// </summary>
+        public RwxRuntimeFacade AsRuntimeFacade()
+        {
+            return new RwxRuntimeFacade(this);
+        }
         // Editor helper methods
         [ContextMenu("Load Test RWX")]
         public void LoadTestRWX()
