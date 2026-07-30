@@ -26,11 +26,11 @@ namespace RWXLoader
             return model;
         }
 
-        public RWXParsedCommand? ParseLine(string line)
+        public RWXIntermediateCommand? ParseLine(string line)
         {
             var model = new RWXParsedModel(1);
             ParseLineSpan(line ?? string.Empty, 0, line?.Length ?? 0, model, new Stack<int>());
-            return model.Commands.Count == 0 ? (RWXParsedCommand?)null : model.Commands[0];
+            return model.Commands.Count == 0 ? (RWXIntermediateCommand?)null : model.Commands[0];
         }
 
         private static void ParseLineSpan(string source, int begin, int end, RWXParsedModel model, Stack<int> clumps)
@@ -57,7 +57,7 @@ namespace RWXLoader
                 if (p > s) values.Add(source.Substring(s, p - s));
             }
 
-            var c = new RWXParsedCommand { Keyword = keyword, SourceLine = line, Type = RWXCommandType.Unknown };
+            var c = new RWXIntermediateCommand { Keyword = keyword, SourceLine = line, Type = RWXCommandType.Unknown };
             if (lower == "vertex" || lower == "vertexext")
             {
                 c.Type = RWXCommandType.Vertex;

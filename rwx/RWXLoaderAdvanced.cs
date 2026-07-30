@@ -308,7 +308,7 @@ namespace RWXLoader
             int vertices = 0, triangles = 0;
             for (int i = 0; i < model.Commands.Count; i++)
             {
-                RWXParsedCommand command = model.Commands[i];
+                RWXIntermediateCommand command = model.Commands[i];
                 ProfilerMarker marker = command.Type == RWXCommandType.Material ? MaterialMarker : MeshMarker;
                 using (marker.Auto()) parser.ApplyIntermediateCommand(command, context);
                 vertices += command.EstimatedVertices;

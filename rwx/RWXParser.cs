@@ -133,7 +133,7 @@ namespace RWXLoader
 
         public void ProcessLine(string line, RWXParseContext context)
         {
-            RWXParsedCommand? command = intermediateParser.ParseLine(line);
+            RWXIntermediateCommand? command = intermediateParser.ParseLine(line);
             if (!command.HasValue)
             {
                 return;
@@ -147,7 +147,7 @@ namespace RWXLoader
             return intermediateParser.ParseContent(content);
         }
 
-        public void ApplyIntermediateCommands(IEnumerable<RWXParsedCommand> commands, RWXParseContext context, bool finalizeScene = true)
+        public void ApplyIntermediateCommands(IEnumerable<RWXIntermediateCommand> commands, RWXParseContext context, bool finalizeScene = true)
         {
             if (commands == null)
             {
@@ -165,7 +165,7 @@ namespace RWXLoader
             }
         }
 
-        public void ApplyIntermediateCommand(RWXParsedCommand command, RWXParseContext context)
+        public void ApplyIntermediateCommand(RWXIntermediateCommand command, RWXParseContext context)
         {
             unityCommandAdapter.Apply(command, context, ProcessLineLegacy);
         }

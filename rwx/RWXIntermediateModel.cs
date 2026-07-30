@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 
 namespace RWXLoader
@@ -30,7 +29,7 @@ namespace RWXLoader
         public byte ValueKind; // 1 translation, 2 scale, 3 axis/angle, 4 matrix
     }
 
-    public struct RWXParsedCommand
+    public struct RWXIntermediateCommand
     {
         public RWXCommandType Type;
         public string Keyword;
@@ -45,30 +44,29 @@ namespace RWXLoader
         public RWXTransformDescriptor Transform;
         public int EstimatedVertices;
         public int EstimatedTriangles;
+
+        // Compatibility alias for the former reference-type command contract.
+        public string RawLine => SourceLine;
     }
 
     public struct RWXClumpDescriptor { public int BeginCommand, EndCommand; }
     public struct RWXPrototypeReference { public string Name; public int CommandIndex; }
 
     /// <summary>Immutable-by-convention, CLR-only result of archive tokenization.</summary>
-    public sealed class RWXParsedModel : IReadOnlyList<RWXParsedCommand>
+    public sealed class RWXParsedModel : List<RWXIntermediateCommand>
     {
-        public readonly List<RWXParsedCommand> Commands;
+        // Keep the named collection for staged-pipeline callers while deriving from
+        // List for source compatibility with the original public parser API.
+        public List<RWXIntermediateCommand> Commands => this;
         public readonly List<RWXClumpDescriptor> Clumps;
         public readonly List<RWXPrototypeReference> PrototypeReferences;
         public int VertexCount { get; internal set; }
         public int TriangleCount { get; internal set; }
 
-        internal RWXParsedModel(int capacity)
+        internal RWXParsedModel(int capacity) : base(capacity)
         {
-            Commands = new List<RWXParsedCommand>(capacity);
             Clumps = new List<RWXClumpDescriptor>(Math.Max(1, capacity / 32));
             PrototypeReferences = new List<RWXPrototypeReference>(Math.Max(1, capacity / 64));
         }
-
-        public int Count => Commands.Count;
-        public RWXParsedCommand this[int index] => Commands[index];
-        public IEnumerator<RWXParsedCommand> GetEnumerator() => Commands.GetEnumerator();
-        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }
