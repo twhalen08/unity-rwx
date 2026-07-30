@@ -80,7 +80,7 @@ public class VPWorldStreamerSmooth : MonoBehaviour
     public int maxModelStartsPerFrame = 1;
 
     [Header("Smoothness Budget")]
-    [Tooltip("Max milliseconds per frame spent applying actions to loaded models (lower = smoother, slower load).")]
+    [Tooltip("Max milliseconds per frame spent constructing models and applying actions (lower = smoother, slower load).")]
     public float modelWorkBudgetMs = 2.5f;
 
     [Tooltip("If true, apply CREATE actions over multiple frames using the budget.")]
@@ -898,6 +898,9 @@ public class VPWorldStreamerSmooth : MonoBehaviour
         bool activateOnInstantiate = createActions.Count == 0;
 
         modelLoader.parentTransform = parent;
+        // Construction used to finish before this budget started. The staged loader
+        // now consumes the same per-frame allowance while meshes/materials are built.
+        modelLoader.buildTimeBudgetMs = modelWorkBudgetMs;
 
         modelLoader.LoadModelFromRemote(
             modelId,
