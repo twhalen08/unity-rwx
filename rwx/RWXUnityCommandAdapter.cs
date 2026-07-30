@@ -13,16 +13,11 @@ namespace RWXLoader
             this.materialManager = materialManager;
         }
 
-        public void Apply(RWXIntermediateCommand command, RWXParseContext context, Action<string, RWXParseContext> legacyLineApplier)
+        public void Apply(RWXParsedCommand command, RWXParseContext context, Action<string, RWXParseContext> legacyLineApplier)
         {
-            if (command == null)
-            {
-                return;
-            }
-
             // Current bridge implementation: preserve behavior by routing command execution
             // through existing parser logic while transitioning to the intermediate model.
-            legacyLineApplier?.Invoke(command.RawLine, context);
+            legacyLineApplier?.Invoke(command.SourceLine, context);
         }
 
         public void FinalizeScene(RWXParseContext context)

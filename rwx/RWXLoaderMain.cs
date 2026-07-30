@@ -112,7 +112,7 @@ namespace RWXLoader
         }
 
 
-        public System.Collections.Generic.List<RWXIntermediateCommand> ParseRWXToIntermediate(string content)
+        public RWXParsedModel ParseRWXToIntermediate(string content)
         {
             if (parser == null)
             {
@@ -120,7 +120,7 @@ namespace RWXLoader
             }
 
             parser?.Reset();
-            return parser?.ParseToIntermediate(content) ?? new System.Collections.Generic.List<RWXIntermediateCommand>();
+            return parser?.ParseToIntermediate(content);
         }
         public void ClearCache()
         {

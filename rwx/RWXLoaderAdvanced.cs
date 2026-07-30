@@ -3,7 +3,9 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Threading.Tasks;
 using UnityEngine;
+using Unity.Profiling;
 
 namespace RWXLoader
 {
@@ -13,6 +15,14 @@ namespace RWXLoader
         public string defaultObjectPath = "http://objects.virtualparadise.org/vpbuild/";
         public string objectPathPassword = "";
         public Transform parentTransform;
+
+        [Header("Incremental model construction")]
+        [Tooltip("Maximum main-thread construction time per frame. Zero disables the time limit.")]
+        public float buildTimeBudgetMs = 2.5f;
+        [Tooltip("Maximum parsed vertices consumed per frame. Zero disables the limit.")]
+        public int buildVertexBudget = 4000;
+        [Tooltip("Maximum parsed triangles consumed per frame. Zero disables the limit.")]
+        public int buildTriangleBudget = 4000;
         
         [Header("Debug")]
         public bool enableDebugLogs = true;
@@ -24,6 +34,12 @@ namespace RWXLoader
 
         private static readonly Dictionary<string, GameObject> modelPrefabCache = new();
         private static Transform cacheContainer;
+        private static readonly ProfilerMarker ArchiveResolutionMarker = new ProfilerMarker("RWX.ArchiveResolution");
+        private static readonly ProfilerMarker TokenizationMarker = new ProfilerMarker("RWX.Tokenization");
+        private static readonly ProfilerMarker IntermediateMarker = new ProfilerMarker("RWX.IntermediateGeneration");
+        private static readonly ProfilerMarker MeshMarker = new ProfilerMarker("RWX.MeshGeneration");
+        private static readonly ProfilerMarker MaterialMarker = new ProfilerMarker("RWX.MaterialBinding");
+        private static readonly ProfilerMarker InstantiationMarker = new ProfilerMarker("RWX.Instantiation");
 
         private void Awake()
         {
@@ -95,7 +111,7 @@ namespace RWXLoader
 
             if (modelPrefabCache.TryGetValue(cacheKey, out GameObject prefab) && prefab != null)
             {
-                instance = Instantiate(prefab, parentTransform);
+                using (InstantiationMarker.Auto()) instance = Instantiate(prefab, parentTransform);
                 instance.name = prefab.name;
                 instance.SetActive(activateOnInstantiate);
                 return true;
@@ -167,7 +183,7 @@ namespace RWXLoader
                 CachePrefab(objectPath, modelName, modelObject);
 
                 // Instantiate a live copy for the caller
-                modelObject = Instantiate(modelObject, parentTransform);
+                using (InstantiationMarker.Auto()) modelObject = Instantiate(modelObject, parentTransform);
                 modelObject.name = modelName;
                 modelObject.SetActive(activateOnInstantiate);
             }
@@ -190,12 +206,14 @@ namespace RWXLoader
             RwxModelPayload payload = null;
             string resolveResult = string.Empty;
 
+            ArchiveResolutionMarker.Begin();
             yield return modelSource.ResolveModelPayload(modelName, (success, resolvedPayload, message) =>
             {
                 resolveSuccess = success;
                 payload = resolvedPayload;
                 resolveResult = message;
             });
+            ArchiveResolutionMarker.End();
 
             if (!resolveSuccess || payload == null)
             {
@@ -210,18 +228,28 @@ namespace RWXLoader
                 Debug.Log($"Resolved RWX payload for {modelName} ({payload.RwxContent.Length} characters)");
             }
 
-            GameObject modelObject = null;
-            try
+            // Tokenization and intermediate generation are CLR-only and never touch a
+            // UnityEngine.Object, so streamed models can safely use the thread pool.
+            Task<RWXParsedModel> parseTask = Task.Run(() =>
             {
-                modelObject = ParseModelFromPayload(payload, modelName);
-            }
-            catch (Exception e)
+                using (TokenizationMarker.Auto())
+                using (IntermediateMarker.Auto())
+                    return new RWXIntermediateParser().ParseContent(payload.RwxContent);
+            });
+            while (!parseTask.IsCompleted) yield return null;
+            if (parseTask.IsFaulted)
             {
-                string error = $"Failed to parse RWX model: {e.Message}";
+                string error = $"Failed to parse RWX model: {parseTask.Exception?.GetBaseException().Message}";
                 Debug.LogError(error);
                 onComplete?.Invoke(null, error);
                 yield break;
             }
+
+            payload.ConfigureMaterialManager(materialManager);
+            GameObject modelObject = null;
+            string buildError = null;
+            yield return BuildParsedModelCoroutine(parseTask.Result, modelName, (go, error) => { modelObject = go; buildError = error; });
+            if (!string.IsNullOrEmpty(buildError)) { onComplete?.Invoke(null, buildError); yield break; }
 
             onComplete?.Invoke(modelObject, null);
         }
@@ -261,6 +289,42 @@ namespace RWXLoader
             }
 
             return rootObject;
+        }
+
+        /// <summary>Main-thread stage. Commands are consumed in bounded batches.</summary>
+        private IEnumerator BuildParsedModelCoroutine(RWXParsedModel model, string modelName, Action<GameObject, string> onComplete)
+        {
+            if (materialManager == null || meshBuilder == null || parser == null)
+            {
+                onComplete(null, "Components not properly initialized");
+                yield break;
+            }
+
+            GameObject root;
+            using (InstantiationMarker.Auto()) root = new GameObject(modelName);
+            var context = new RWXParseContext { rootObject = root, currentObject = root };
+            parser.Reset();
+            float sliceStart = Time.realtimeSinceStartup;
+            int vertices = 0, triangles = 0;
+            for (int i = 0; i < model.Commands.Count; i++)
+            {
+                RWXParsedCommand command = model.Commands[i];
+                ProfilerMarker marker = command.Type == RWXCommandType.Material ? MaterialMarker : MeshMarker;
+                using (marker.Auto()) parser.ApplyIntermediateCommand(command, context);
+                vertices += command.EstimatedVertices;
+                triangles += command.EstimatedTriangles;
+                float elapsed = (Time.realtimeSinceStartup - sliceStart) * 1000f;
+                if ((buildTimeBudgetMs > 0 && elapsed >= buildTimeBudgetMs) ||
+                    (buildVertexBudget > 0 && vertices >= buildVertexBudget) ||
+                    (buildTriangleBudget > 0 && triangles >= buildTriangleBudget))
+                {
+                    yield return null;
+                    sliceStart = Time.realtimeSinceStartup;
+                    vertices = triangles = 0;
+                }
+            }
+            using (MeshMarker.Auto()) parser.FinalizeIntermediateModel(context);
+            onComplete(root, null);
         }
 
         private void CachePrefab(string objectPath, string modelName, GameObject modelObject)

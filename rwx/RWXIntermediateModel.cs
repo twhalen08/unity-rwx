@@ -1,124 +1,74 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
-using UnityEngine;
 
 namespace RWXLoader
 {
-    public enum RWXCommandType
+    // This file deliberately has no UnityEngine dependency.  Instances can be
+    // produced by a Task/Job and handed to the main thread afterwards.
+    public enum RWXCommandType { Unknown, Face, Vertex, Triangle, Quad, Polygon, Texture, Material, Transform, TransformStack, JointTransform }
+    public enum RWXTransformStackAction { None, ClumpBegin, ClumpEnd, TransformBegin, TransformEnd, JointTransformBegin, JointTransformEnd, Identity, IdentityJoint }
+
+    public struct RwxFloat2 { public float X, Y; public RwxFloat2(float x, float y) { X = x; Y = y; } }
+    public struct RwxFloat3 { public float X, Y, Z; public RwxFloat3(float x, float y, float z) { X = x; Y = y; Z = z; } }
+    public struct RwxFloat4 { public float X, Y, Z, W; public RwxFloat4(float x, float y, float z, float w) { X = x; Y = y; Z = z; W = w; } }
+
+    public struct RWXMaterialDescriptor
     {
-        Unknown,
-        Face,
-        Vertex,
-        Triangle,
-        Quad,
-        Polygon,
-        Texture,
-        Material,
-        Transform,
-        TransformStack,
-        JointTransform
+        public string Texture;
+        public RwxFloat3 Color;
+        public float Opacity;
+        public bool HasColor, HasOpacity;
     }
 
-    public enum RWXTransformStackAction
+    public struct RWXTransformDescriptor
     {
-        None,
-        ClumpBegin,
-        ClumpEnd,
-        TransformBegin,
-        TransformEnd,
-        JointTransformBegin,
-        JointTransformEnd,
-        Identity,
-        IdentityJoint
+        public RWXTransformStackAction StackAction;
+        public RwxFloat3 Translation, Scale;
+        public RwxFloat4 AxisAngle;
+        public float[] Matrix;
+        public byte ValueKind; // 1 translation, 2 scale, 3 axis/angle, 4 matrix
     }
 
-    public sealed class RWXIntermediateCommand
+    public struct RWXParsedCommand
     {
-        public RWXCommandType Type { get; }
-        public string Keyword { get; }
-        public string RawLine { get; }
-        public RWXVertexCommand Vertex { get; }
-        public RWXFaceCommand Face { get; }
-        public RWXMaterialDirective Material { get; }
-        public RWXTransformCommand Transform { get; }
+        public RWXCommandType Type;
+        public string Keyword;
+        public string SourceLine;
+        public RwxFloat3 Position;
+        public RwxFloat2 Uv;
+        public bool HasUv;
+        public int[] Indices;
+        public int Tag;
+        public bool HasTag;
+        public RWXMaterialDescriptor Material;
+        public RWXTransformDescriptor Transform;
+        public int EstimatedVertices;
+        public int EstimatedTriangles;
+    }
 
-        public RWXIntermediateCommand(
-            RWXCommandType type,
-            string keyword,
-            string rawLine,
-            RWXVertexCommand vertex = null,
-            RWXFaceCommand face = null,
-            RWXMaterialDirective material = null,
-            RWXTransformCommand transform = null)
+    public struct RWXClumpDescriptor { public int BeginCommand, EndCommand; }
+    public struct RWXPrototypeReference { public string Name; public int CommandIndex; }
+
+    /// <summary>Immutable-by-convention, CLR-only result of archive tokenization.</summary>
+    public sealed class RWXParsedModel : IReadOnlyList<RWXParsedCommand>
+    {
+        public readonly List<RWXParsedCommand> Commands;
+        public readonly List<RWXClumpDescriptor> Clumps;
+        public readonly List<RWXPrototypeReference> PrototypeReferences;
+        public int VertexCount { get; internal set; }
+        public int TriangleCount { get; internal set; }
+
+        internal RWXParsedModel(int capacity)
         {
-            Type = type;
-            Keyword = keyword;
-            RawLine = rawLine;
-            Vertex = vertex;
-            Face = face;
-            Material = material;
-            Transform = transform;
+            Commands = new List<RWXParsedCommand>(capacity);
+            Clumps = new List<RWXClumpDescriptor>(Math.Max(1, capacity / 32));
+            PrototypeReferences = new List<RWXPrototypeReference>(Math.Max(1, capacity / 64));
         }
-    }
 
-    public sealed class RWXVertexCommand
-    {
-        public Vector3 Position { get; }
-        public Vector2? Uv { get; }
-
-        public RWXVertexCommand(Vector3 position, Vector2? uv = null)
-        {
-            Position = position;
-            Uv = uv;
-        }
-    }
-
-    public sealed class RWXFaceCommand
-    {
-        public IReadOnlyList<int> Indices { get; }
-        public int? Tag { get; }
-
-        public RWXFaceCommand(IReadOnlyList<int> indices, int? tag = null)
-        {
-            Indices = indices;
-            Tag = tag;
-        }
-    }
-
-    public sealed class RWXMaterialDirective
-    {
-        public string Texture { get; }
-        public Color? Color { get; }
-        public float? Opacity { get; }
-
-        public RWXMaterialDirective(string texture = null, Color? color = null, float? opacity = null)
-        {
-            Texture = texture;
-            Color = color;
-            Opacity = opacity;
-        }
-    }
-
-    public sealed class RWXTransformCommand
-    {
-        public RWXTransformStackAction StackAction { get; }
-        public Matrix4x4? Matrix { get; }
-        public Vector3? Translation { get; }
-        public Vector3? Scale { get; }
-        public Vector4? AxisAngle { get; }
-
-        public RWXTransformCommand(
-            RWXTransformStackAction stackAction = RWXTransformStackAction.None,
-            Matrix4x4? matrix = null,
-            Vector3? translation = null,
-            Vector3? scale = null,
-            Vector4? axisAngle = null)
-        {
-            StackAction = stackAction;
-            Matrix = matrix;
-            Translation = translation;
-            Scale = scale;
-            AxisAngle = axisAngle;
-        }
+        public int Count => Commands.Count;
+        public RWXParsedCommand this[int index] => Commands[index];
+        public IEnumerator<RWXParsedCommand> GetEnumerator() => Commands.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

@@ -133,21 +133,21 @@ namespace RWXLoader
 
         public void ProcessLine(string line, RWXParseContext context)
         {
-            RWXIntermediateCommand command = intermediateParser.ParseLine(line);
-            if (command == null)
+            RWXParsedCommand? command = intermediateParser.ParseLine(line);
+            if (!command.HasValue)
             {
                 return;
             }
 
-            unityCommandAdapter.Apply(command, context, ProcessLineLegacy);
+            unityCommandAdapter.Apply(command.Value, context, ProcessLineLegacy);
         }
 
-        public List<RWXIntermediateCommand> ParseToIntermediate(string content)
+        public RWXParsedModel ParseToIntermediate(string content)
         {
             return intermediateParser.ParseContent(content);
         }
 
-        public void ApplyIntermediateCommands(IEnumerable<RWXIntermediateCommand> commands, RWXParseContext context, bool finalizeScene = true)
+        public void ApplyIntermediateCommands(IEnumerable<RWXParsedCommand> commands, RWXParseContext context, bool finalizeScene = true)
         {
             if (commands == null)
             {
@@ -163,6 +163,16 @@ namespace RWXLoader
             {
                 unityCommandAdapter.FinalizeScene(context);
             }
+        }
+
+        public void ApplyIntermediateCommand(RWXParsedCommand command, RWXParseContext context)
+        {
+            unityCommandAdapter.Apply(command, context, ProcessLineLegacy);
+        }
+
+        public void FinalizeIntermediateModel(RWXParseContext context)
+        {
+            unityCommandAdapter.FinalizeScene(context);
         }
 
         private void ProcessLineLegacy(string line, RWXParseContext context)
